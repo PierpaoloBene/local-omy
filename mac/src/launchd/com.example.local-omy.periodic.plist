@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: __UV__, __MAC_DIR__, __HOME__ and __PATH__ are filled in by the
+     install command in mac/README.md (run from mac/src). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.example.local-omy.periodic</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__UV__</string>
+		<string>run</string>
+		<string>--frozen</string>
+		<string>--project</string>
+		<string>__MAC_DIR__</string>
+		<string>omy</string>
+		<string>periodic</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__MAC_DIR__</string>
+	<!-- flutter, pod and xcodebuild are looked up in PATH -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__PATH__</string>
+	</dict>
+	<key>StartInterval</key>
+	<integer>3600</integer>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/local-omy-periodic.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/local-omy-periodic.log</string>
+</dict>
+</plist>

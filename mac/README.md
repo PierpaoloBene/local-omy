@@ -51,6 +51,60 @@ L'URL da mettere nell'app è `https://<nome-mac>.<tailnet>.ts.net`, per esempio
 renderebbe il servizio pubblico su Internet. `serve` lo rende visibile solo ai
 dispositivi del tuo tailnet.
 
+## App iPhone: installazione e rinnovo (al posto di AltStore)
+
+`omy` compila l'app, la firma con il Personal Team gratuito del tuo Apple ID (quello
+collegato a Xcode, in Impostazioni → Account) e la installa con `devicectl`, via cavo o
+Wi-Fi. Con un account gratuito il profilo dura **7 giorni**.
+
+```bash
+uv run omy iphone install          # telefono sbloccato e vicino: build, firma, installa
+uv run omy iphone status           # scadenza, giorni rimasti, serve riaprire l'app?
+uv run omy iphone renew            # reinstalla solo se mancano < 3 giorni, e di notte (01-08)
+uv run omy iphone renew --force    # reinstalla subito
+```
+
+Aggiungi `--json` subito dopo `omy` per avere il risultato in JSON. I log vanno su stderr.
+
+**Prima installazione:**
+- Sul telefono deve essere attiva la Modalità sviluppatore (Impostazioni → Privacy e
+  sicurezza).
+- `install` registra l'iPhone nel team, quindi il telefono deve essere sbloccato.
+- Al primo avvio dell'app iOS chiede di autorizzare lo sviluppatore (Impostazioni →
+  Generali → VPN e gestione dispositivi).
+- Se `codesign` chiede l'accesso al portachiavi, rispondi "Consenti sempre": il job
+  periodico non può rispondere al posto tuo.
+- Team id e UDID vengono rilevati la prima volta e salvati in
+  `~/.config/local-omy/config.toml` (600). Il team **non** viene mai scritto nel progetto
+  Xcode.
+
+L'app installata così ha il bundle id `com.example.local-omy` e **non** è la stessa
+dell'app installata da AltStore, che aggiunge un suffisso al bundle id:
+1. lascia che la vecchia app finisca di caricare i segmenti in coda;
+2. nella nuova app reinserisci URL e token;
+3. cancella la vecchia app.
+
+**Rinnovo automatico:** il LaunchAgent `periodic` lancia `omy periodic` ogni ora.
+- Il rinnovo parte solo quando la firma scade entro 3 giorni e solo tra l'01 e le 08,
+  perché reinstallare chiude l'app sull'iPhone e iOS non la riapre da sola. Se manca meno
+  di un giorno, prova a qualsiasi ora.
+- La build è generica e non richiede il telefono. L'installazione invece sì: deve essere
+  sulla stessa rete e potrebbe dover essere sbloccato. Se non riesce, riprova l'ora
+  dopo.
+- Dopo ogni reinstallazione arriva una notifica sul Mac: riapri l'app.
+- `status` riporta `needs_reopen: true` finché sul Mac non arriva un segmento iniziato dopo
+  l'installazione.
+
+Installalo **dopo** il primo `omy iphone install`:
+
+```bash
+PLIST=~/Library/LaunchAgents/com.example.local-omy.periodic.plist
+sed -e "s|__UV__|$(command -v uv)|" -e "s|__MAC_DIR__|$PWD|g" -e "s|__HOME__|$HOME|g" \
+    -e "s|__PATH__|$PATH|" launchd/com.example.local-omy.periodic.plist > "$PLIST"
+launchctl bootstrap gui/$(id -u) "$PLIST"
+tail -f ~/Library/Logs/local-omy-periodic.log
+```
+
 ## Configurazione (variabili d'ambiente)
 
 | Variabile | Default | |

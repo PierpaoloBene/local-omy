@@ -189,7 +189,10 @@ Gli upload partono solo mentre l'app è sveglia:
 
 ## Build e installazione
 
-Requisiti: Flutter ≥ 3.47, Xcode, CocoaPods, AltServer.
+Requisiti: Flutter ≥ 3.47, Xcode (con il tuo Apple ID in Impostazioni → Account), CocoaPods.
+
+Per installare e rinnovare l'app sull'iPhone usa `omy iphone install` (vedi
+[mac/README.md](mac/README.md)). Solo per compilare:
 
 ```bash
 cd iphone/src
@@ -198,7 +201,7 @@ flutter build ipa --no-codesign   # oppure: flutter build ios --no-codesign
 ```
 
 Il bundle id è `com.example.local-omy`. Nel progetto non c'è un team di sviluppo
-impostato: firma AltServer. Non ci sono entitlement (quelli iCloud dell'originale non
+impostato: `omy` lo passa a `xcodebuild` da riga di comando. Non ci sono entitlement (quelli iCloud dell'originale non
 funzionano con un account gratuito).
 
 **Non tenere il repo in iCloud Drive.** I metadati estesi che iCloud aggiunge ai file

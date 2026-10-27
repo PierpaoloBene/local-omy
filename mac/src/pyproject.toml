@@ -1,7 +1,7 @@
 [project]
-name = "omy-receiver"
+name = "omy"
 version = "1.0.0"
-description = "Receives local-omy audio segments on the Mac"
+description = "local-omy on the Mac: segment receiver, iPhone install/renew"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -11,7 +11,11 @@ dependencies = [
 ]
 
 [project.scripts]
+omy = "omy.cli:main"
 omy-receiver = "omy_receiver.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["omy", "omy_receiver"]
 
 [build-system]
 requires = ["hatchling"]

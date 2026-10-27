@@ -78,7 +78,7 @@ wheels = [
 ]
 
 [[package]]
-name = "omy-receiver"
+name = "omy"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
