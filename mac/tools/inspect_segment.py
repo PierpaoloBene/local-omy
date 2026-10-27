@@ -1,10 +1,9 @@
 """Inspect local-omy segments: missing-packet report and Opus -> WAV decoding.
 
-  uv run tools/inspect_segment.py SEGMENT.bin [--wav OUT.wav | --no-wav]
-  uv run tools/inspect_segment.py --day 2026-10-27 [--archive ~/OmiArchive]
+  uv run --group tools tools/inspect_segment.py SEGMENT.bin [--wav OUT.wav | --no-wav]
+  uv run --group tools tools/inspect_segment.py --day 2026-10-27 [--archive ~/OmiArchive]
 
-Decoding needs libopus (`brew install opus`) and the `tools` group
-(`uv sync --group tools`).
+Decoding needs libopus (`brew install opus`) and the `tools` dependency group.
 """
 
 from __future__ import annotations
@@ -37,7 +36,7 @@ def load_opus_decoder(codec: int):
     try:
         import opuslib
     except Exception as e:  # noqa: BLE001 - opuslib raises plain Exception if libopus is missing
-        raise SystemExit(f"cannot load opuslib/libopus ({e}); run: brew install opus && uv sync --group tools")
+        raise SystemExit(f"cannot load opuslib/libopus ({e}); run: brew install opus, and use uv run --group tools")
     return opuslib.Decoder(SAMPLE_RATE, 1)
 
 
