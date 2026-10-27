@@ -1,6 +1,6 @@
 # attic/
 
-Codice fuori dal build (non è sotto `lib/` ed è escluso da `analysis_options.yaml`).
+Codice fuori dal build: sta fuori dal progetto Flutter `iphone/src`.
 È tenuto come riferimento per una v2.
 
 ## sdcard_sync/
@@ -17,4 +17,4 @@ così com'era in kbdevs/omibutfree (il commit "sd card sync kinda works").
 
 Non compila così com'è: dipende dal vecchio `AppProvider` e da `BleAudioCodec`, che non
 esistono più. Per riattivarlo vanno portati i metodi storage nel nuovo `BleService`, e i
-file letti dalla SD vanno scritti come segmenti nel formato di `lib/`.
+file letti dalla SD vanno scritti come segmenti nel formato di `iphone/src/lib/`.

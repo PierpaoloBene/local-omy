@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Template: __UV__, __MAC_DIR__ and __HOME__ are filled in by the install
-     command in mac/README.md. -->
+     command in mac/README.md (run from mac/src). -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>

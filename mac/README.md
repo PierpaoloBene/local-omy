@@ -9,8 +9,10 @@ Ascolta **solo su 127.0.0.1**: la rete lo raggiunge esclusivamente tramite
 
 ## Installazione
 
+Tutti i comandi di questa pagina si lanciano da `mac/src`.
+
 ```bash
-cd mac
+cd mac/src
 uv sync
 
 # Token: 32 byte casuali, file leggibile solo da te
@@ -32,6 +34,7 @@ tail -f ~/Library/Logs/local-omy-receiver.log
 
 - Per riavviarlo dopo un aggiornamento: `launchctl kickstart -k gui/$(id -u)/com.example.local-omy.receiver`
 - Per toglierlo: `launchctl bootout gui/$(id -u)/com.example.local-omy.receiver`
+- Se sposti il repo: `bootout`, poi rigenera il plist con il `sed` qui sopra e rifai `bootstrap`.
 
 `KeepAlive` lo rilancia se si chiude. Se la configurazione è sbagliata (token assente, o
 permessi diversi da 600) esce con errore nel log e launchd ritenta ogni ~10 s.

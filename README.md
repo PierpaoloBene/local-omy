@@ -13,9 +13,10 @@ ridotto all'osso. Grazie a kbdevs per il lavoro di base sul BLE.
 
 | Percorso | Cosa |
 |---|---|
-| `lib/` | App Flutter (solo iOS) |
-| `mac/` | Ricevitore sul Mac (Python, FastAPI) e strumenti di analisi |
-| `attic/` | Codice fuori dal build, tenuto per una v2 (sync della scheda SD) |
+| `iphone/src/` | App Flutter (solo iOS): `lib/`, `ios/`, `pubspec.yaml` |
+| `iphone/attic/` | Codice fuori dal build, tenuto per una v2 (sync della scheda SD) |
+| `mac/src/` | Ricevitore sul Mac (Python, FastAPI) e strumenti di analisi |
+| `iphone/build/`, `mac/build/` | Artefatti finali (ignorati da git) |
 
 ## Protocollo audio BLE del ciondolo
 
@@ -191,6 +192,7 @@ Gli upload partono solo mentre l'app è sveglia:
 Requisiti: Flutter ≥ 3.47, Xcode, CocoaPods, AltServer.
 
 ```bash
+cd iphone/src
 flutter pub get
 flutter build ipa --no-codesign   # oppure: flutter build ios --no-codesign
 ```

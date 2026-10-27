@@ -30,7 +30,6 @@ migrate_working_dir/
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
-/build/
 /coverage/
 
 # Symbolication related
@@ -39,17 +38,14 @@ app.*.symbols
 # Obfuscation related
 app.*.map.json
 
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
-
 # Env files
 .env
 *.env
 
+# Build output: iphone/build, mac/build, iphone/src/build (Flutter cache)
+build/
 
-# Python (mac/)
+# Python (mac/src)
 .venv/
 __pycache__/
 .pytest_cache/
