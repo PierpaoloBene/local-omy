@@ -79,10 +79,12 @@ ParsedSegment? parseSegment(Uint8List data) {
     final len = b.getUint16(pos + 4, Endian.little);
     final end = pos + recordHeaderSize + len;
     if (end > data.length) break;
-    records.add(SegmentRecord(
-      b.getUint32(pos, Endian.little),
-      Uint8List.sublistView(data, pos + recordHeaderSize, end),
-    ));
+    records.add(
+      SegmentRecord(
+        b.getUint32(pos, Endian.little),
+        Uint8List.sublistView(data, pos + recordHeaderSize, end),
+      ),
+    );
     pos = end;
   }
   return ParsedSegment(version, b.getUint8(5), b.getUint64(6, Endian.little), records, pos);

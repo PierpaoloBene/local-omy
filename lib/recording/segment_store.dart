@@ -46,15 +46,16 @@ class SegmentStore {
 
   /// Closed segments waiting for upload, oldest first.
   List<String> queuedIds() {
-    final ids = dir
-        .listSync()
-        .whereType<File>()
-        .map((f) => f.uri.pathSegments.last)
-        .where((n) => n.endsWith('.bin'))
-        .map((n) => n.substring(0, n.length - 4))
-        .where((id) => json(id).existsSync())
-        .toList()
-      ..sort();
+    final ids =
+        dir
+            .listSync()
+            .whereType<File>()
+            .map((f) => f.uri.pathSegments.last)
+            .where((n) => n.endsWith('.bin'))
+            .map((n) => n.substring(0, n.length - 4))
+            .where((id) => json(id).existsSync())
+            .toList()
+          ..sort();
     return ids;
   }
 
@@ -165,7 +166,7 @@ class SegmentWriter {
   int frameCount = 0;
 
   SegmentWriter._(this._store, this.id, this.deviceId, int codecId, this.startMs)
-      : _raf = File('${_store.dir.path}/$id.part').openSync(mode: FileMode.write) {
+    : _raf = File('${_store.dir.path}/$id.part').openSync(mode: FileMode.write) {
     _raf.writeFromSync(encodeSegmentHeader(codecId: codecId, startMs: startMs));
   }
 

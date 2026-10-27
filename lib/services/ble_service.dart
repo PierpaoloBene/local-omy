@@ -61,10 +61,11 @@ class BleService {
         .first
         .timeout(const Duration(seconds: 10));
     await FlutterBluePlus.startScan(timeout: timeout);
-    yield* FlutterBluePlus.scanResults.map((results) => results
-        .where((r) => r.device.platformName.toLowerCase().contains('omi'))
-        .toList()
-      ..sort((a, b) => b.rssi.compareTo(a.rssi)));
+    yield* FlutterBluePlus.scanResults.map(
+      (results) =>
+          results.where((r) => r.device.platformName.toLowerCase().contains('omi')).toList()
+            ..sort((a, b) => b.rssi.compareTo(a.rssi)),
+    );
   }
 
   Future<void> stopScan() => FlutterBluePlus.stopScan();

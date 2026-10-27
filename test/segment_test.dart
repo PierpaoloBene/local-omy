@@ -7,8 +7,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:local_omy/recording/segment_format.dart';
 import 'package:local_omy/recording/segment_store.dart';
 
-Uint8List omiFrame(int index, int fragment, int payloadLen) => Uint8List.fromList(
-    [index & 0xFF, (index >> 8) & 0xFF, fragment, ...List.filled(payloadLen, 0xAB)]);
+Uint8List omiFrame(int index, int fragment, int payloadLen) =>
+    Uint8List.fromList([index & 0xFF, (index >> 8) & 0xFF, fragment, ...List.filled(payloadLen, 0xAB)]);
 
 void main() {
   late Directory tmp;
@@ -88,21 +88,31 @@ void main() {
 
   // mac/tests/fixtures/sample.bin is parsed by the Python tests: this pins the
   // format on both sides. Regenerate with: UPDATE_FIXTURE=1 flutter test
-  test('matches the fixture shared with the Mac tests', () {
-    final fixture = File('mac/tests/fixtures/sample.bin');
-    final data = BytesBuilder()
-      ..add(encodeSegmentHeader(codecId: 21, startMs: DateTime.utc(2026, 10, 27, 22, 58).millisecondsSinceEpoch))
-      ..add(encodeRecord(0, omiFrame(65534, 0, 4)))
-      ..add(encodeRecord(20, omiFrame(65535, 0, 4)))
-      ..add(encodeRecord(60, omiFrame(1, 0, 4))) // index 0 missing (wraps)
-      ..add(encodeRecord(80, omiFrame(2, 0, 4)))
-      ..add(encodeRecord(81, omiFrame(3, 0, 2)))
-      ..add(encodeRecord(81, omiFrame(4, 1, 2))); // frame 3 split in 2 fragments
-    final bytes = data.toBytes();
-    if (Platform.environment['UPDATE_FIXTURE'] == '1') {
-      fixture.parent.createSync(recursive: true);
-      fixture.writeAsBytesSync(bytes);
-    }
-    expect(fixture.readAsBytesSync(), bytes);
-  }, skip: !File('mac/tests/fixtures/sample.bin').existsSync() && Platform.environment['UPDATE_FIXTURE'] != '1');
+  test(
+    'matches the fixture shared with the Mac tests',
+    () {
+      final fixture = File('mac/tests/fixtures/sample.bin');
+      final data = BytesBuilder()
+        ..add(
+          encodeSegmentHeader(
+            codecId: 21,
+            startMs: DateTime.utc(2026, 10, 27, 22, 58).millisecondsSinceEpoch,
+          ),
+        )
+        ..add(encodeRecord(0, omiFrame(65534, 0, 4)))
+        ..add(encodeRecord(20, omiFrame(65535, 0, 4)))
+        ..add(encodeRecord(60, omiFrame(1, 0, 4))) // index 0 missing (wraps)
+        ..add(encodeRecord(80, omiFrame(2, 0, 4)))
+        ..add(encodeRecord(81, omiFrame(3, 0, 2)))
+        ..add(encodeRecord(81, omiFrame(4, 1, 2))); // frame 3 split in 2 fragments
+      final bytes = data.toBytes();
+      if (Platform.environment['UPDATE_FIXTURE'] == '1') {
+        fixture.parent.createSync(recursive: true);
+        fixture.writeAsBytesSync(bytes);
+      }
+      expect(fixture.readAsBytesSync(), bytes);
+    },
+    skip:
+        !File('mac/tests/fixtures/sample.bin').existsSync() && Platform.environment['UPDATE_FIXTURE'] != '1',
+  );
 }

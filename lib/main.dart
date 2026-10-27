@@ -4,6 +4,7 @@ import 'recording/recorder.dart';
 import 'recording/segment_store.dart';
 import 'services/ble_service.dart';
 import 'settings.dart';
+import 'ui/home_page.dart';
 import 'upload/uploader.dart';
 
 Future<void> main() async {
@@ -19,14 +20,12 @@ Future<void> main() async {
   final deviceId = settings.deviceId;
   if (deviceId != null) ble.connect(deviceId);
 
-  runApp(MaterialApp(
-    home: Scaffold(
-      body: Center(
-        child: ListenableBuilder(
-          listenable: Listenable.merge([recorder, uploader]),
-          builder: (_, _) => Text('local-omy\n${ble.state.name}\nrecording: ${recorder.recording}\nqueued: ${uploader.queued}'),
-        ),
-      ),
+  runApp(
+    MaterialApp(
+      title: 'local-omy',
+      theme: ThemeData(colorSchemeSeed: Colors.teal),
+      darkTheme: ThemeData(colorSchemeSeed: Colors.teal, brightness: Brightness.dark),
+      home: HomePage(ble: ble, recorder: recorder, uploader: uploader, settings: settings),
     ),
-  ));
+  );
 }

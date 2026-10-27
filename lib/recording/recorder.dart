@@ -34,10 +34,12 @@ class Recorder extends ChangeNotifier with WidgetsBindingObserver {
   void start() {
     store.recoverOrphans();
     _subs.add(_ble.audioStream.listen(_onFrame));
-    _subs.add(_ble.stateStream.listen((s) {
-      if (s != PendantState.streaming) _rotate();
-      notifyListeners();
-    }));
+    _subs.add(
+      _ble.stateStream.listen((s) {
+        if (s != PendantState.streaming) _rotate();
+        notifyListeners();
+      }),
+    );
     _subs.add(_ble.batteryStream.listen((_) => notifyListeners()));
     // Closes a segment that stopped receiving frames while still connected.
     _timer = Timer.periodic(const Duration(seconds: 15), (_) {
@@ -57,11 +59,7 @@ class Recorder extends ChangeNotifier with WidgetsBindingObserver {
         w = null;
       }
       if (w == null) {
-        w = store.create(
-          deviceId: _ble.deviceId ?? '',
-          codecId: _ble.codecId ?? 0,
-          start: DateTime.now(),
-        );
+        w = store.create(deviceId: _ble.deviceId ?? '', codecId: _ble.codecId ?? 0, start: DateTime.now());
         _writer = w;
         notifyListeners();
       }
