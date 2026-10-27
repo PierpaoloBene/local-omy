@@ -161,7 +161,7 @@ def build(team: str, udid: str | None) -> Path:
     run([
         "xcodebuild", "-workspace", "ios/Runner.xcworkspace", "-scheme", "Runner",
         "-configuration", "Release", *destination,
-        "-derivedDataPath", str(DERIVED), "-allowProvisioningUpdates",
+        "-derivedDataPath", str(DERIVED), "-allowProvisioningUpdates", "-quiet",
         f"DEVELOPMENT_TEAM={team}", "CODE_SIGN_STYLE=Automatic",
         "build",
     ], "xcodebuild", cwd=IPHONE_SRC)
@@ -178,6 +178,8 @@ def install(app: Path | None = None) -> dict:
     udid = config["device_udid"]
     if app is None:
         app = build(config["team_id"], udid)
+    elif not app.exists():
+        raise IphoneError(f"{app} not found: build it first")
     expires = profile_expiry(app)
     run(["xcrun", "devicectl", "device", "install", "app", "--device", udid, str(app)], "install on the iPhone")
     state = load_state()

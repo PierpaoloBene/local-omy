@@ -59,6 +59,7 @@ Wi-Fi. Con un account gratuito il profilo dura **7 giorni**.
 
 ```bash
 uv run omy iphone install          # telefono sbloccato e vicino: build, firma, installa
+uv run omy iphone install --no-build   # reinstalla l'ultima build (se è fallito solo l'install)
 uv run omy iphone status           # scadenza, giorni rimasti, serve riaprire l'app?
 uv run omy iphone renew            # reinstalla solo se mancano < 3 giorni, e di notte (01-08)
 uv run omy iphone renew --force    # reinstalla subito

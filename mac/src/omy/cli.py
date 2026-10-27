@@ -34,7 +34,8 @@ def main() -> int:
 
     ip = sub.add_parser("iphone", help="install and renew the iPhone app").add_subparsers(dest="action", required=True)
     ip.add_parser("status", help="profile expiry and device")
-    ip.add_parser("install", help="build, sign and install now")
+    inst = ip.add_parser("install", help="build, sign and install now")
+    inst.add_argument("--no-build", action="store_true", help="install the last build again")
     renew = ip.add_parser("renew", help=f"reinstall if the profile expires within {iphone.RENEW_BELOW_DAYS} days")
     renew.add_argument("--force", action="store_true", help="reinstall regardless of expiry and time of day")
 
@@ -51,7 +52,7 @@ def main() -> int:
         if args.cmd == "iphone":
             result = {
                 "status": iphone.status,
-                "install": iphone.install,
+                "install": lambda: iphone.install(iphone.APP if args.no_build else None),
                 "renew": lambda: iphone.renew(force=args.force),
             }[args.action]()
         else:
