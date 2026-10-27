@@ -1,4 +1,4 @@
-# Ricevitore sul Mac
+# local-omy sul Mac
 
 Riceve i segmenti dall'iPhone e li salva in
 `~/OmiArchive/raw/audio/AAAA-MM-GG/<id>.bin` + `<id>.json`. La data viene da `start`
@@ -7,46 +7,66 @@ nel `.json`, convertito da UTC a Europe/Rome.
 Ascolta **solo su 127.0.0.1**: la rete lo raggiunge esclusivamente tramite
 `tailscale serve`, che termina l'HTTPS e inoltra le richieste in locale.
 
-## Installazione
+## App per Mac
+
+`mac/src/app/` è un'app SwiftUI che vive nella barra dei menu. Non contiene logica propria:
+ogni azione lancia `omy --json …` e ne mostra il log.
+
+```bash
+mac/src/app/build.sh          # crea mac/build/local-omy.app (firma ad-hoc, senza sandbox)
+open mac/build/local-omy.app
+```
+
+**Barra dei menu:** l'icona segnala lo stato.
+
+| Icona | Stato |
+|---|---|
+| onda | tutto ok |
+| triangolo | serve un'azione: firma vicina alla scadenza, app da riaprire, setup incompleto |
+| ottagono | ricevitore fermo o firma scaduta |
+
+**Schede della finestra:**
+- **Stato:** ricevitore, `tailscale serve`, iPhone online sul tailnet, ultimo segmento
+  ricevuto, registrato oggi, scadenza dell'app iPhone, job orario, log.
+- **Setup:** la checklist di `omy setup check`. Ogni voce mancante ha il suo pulsante
+  "Sistema" (`omy setup fix <voce>`). Ci sono anche:
+  - "Copia URL" e "Copia token": il token va negli appunti e non viene mai mostrato;
+  - "Apri local-omy al login".
+- **iPhone:** scadenza della firma, "Compila e installa", "Rinnova ora", "Reinstalla
+  l'ultima build". Ogni azione chiede conferma, perché chiude l'app sul telefono.
+- **Trascrizioni:** giorni trascritti e "Trascrivi ora".
+
+L'app trova `mac/src` partendo dalla propria posizione (`mac/build/../src`). Se la sposti,
+indica il percorso con:
+`defaults write com.example.local-omy.mac macSrcPath /percorso/mac/src`.
+
+## Installazione da terminale
 
 Tutti i comandi di questa pagina si lanciano da `mac/src`.
 
 ```bash
 cd mac/src
-uv sync
-
-# Token: 32 byte casuali, file leggibile solo da te
-mkdir -p ~/.config/local-omy && chmod 700 ~/.config/local-omy
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > ~/.config/local-omy/token
-chmod 600 ~/.config/local-omy/token
-cat ~/.config/local-omy/token            # da copiare nelle impostazioni dell'app
+uv run omy setup check            # cosa manca
+uv run omy setup fix token        # crea ~/.config/local-omy/token (600), mai sovrascritto
+uv run omy setup token            # stampa il token, da inserire nell'app iPhone
+uv run omy setup fix receiver     # installa/aggiorna il LaunchAgent del ricevitore
+uv run omy setup fix periodic     # installa/aggiorna il LaunchAgent del job orario
+uv run omy setup fix tailscale    # tailscale serve --bg http://127.0.0.1:8787
+uv run omy setup fix models       # modelli di trascrizione
 ```
 
-### Avvio al login (LaunchAgent)
+I LaunchAgent vengono generati dai template in `launchd/` con i percorsi di questo repo e
+un `PATH` che contiene Homebrew e uv. `fix` li reinstalla anche se sposti il repo.
 
-```bash
-PLIST=~/Library/LaunchAgents/com.example.local-omy.receiver.plist
-sed -e "s|__UV__|$(command -v uv)|" -e "s|__MAC_DIR__|$PWD|g" -e "s|__HOME__|$HOME|g" \
-    launchd/com.example.local-omy.receiver.plist > "$PLIST"
-launchctl bootstrap gui/$(id -u) "$PLIST"
-tail -f ~/Library/Logs/local-omy-receiver.log
-```
-
-- Per riavviarlo dopo un aggiornamento: `launchctl kickstart -k gui/$(id -u)/com.example.local-omy.receiver`
-- Per toglierlo: `launchctl bootout gui/$(id -u)/com.example.local-omy.receiver`
-- Se sposti il repo: `bootout`, poi rigenera il plist con il `sed` qui sopra e rifai `bootstrap`.
-
-`KeepAlive` lo rilancia se si chiude. Se la configurazione è sbagliata (token assente, o
-permessi diversi da 600) esce con errore nel log e launchd ritenta ogni ~10 s.
+**Ricevitore:**
+- Log in `~/Library/Logs/local-omy-receiver.log`. Per riavviarlo:
+  `launchctl kickstart -k gui/$(id -u)/com.example.local-omy.receiver`.
+- `KeepAlive` lo rilancia se si chiude. Se la configurazione è sbagliata (token assente,
+  o permessi diversi da 600) esce con errore nel log e launchd ritenta ogni ~10 s.
 
 ### Esposizione sul tailnet
 
-```bash
-tailscale serve --bg http://127.0.0.1:8787
-tailscale serve status
-```
-
-L'URL da mettere nell'app è `https://<nome-mac>.<tailnet>.ts.net`, per esempio
+`omy setup fix tailscale` esegue `tailscale serve --bg http://127.0.0.1:8787`. L'URL da mettere nell'app è `https://<nome-mac>.<tailnet>.ts.net`, per esempio
 `https://mio-mac.tail1234.ts.net`. **Non usare `tailscale funnel`**:
 renderebbe il servizio pubblico su Internet. `serve` lo rende visibile solo ai
 dispositivi del tuo tailnet.
@@ -96,15 +116,8 @@ dell'app installata da AltStore, che aggiunge un suffisso al bundle id:
 - `status` riporta `needs_reopen: true` finché sul Mac non arriva un segmento iniziato dopo
   l'installazione.
 
-Installalo **dopo** il primo `omy iphone install`:
-
-```bash
-PLIST=~/Library/LaunchAgents/com.example.local-omy.periodic.plist
-sed -e "s|__UV__|$(command -v uv)|" -e "s|__MAC_DIR__|$PWD|g" -e "s|__HOME__|$HOME|g" \
-    -e "s|__PATH__|$PATH|" launchd/com.example.local-omy.periodic.plist > "$PLIST"
-launchctl bootstrap gui/$(id -u) "$PLIST"
-tail -f ~/Library/Logs/local-omy-periodic.log
-```
+Installalo **dopo** il primo `omy iphone install`, con `omy setup fix periodic` o dalla
+scheda Setup. Log in `~/Library/Logs/local-omy-periodic.log`.
 
 ## Trascrizione locale
 

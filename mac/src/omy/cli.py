@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import date, datetime
 
-from omy import iphone, transcribe
+from omy import iphone, macsetup, status, transcribe
 
 
 def periodic() -> dict:
@@ -41,6 +41,7 @@ def main() -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("serve", help="run the segment receiver (same as omy-receiver)")
+    sub.add_parser("status", help="receiver, tailscale, archive, iPhone, transcripts")
 
     ip = sub.add_parser("iphone", help="install and renew the iPhone app").add_subparsers(dest="action", required=True)
     ip.add_parser("status", help="profile expiry and device")
@@ -50,7 +51,11 @@ def main() -> int:
     renew.add_argument("--force", action="store_true", help="reinstall regardless of expiry and time of day")
 
     setup = sub.add_parser("setup", help="prepare this Mac").add_subparsers(dest="action", required=True)
-    setup.add_parser("models", help="download the whisper and VAD models (checksummed)")
+    setup.add_parser("check", help="checklist of what this Mac needs")
+    fix = setup.add_parser("fix", help="fix one checklist item")
+    fix.add_argument("item", choices=["brew", "token", *macsetup.AGENTS, "tailscale", "models", "iphone"])
+    setup.add_parser("token", help="print the receiver token (to paste into the iPhone app)")
+    setup.add_parser("models", help="download the whisper and VAD models (same as fix models)")
 
     tr = sub.add_parser("transcribe", help="transcribe closed sessions")
     which = tr.add_mutually_exclusive_group(required=True)
@@ -77,14 +82,23 @@ def main() -> int:
                 "install": lambda: iphone.install(iphone.APP if args.no_build else None),
                 "renew": lambda: iphone.renew(force=args.force),
             }[args.action]()
+        elif args.cmd == "status":
+            result = status.status()
         elif args.cmd == "setup":
-            result = transcribe.download_models()
+            if args.action == "check":
+                result = {"checks": macsetup.checks()}
+            elif args.action == "fix":
+                result = macsetup.fix(args.item)
+            elif args.action == "token":
+                result = {"token": macsetup.read_token()}
+            else:
+                result = transcribe.download_models()
         elif args.cmd == "transcribe":
             days = [args.day] if args.day else transcribe.pending_days()
             result = transcribe.transcribe(days, force=args.force)
         else:
             result = periodic()
-    except (iphone.IphoneError, transcribe.TranscribeError) as e:
+    except (iphone.IphoneError, transcribe.TranscribeError, macsetup.SetupError) as e:
         if args.json:
             print(json.dumps({"error": str(e)}))
         else:

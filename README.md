@@ -15,7 +15,8 @@ ridotto all'osso. Grazie a kbdevs per il lavoro di base sul BLE.
 |---|---|
 | `iphone/src/` | App Flutter (solo iOS): `lib/`, `ios/`, `pubspec.yaml` |
 | `iphone/attic/` | Codice fuori dal build, tenuto per una v2 (sync della scheda SD) |
-| `mac/src/` | Mac: ricevitore (FastAPI), CLI `omy` (installazione iPhone, trascrizione), strumenti di analisi |
+| `mac/src/` | Mac: ricevitore (FastAPI), CLI `omy` (setup, installazione iPhone, trascrizione), strumenti di analisi |
+| `mac/src/app/` | App per Mac (SwiftUI, barra dei menu): interfaccia grafica sopra `omy` |
 | `iphone/build/`, `mac/build/` | Artefatti finali (ignorati da git) |
 
 ## Protocollo audio BLE del ciondolo
