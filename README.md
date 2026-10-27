@@ -126,6 +126,50 @@ ma non è il MAC address. `end` è l'inizio più l'offset dell'ultimo record.
 Il test `test/segment_test.dart` controlla il layout byte per byte e confronta lo
 scrittore Dart con `mac/tests/fixtures/sample.bin`, letto anche dai test Python.
 
+## Upload al Mac
+
+Il Mac è raggiungibile via Tailscale, con `tailscale serve` che fa da terminazione HTTPS
+(`https://<host>.<tailnet>.ts.net`). Il certificato è valido, quindi non servono eccezioni
+ATS. Sull'iPhone la VPN Tailscale deve essere attiva: se non lo è, l'upload fallisce e i
+segmenti restano in coda.
+
+```
+POST /v1/segments/<id>
+Authorization: Bearer <token>
+Content-Type: application/octet-stream
+X-Segment-Id: <id>
+X-Sha256: <sha256 del .bin, esadecimale minuscolo>
+X-Segment-Meta: <.json del segmento, base64url>
+<corpo: il .bin grezzo>
+```
+
+| Risposta | Significato | Il telefono… |
+|---|---|---|
+| `200 {"id", "sha256", "status": "stored"\|"duplicate"}` | salvato (o già presente identico) | cancella il segmento **solo** se `sha256` coincide |
+| `400` | richiesta non valida (id, header, hash del corpo) | lo tiene, riprova con backoff |
+| `401` | token errato | lo tiene, riprova con backoff |
+| `409` | stesso id già presente con hash diverso | lo tiene: serve un intervento manuale |
+| `413` | corpo troppo grande | lo tiene |
+
+**Quando prova:**
+- alla chiusura di ogni segmento;
+- al ritorno in foreground;
+- con un timer da 30 s, ma solo dopo che è scaduto il backoff (30 s, 1, 2, 4… fino a
+  30 min, azzerato al primo successo).
+
+Un errore ferma il giro: il segmento successivo aspetta il prossimo tentativo, così l'ordine
+resta cronologico. Il token sta nel Keychain con accessibilità
+`first_unlock_this_device`: è leggibile anche a telefono bloccato, purché sia stato
+sbloccato una volta dopo l'accensione.
+
+**In background su iOS:** non c'è nessun task di background dedicato (BGTaskScheduler).
+Gli upload partono solo mentre l'app è sveglia:
+- in pratica sempre, finché il ciondolo è connesso e manda audio (il segmento si chiude
+  ogni 5 minuti e fa partire l'upload);
+- a ciondolo disconnesso e app in background, iOS sospende l'app dopo pochi secondi, e
+  timer e tentativi si fermano finché un evento BLE (riconnessione) non la risveglia o
+  finché non la riapri.
+
 ## iOS: cosa succede davvero in background
 
 `Info.plist` dichiara solo `UIBackgroundModes = bluetooth-central`.
