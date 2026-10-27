@@ -123,9 +123,6 @@ qualche decina di ms di jitter. Per l'ordine e i buchi fa fede l'indice pacchett
 `device_id` è l'identificatore che iOS assegna al ciondolo. È stabile su questo iPhone,
 ma non è il MAC address. `end` è l'inizio più l'offset dell'ultimo record.
 
-Il test `test/segment_test.dart` controlla il layout byte per byte e confronta lo
-scrittore Dart con `mac/tests/fixtures/sample.bin`, letto anche dai test Python.
-
 ## Upload al Mac
 
 Il Mac è raggiungibile via Tailscale, con `tailscale serve` che fa da terminazione HTTPS

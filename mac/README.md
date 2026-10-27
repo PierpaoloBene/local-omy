@@ -11,8 +11,7 @@ Ascolta **solo su 127.0.0.1**: la rete lo raggiunge esclusivamente tramite
 
 ```bash
 cd mac
-uv sync                                   # dipendenze del server
-uv run --all-groups pytest                # opzionale: test
+uv sync
 
 # Token: 32 byte casuali, file leggibile solo da te
 mkdir -p ~/.config/local-omy && chmod 700 ~/.config/local-omy
@@ -92,17 +91,16 @@ Poi:
 
 ## Analisi: `tools/inspect_segment.py`
 
-Serve libopus (`brew install opus`). Il flag `--group tools` aggiunge opuslib all'ambiente:
-un `uv sync` semplice la rimuove, perché non fa parte delle dipendenze del server.
+Serve libopus (`brew install opus`).
 
 ```bash
 # Un segmento: report dei pacchetti mancanti + WAV 16 kHz mono accanto al .bin
-uv run --group tools tools/inspect_segment.py ~/OmiArchive/raw/audio/2026-10-27/20261027T081530Z-3fa2c91b.bin
-uv run --group tools tools/inspect_segment.py SEG.bin --wav /tmp/out.wav
-uv run --group tools tools/inspect_segment.py SEG.bin --no-wav
+uv run tools/inspect_segment.py ~/OmiArchive/raw/audio/2026-10-27/20261027T081530Z-3fa2c91b.bin
+uv run tools/inspect_segment.py SEG.bin --wav /tmp/out.wav
+uv run tools/inspect_segment.py SEG.bin --no-wav
 
 # Report di un'intera giornata
-uv run --group tools tools/inspect_segment.py --day 2026-10-27
+uv run tools/inspect_segment.py --day 2026-10-27
 ```
 
 Come legge i dati:
@@ -119,14 +117,3 @@ Come legge i dati:
   consecutivi** (rotazione, distacco < 2 s). Un distacco più lungo, o un cambio di
   ciondolo, viene riportato come **tempo non registrato**: è audio finito sulla SD del
   ciondolo o mai registrato, non un pacchetto perso (vedi il README principale).
-
-## Test
-
-```bash
-uv run --all-groups pytest
-```
-
-`tests/fixtures/sample.bin` è prodotto dallo scrittore Dart (`test/segment_test.dart`):
-se cambia il formato, lo rigenera `UPDATE_FIXTURE=1 flutter test` dalla radice del repo,
-e i due lati restano allineati. I test di `test_inspect.py` codificano un tono con
-libopus vero e vengono saltati se libopus non è installata.
