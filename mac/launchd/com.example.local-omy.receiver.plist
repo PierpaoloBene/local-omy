@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: __UV__, __MAC_DIR__ and __HOME__ are filled in by the install
+     command in mac/README.md. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.example.local-omy.receiver</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__UV__</string>
+		<string>run</string>
+		<string>--frozen</string>
+		<string>--no-dev</string>
+		<string>--project</string>
+		<string>__MAC_DIR__</string>
+		<string>omy-receiver</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__MAC_DIR__</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/local-omy-receiver.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/local-omy-receiver.log</string>
+</dict>
+</plist>
