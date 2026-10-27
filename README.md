@@ -1,121 +1,102 @@
-# Omi Local (Omibutfree)
+# local-omy
 
-<div align="center">
+Registratore minimo per il ciondolo [Omi](https://github.com/BasedHardware/omi).
+Un ingresso: l'audio del ciondolo via BLE. Un'uscita: file audio grezzi sul Mac di casa.
+Se il Mac non è raggiungibile i file restano sull'iPhone e partono appena torna raggiungibile.
 
-![Omi Local](assets/icon.png)
+Niente trascrizione, niente LLM, niente decodifica sul telefono.
 
-**The Open Source, Privacy-First Companion for Omi Devices.**
+Fork di [kbdevs/omibutfree](https://github.com/kbdevs/omibutfree) (licenza MIT),
+ridotto all'osso. Grazie a kbdevs per il lavoro di base sul BLE.
 
-[![Flutter](https://img.shields.io/badge/Flutter-3.x-blue.svg)](https://flutter.dev)
-[![Platform](https://img.shields.io/badge/Platform-iOS-black.svg)]()
-[![License](https://img.shields.io/badge/License-MIT-green.svg)]()
-[![Version](https://img.shields.io/badge/Version-2.1.0-purple.svg)]()
+## Struttura
 
-[Features](#features) • [Installation](#installation) • [Architecture](#architecture) • [Roadmap](#roadmap)
+| Percorso | Cosa |
+|---|---|
+| `lib/` | App Flutter (solo iOS) |
+| `mac/` | Ricevitore sul Mac (Python, FastAPI) e strumenti di analisi |
+| `attic/` | Codice fuori dal build, tenuto per una v2 (sync della scheda SD) |
 
-</div>
+## Protocollo audio BLE del ciondolo
 
----
+Verificato sul firmware ufficiale: `omi/firmware/omi/src/lib/core/transport.c`
+(BasedHardware/omi, commit `1aee0763e4`, 2026-08-05).
 
-## 🚀 Overview
+| UUID | Cosa |
+|---|---|
+| `19b10000-e8f2-537e-4f6c-d104768a1214` | servizio Omi |
+| `19b10001-…` | stream audio (notify) |
+| `19b10002-…` | codec (read): 1 = pcm8, 20 = opus, 21 = opusFS320 |
+| `180f` / `2a19` | batteria (read; notify se la characteristic lo supporta) |
 
-**Omi Local** is a fully functioning, self-hosted alternative to the official Omi app. It is designed for users who want full control over their data, zero monthly subscriptions, and a powerful local-first AI experience.
+Il firmware attuale usa solo il **codec 21**: Opus, 16 kHz mono, frame da 320 campioni
+(20 ms, 50 frame/s), al massimo 160 byte per frame.
 
-It connects directly to your Omi hardware (Friend/DevKit) via Bluetooth Low Energy (BLE) and processes audio entirely on your terms—whether that's using local Whisper models on your iPhone or your own private API keys for Cloud transcription.
+Ogni notifica audio è `[3 byte di header][payload]`. Da `push_to_gatt()`:
 
-## ✨ Features
+```c
+uint32_t id = packet_next_index++;   // static uint16_t, 0 al boot
+pusher_temp_data[0] = id & 0xFF;
+pusher_temp_data[1] = (id >> 8) & 0xFF;
+pusher_temp_data[2] = index;         // frammento dentro lo stesso frame codec
+```
 
-### 🔒 Privacy & Sovereignty
+- **Byte 0-1: indice pacchetto, u16 little-endian.** Aumenta di 1 a ogni *notifica*, non
+  a ogni frame. A 50 notifiche/s ricomincia da 0 ogni ~21,8 minuti. Si azzera solo al
+  riavvio del ciondolo, non alla riconnessione.
+- **Byte 2: indice di frammento.** Se un frame codec supera `MTU − 3` byte viene spezzato in
+  più notifiche numerate 0, 1, 2… iOS negozia l'MTU da solo (di solito tra 135 e 255
+  byte), quindi i frame più grandi possono arrivare spezzati. Chi decodifica deve riunire
+  i frammenti consecutivi.
 
-- **100% Local Storage**: All memories, tasks, and conversations live in a SQLite database on your device.
-- **Your Keys, Your Model**: Bring your own OpenAI/Deepgram keys. No middleman servers. Deepgram gives **$200 free credit** on signup!
-- **Offline Capable**: Use local Whisper models to transcribe audio without an internet connection.
-- **Export All Data**: Export your entire database as JSON anytime.
-- **iCloud Backup**: Optional sync across your devices.
+### Cosa misura (e cosa no) un buco negli indici
 
-### 🧠 Advanced AI
+- Quando il ciondolo **non è connesso** l'audio va sulla scheda SD (se presente) e
+  l'indice **non avanza**. Una disconnessione appare quindi come un buco di *tempo*, non
+  di indice. Quell'audio è sulla SD, recuperabile in una v2.
+- Un buco di indice significa che una notifica inviata non è arrivata nel file: persa
+  in radio, dal sistema iOS o dall'app.
+- Perdite che l'indice **non** vede: ring buffer del firmware pieno (il frame viene
+  scartato prima di ricevere un indice), oppure ciondolo connesso ma notifiche non ancora
+  sottoscritte (il frame viene scartato senza indice).
 
-- **Memories**: Automatically extracts important facts. Edit or add memories manually by selecting text.
-- **Actionable Tasks**: Detects promises and to-dos with scheduled local notifications.
-- **Hold-to-Ask**: Hold the Omi button to chat with your AI assistant in real-time.
+## iOS: cosa succede davvero in background
 
-### ⚡️ Modern Hardware Integration
+`Info.plist` dichiara solo `UIBackgroundModes = bluetooth-central`.
 
-- **Direct BLE Connection**: Low-latency audio streaming from Omi devices.
-- **Battery Notifications**: Alerts at 50% and 20% battery levels.
-- **Device Management**: View battery life, adjust mic gain, and LED dimming.
+- **App in background, connessa:** iOS consegna le notifiche BLE e l'app gira mentre le
+  riceve. L'audio continua a essere registrato.
+- **Riconnessione:** `connect(autoConnect: true)` di flutter_blue_plus crea su iOS una
+  richiesta di connessione in attesa che non scade mai. Il plugin la ripete dopo ogni
+  disconnessione e quando il Bluetooth si riaccende. Funziona anche in background: quando
+  il ciondolo torna nel raggio, iOS riconnette e sveglia l'app.
+- **App chiusa dal sistema** (memoria): con `FlutterBluePlus.setOptions(restoreState: true)`
+  iOS rilancia l'app in background al primo evento BLE (state restoration di CoreBluetooth).
+- **App chiusa da te** (swipe nel multitasking): iOS **non** la rilancia più finché non la
+  riapri a mano. Non c'è rimedio.
+- **Da verificare sul telefono:** Flutter 3.47 ha migrato il progetto al ciclo di vita
+  UIScene. In un rilancio in background non c'è nessuna scena. Bisogna verificare che il
+  motore Dart parta lo stesso (prova: chiudi l'app con molta memoria occupata, allontana e
+  riavvicina il ciondolo, controlla che compaiano nuovi segmenti).
 
-### 🎨 Premium Experience
+## Build e installazione
 
-- **Dark Mode UI**: Polished design with smooth animations.
-- **Conversation Search**: Find past conversations instantly.
-- **Duration Display**: See how long each conversation lasted.
-- **Statistics Dashboard**: Track your usage with conversation counts, word totals, and more.
-- **Notification Controls**: Toggle every notification type individually.
+Requisiti: Flutter ≥ 3.47, Xcode, CocoaPods, AltServer.
 
-## 🛠 Tech Stack
+```bash
+flutter pub get
+flutter build ipa --no-codesign   # oppure: flutter build ios --no-codesign
+```
 
-- **Framework**: Flutter (Dart)
-- **Database**: SQLite (sqflite)
-- **Bluetooth**: Flutter Blue Plus
-- **Audio Codec**: Opus (Custom decoder)
-- **Local AI**: Sherpa-ONNX (Streaming), Whisper (Batch)
-- **Cloud AI**: Deepgram (STT), OpenAI (LLM)
+Il bundle id è `com.example.local-omy`. Nel progetto non c'è un team di sviluppo
+impostato: firma AltServer. Non ci sono entitlement (quelli iCloud dell'originale non
+funzionano con un account gratuito).
 
-## 📦 Installation
+**Non tenere il repo in iCloud Drive.** I metadati estesi che iCloud aggiunge ai file
+("resource fork, Finder information, or similar detritus not allowed") fanno fallire la
+firma di `Flutter.framework`. L'originale aveva uno script `fix_build.sh` che lanciava
+`sudo xattr -rc` sull'SDK di Flutter per aggirarlo: è stato rimosso.
 
-### Prerequisites
+## Licenza
 
-- macOS with Xcode installed
-- iPhone (Developer Mode enabled)
-- Omi Device (Friend or DevKit)
-
-### Quick Start
-
-1. **Clone the repo**
-
-   ```bash
-   git clone https://github.com/kbdevs/omibutfree.git
-   cd omibutfree
-   ```
-
-2. **Install Dependencies**
-
-   ```bash
-   flutter pub get
-   cd ios && pod install && cd ..
-   ```
-
-3. **Run on Device**
-   Connect your iPhone via USB.
-
-   ```bash
-   flutter run --release
-   ```
-
-4. **Configure**
-   Go to **Settings** in the app to add your OpenAI API Key and choose your transcription model.
-
-## 🗺 Roadmap
-
-- [x] **Core**: BLE Audio, Live Transcription, Database
-- [x] **AI**: Memories, Tasks, Local Notifications
-- [x] **Hardware**: Battery, Haptics, Device Info
-- [x] **v2.1.0**: Edit Memories, Search, Export, Stats, Notification Settings
-- [ ] **Integrations**: Google Calendar, Notion, Apple Reminders
-- [ ] **Voice**: Speaker Diarization (Train to recognize your voice)
-- [ ] **Sync**: Robust SD Card file synchronization
-
-## 🤝 Contributing
-
-This project is open source and free forever. We welcome contributions!
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
----
-
-**Built with ❤️ by kbdevs**
+MIT, come l'originale.
