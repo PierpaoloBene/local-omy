@@ -10,79 +10,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-import wave
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from omy.audio import decode_to_wav
 from omy_receiver.segment import (
-    FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE, Record, Segment, SegmentError, analyze, codec_frames,
-    index_step, parse, plausible_missing,
+    FRAME_MS, Record, Segment, SegmentError, analyze, index_step, parse, plausible_missing,
 )
 
 LOCAL_TZ = ZoneInfo("Europe/Rome")
 # Below this, the gap between two segments is a rotation, not a disconnection.
 ROTATION_GAP = timedelta(seconds=2)
-
-
-def load_opus_decoder(codec: int):
-    if codec not in FRAME_SAMPLES:
-        raise SystemExit(f"codec {codec} is not Opus, cannot decode")
-    # Homebrew on Apple Silicon installs outside the default dyld search path,
-    # where ctypes.util.find_library (used by opuslib) doesn't look.
-    os.environ.setdefault("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib:/usr/local/lib:/usr/lib")
-    try:
-        import opuslib
-    except Exception as e:  # noqa: BLE001 - opuslib raises plain Exception if libopus is missing
-        raise SystemExit(f"cannot load opuslib/libopus ({e}); run: brew install opus")
-    return opuslib.Decoder(SAMPLE_RATE, 1)
-
-
-def decode_to_wav(seg: Segment, out: Path, fill_gaps: bool = True) -> tuple[int, int]:
-    """Decode to 16 kHz mono PCM16 WAV. Missing notifications (counted gaps) and
-    broken frames are filled with Opus packet-loss concealment so the timeline
-    stays aligned. Returns (decoded frames, concealed frames)."""
-    dec = load_opus_decoder(seg.codec)
-    samples = FRAME_SAMPLES[seg.codec]
-    frame_ms = FRAME_MS[seg.codec]
-    decoded = concealed = 0
-
-    # Loss before each frame start, keyed by the record that starts it.
-    loss_before: dict[int, int] = {}
-    if fill_gaps:
-        for prev, cur in zip(seg.records, seg.records[1:]):
-            m = plausible_missing(prev, cur, frame_ms)
-            if m:
-                loss_before[id(cur)] = m
-    starts = [r for r in seg.records if r.fragment == 0]
-
-    with wave.open(str(out), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(SAMPLE_RATE)
-
-        def conceal(n: int) -> None:
-            nonlocal concealed
-            for _ in range(n):
-                w.writeframes(dec.decode(b"", samples))
-                concealed += 1
-
-        start_iter = iter(starts)
-        for frame in codec_frames(seg):
-            if frame is None:
-                conceal(1)
-                continue
-            r: Record | None = next(start_iter, None)
-            if r is not None:
-                conceal(loss_before.get(id(r), 0))
-            try:
-                w.writeframes(dec.decode(frame, samples * 6))
-                decoded += 1
-            except Exception:  # noqa: BLE001 - opuslib.OpusError on corrupt/truncated frame
-                conceal(1)
-    return decoded, concealed
 
 
 def utc(ms: int) -> datetime:

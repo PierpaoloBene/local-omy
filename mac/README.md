@@ -106,6 +106,50 @@ launchctl bootstrap gui/$(id -u) "$PLIST"
 tail -f ~/Library/Logs/local-omy-periodic.log
 ```
 
+## Trascrizione locale
+
+Gira tutta sul Mac con [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (`brew install
+whisper-cpp`): modello `large-v3-turbo`, sulla GPU con Metal. Niente esce dal Mac.
+
+```bash
+uv run omy setup models               # una volta: ~1,6 GB in ~/OmiArchive/models, sha256 verificato
+uv run omy transcribe --pending       # sessioni chiuse non ancora trascritte (ultimi 7 giorni)
+uv run omy transcribe --day 2026-10-27 [--force]
+```
+
+**Sessioni:** il telefono spezza l'audio in segmenti da 5 minuti, ma è solo trasporto.
+- Segmenti consecutivi dello stesso ciondolo, separati da meno di 2 s, sono una
+  **sessione**: un tratto continuo di registrazione. Il raggruppamento usa solo i
+  sidecar `.json`.
+- Una sessione appartiene al giorno (ora di Roma) in cui inizia.
+- È **chiusa** quando non arrivano nuovi segmenti da 10 minuti. Solo le sessioni chiuse
+  vengono trascritte.
+
+**Come trascrive:**
+1. L'audio della sessione viene decodificato in blocchi da ~30 minuti, tagliati ai
+   confini dei segmenti: così whisper non deve caricare ore di audio. Raramente una
+   parola si spezza tra due blocchi.
+2. I pacchetti persi diventano PLC di Opus, quindi la linea del tempo resta esatta: ogni
+   frame vale 20 ms.
+3. Il **VAD Silero** di whisper.cpp salta i silenzi. Questo riduce anche le frasi inventate
+   da Whisper sul rumore.
+4. **Nessun contesto fra una finestra e l'altra** (`-mc 0`): elimina i loop di ripetizione
+   (es. "Grazie a tutti." ripetuto per mezzo minuto).
+5. **Lingua rilevata in automatico** per ogni blocco, sui primi 30 s di parlato, e salvata in
+   ogni frase. Forzare l'italiano faceva tradurre male il parlato inglese. Limite: un blocco
+   che passa da una lingua all'altra viene trascritto tutto nella prima.
+6. I WAV temporanei stanno in `~/OmiArchive/cache/` e vengono cancellati subito dopo l'uso.
+
+**Output** (derivato: si rigenera con `--force`, il raw non viene mai toccato):
+
+| File | Cosa |
+|---|---|
+| `~/OmiArchive/transcripts/AAAA-MM-GG/<sessione>.json` | frasi con inizio/fine in UTC, segmenti d'origine, modello |
+| `~/OmiArchive/transcripts/AAAA-MM-GG.md` | la giornata da leggere: una sezione per sessione, un paragrafo dopo ogni silenzio > 2 min |
+
+Il job `periodic` trascrive ogni ora le sessioni appena chiuse. Un lock impedisce che due
+trascrizioni girino insieme.
+
 ## Configurazione (variabili d'ambiente)
 
 | Variabile | Default | |

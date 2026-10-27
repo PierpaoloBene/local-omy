@@ -4,7 +4,7 @@ Registratore minimo per il ciondolo [Omi](https://github.com/BasedHardware/omi).
 Un ingresso: l'audio del ciondolo via BLE. Un'uscita: file audio grezzi sul Mac di casa.
 Se il Mac non è raggiungibile i file restano sull'iPhone e partono appena torna raggiungibile.
 
-Niente trascrizione, niente LLM, niente decodifica sul telefono.
+Sul telefono niente decodifica né trascrizione. Sul Mac la trascrizione è locale (whisper.cpp).
 
 Fork di [kbdevs/omibutfree](https://github.com/kbdevs/omibutfree) (licenza MIT),
 ridotto all'osso. Grazie a kbdevs per il lavoro di base sul BLE.
@@ -15,7 +15,7 @@ ridotto all'osso. Grazie a kbdevs per il lavoro di base sul BLE.
 |---|---|
 | `iphone/src/` | App Flutter (solo iOS): `lib/`, `ios/`, `pubspec.yaml` |
 | `iphone/attic/` | Codice fuori dal build, tenuto per una v2 (sync della scheda SD) |
-| `mac/src/` | Ricevitore sul Mac (Python, FastAPI) e strumenti di analisi |
+| `mac/src/` | Mac: ricevitore (FastAPI), CLI `omy` (installazione iPhone, trascrizione), strumenti di analisi |
 | `iphone/build/`, `mac/build/` | Artefatti finali (ignorati da git) |
 
 ## Protocollo audio BLE del ciondolo
