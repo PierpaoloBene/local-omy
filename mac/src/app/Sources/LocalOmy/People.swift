@@ -33,11 +33,11 @@ struct DayVoices: Decodable {
 
         /// "room", "meeting" or "media": set by hand, or what the Mac found.
         var type: String { source ?? (kind == "media" ? "media" : kind == "call" ? "meeting" : "room") }
-        /// Still to label: not a TV, and nobody yet.
+        /// Still to label: not a video, and nobody yet.
         var todo: Bool { person == nil && type != "media" }
         var typeLabel: String {
             switch type {
-            case "media": return app == nil || app == "TV" ? "TV o video" : "Media · \(app!)"
+            case "media": return app == nil || app == "Video" ? "Video" : "Video · \(app!)"
             case "meeting":
                 return app == "iPhone" ? "Chiamata" : app == nil || app == "Riunione" ? "Riunione online" : "Riunione · \(app!)"
             default: return "Di persona"
@@ -94,8 +94,18 @@ final class PeopleModel {
         change("Tipo", ["speakers", "kind", session, source] + labels, day: day)
     }
 
-    func renamePerson(_ id: String, to name: String, day: String?) {
-        change("Rinomina", ["people", "rename", id, name], day: day)
+    /// New name and, if given, where all the voices come from (room,
+    /// meeting; media: it was a video, the name and voice print go). The
+    /// kind first: a rename that merges changes the id.
+    func edit(_ p: PeopleList.Person, name: String, kind: String?, day: String?) {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        Task {
+            await run("Modifica") {
+                if let kind { _ = try await Omy.run(["people", "kind", p.id, kind]) }
+                if kind != "media", !name.isEmpty, name != p.name { _ = try await Omy.run(["people", "rename", p.id, name]) }
+            }
+            await load(day: day)
+        }
     }
 
     func delete(_ id: String, day: String?) {
@@ -167,8 +177,7 @@ private struct KnownPeople: View {
     let people: PeopleModel
     let day: String?
     @State private var deleting: PeopleList.Person?
-    @State private var editing: String?
-    @State private var newName = ""
+    @State private var editing: PeopleList.Person?
 
     var body: some View {
         List {
@@ -182,23 +191,14 @@ private struct KnownPeople: View {
                 }
                 ForEach(people.people?.people ?? []) { p in
                     HStack {
-                        if editing == p.id {
-                            TextField("Nome", text: $newName)
-                                .onSubmit {
-                                    people.renamePerson(p.id, to: newName, day: day)
-                                    editing = nil
-                                }
-                                .onExitCommand { editing = nil }
-                        } else {
-                            VStack(alignment: .leading) {
-                                Text(p.name)
-                                Text(heard(p.minutes, p.sessions) + (p.lastSeen.map { ", ultima \(longDay($0))" } ?? ""))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
+                        VStack(alignment: .leading) {
+                            Text(p.name)
+                            Text(heard(p.minutes, p.sessions) + (p.lastSeen.map { ", ultima \(longDay($0))" } ?? ""))
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Menu {
-                            Button("Rinomina") { newName = p.name; editing = p.id }
+                            Button("Modifica…") { editing = p }
                             Button("Elimina…", role: .destructive) { deleting = p }
                         } label: { Image(systemName: "ellipsis.circle") }
                             .menuStyle(.borderlessButton).fixedSize()
@@ -208,6 +208,9 @@ private struct KnownPeople: View {
                     Text("Nessuno: dai un nome a una voce qui accanto.").font(.caption).foregroundStyle(.secondary)
                 }
             }
+        }
+        .sheet(item: $editing) { p in
+            EditPerson(person: p) { name, kind in people.edit(p, name: name, kind: kind, day: day) }
         }
         .confirmationDialog(
             "Eliminare \(deleting?.name ?? "")?",
@@ -223,6 +226,43 @@ private struct KnownPeople: View {
 
     private func heard(_ minutes: Double, _ sessions: Int) -> String {
         "\(minutes < 1 ? "<1" : String(Int(minutes))) min in \(sessions) sessioni"
+    }
+}
+
+/// Name and kind of a person. The kind is left alone unless picked.
+private struct EditPerson: View {
+    let person: PeopleList.Person
+    let save: (String, String?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var kind = ""
+
+    var body: some View {
+        Form {
+            TextField("Nome", text: $name)
+            Picker("Tipo", selection: $kind) {
+                Text("Non cambiare").tag("")
+                Label("Di persona", systemImage: "person.fill").tag("room")
+                Label("Riunione online", systemImage: "video.fill").tag("meeting")
+                Label("Video", systemImage: "play.rectangle.fill").tag("media")
+            }
+            Text(kind == "media"
+                 ? "Era un video: tutte le sue voci diventano \"Video\", in ogni sessione, e non vengono più riconosciute. Si cancellano il nome e l'impronta vocale."
+                 : kind.isEmpty ? "Il tipo vale per tutte le sue voci." : "Tutte le sue voci prendono questo tipo.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding()
+        .frame(width: 380)
+        .onAppear { name = person.name }
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Annulla") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button(kind == "media" ? "È un video" : "Salva") {
+                    save(name, kind.isEmpty ? nil : kind)
+                    dismiss()
+                }
+            }
+        }
     }
 }
 
@@ -258,12 +298,14 @@ private struct DayVoicesList: View {
                                 Spacer()
                                 let unnamed = s.voices.filter { $0.person == nil }.map(\.label)
                                 if !unnamed.isEmpty {
-                                    Menu("Le voci senza nome…") {
-                                        Button("Sono TV o video") { people.setKind(s.session, unnamed, "media", day: day) }
-                                        Button("Sono in una riunione online") { people.setKind(s.session, unnamed, "meeting", day: day) }
-                                        Button("Sono di persona") { people.setKind(s.session, unnamed, "room", day: day) }
-                                        Divider()
-                                        Button("Come le ha riconosciute il Mac") { people.setKind(s.session, unnamed, "auto", day: day) }
+                                    Menu("Segna tutte come…") {
+                                        Section("Le \(unnamed.count) voci senza nome di questa sessione") {
+                                            Button("Video") { people.setKind(s.session, unnamed, "media", day: day) }
+                                            Button("Riunione online") { people.setKind(s.session, unnamed, "meeting", day: day) }
+                                            Button("Di persona") { people.setKind(s.session, unnamed, "room", day: day) }
+                                            Divider()
+                                            Button("Automatico") { people.setKind(s.session, unnamed, "auto", day: day) }
+                                        }
                                     }
                                     .menuStyle(.borderlessButton).fixedSize()
                                 }
@@ -311,11 +353,11 @@ private struct VoiceRow: View {
                     })) {
                         Label("Di persona", systemImage: "person.fill").tag("room")
                         Label("Riunione online", systemImage: "video.fill").tag("meeting")
-                        Label("TV o video", systemImage: "tv.fill").tag("media")
+                        Label("Video", systemImage: "play.rectangle.fill").tag("media")
                     }
                     .labelsHidden()
                     .fixedSize()
-                    .help("Da dove viene la voce. TV o video: nessun nome, nessuna impronta vocale.")
+                    .help("Da dove viene la voce. Video (o la TV): nessun nome, nessuna impronta vocale.")
                     Text("\(voice.typeLabel) · \(Int(voice.seconds)) s" + (voice.pinned ? " · nominata a mano" : voice.person != nil ? " · riconosciuta" : ""))
                         .font(.caption).foregroundStyle(.secondary)
                 }

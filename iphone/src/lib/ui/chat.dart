@@ -4,77 +4,210 @@ import '../api/mac_api.dart';
 import '../api/models.dart';
 import 'common.dart';
 
-/// One day like a Messages thread: you on the right, the others on the
-/// left, a time and place where a session starts or moves. With [focus] (a
-/// paragraph id, from a search) it scrolls there and highlights [highlight].
-class DayPage extends StatefulWidget {
+/// Conversations like Messages threads, one per page: you on the right,
+/// the others on the left. Swipe right for the one before, left for the one
+/// after. With [focus] (a paragraph id, from a search) the first page opens
+/// there, with [highlight] marked.
+class ConversationViewer extends StatefulWidget {
   final MacApi api;
-  final String day;
-  final String? focus;
-  final String? highlight;
-  final String? previousPageTitle;
-  const DayPage({super.key, required this.api, required this.day, this.focus, this.highlight, this.previousPageTitle});
+
+  /// Newest first, as in the timeline.
+  final List<Conversation> conversations;
+  final int initial;
+  final String? focus, highlight;
+  final String previousPageTitle;
+  const ConversationViewer({
+    super.key,
+    required this.api,
+    required this.conversations,
+    this.initial = 0,
+    this.focus,
+    this.highlight,
+    required this.previousPageTitle,
+  });
+
+  static Future<void> open(
+    BuildContext context,
+    MacApi api,
+    List<Conversation> conversations,
+    int initial, {
+    required String previousPageTitle,
+    String? focus,
+    String? highlight,
+  }) => Navigator.of(context).push(
+    CupertinoPageRoute(
+      builder: (_) => ConversationViewer(
+        api: api,
+        conversations: conversations,
+        initial: initial,
+        focus: focus,
+        highlight: highlight,
+        previousPageTitle: previousPageTitle,
+      ),
+    ),
+  );
 
   @override
-  State<DayPage> createState() => _DayPageState();
+  State<ConversationViewer> createState() => _ConversationViewerState();
 }
 
-class _DayPageState extends State<DayPage> {
-  Day? _day;
-  Object? _error;
-  final _focusKey = GlobalKey();
+class _ConversationViewerState extends State<ConversationViewer> {
+  late final _pages = PageController(initialPage: widget.initial);
+  late int _index = widget.initial;
+  final _days = <String, Future<Day>>{};
+
+  Future<Day> _day(String day) => _days.putIfAbsent(day, () => widget.api.day(day));
 
   @override
-  void initState() {
-    super.initState();
-    _load();
+  void dispose() {
+    _pages.dispose();
+    super.dispose();
   }
 
-  Future<void> _load() async {
-    setState(() => _error = null);
-    try {
-      final d = await widget.api.day(widget.day);
-      if (!mounted) return;
-      setState(() => _day = d);
-      if (widget.focus != null) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          final c = _focusKey.currentContext;
-          if (c != null) Scrollable.ensureVisible(c, alignment: 0.35, duration: const Duration(milliseconds: 350));
-        });
-      }
-    } on MacError catch (e) {
-      if (mounted) setState(() => _error = e);
-    }
+  void _go(int i) => _pages.animateToPage(i, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.conversations[_index];
+    return CupertinoPageScaffold(
+      backgroundColor: CupertinoColors.systemGroupedBackground,
+      navigationBar: CupertinoNavigationBar(
+        previousPageTitle: widget.previousPageTitle,
+        middle: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('${longDay(c.day)} ${hm(c.start)}', style: Ios.headline(context).copyWith(fontSize: 16)),
+              if (c.app != null || c.place != null) Text(c.app ?? c.place!, style: Ios.caption(context), maxLines: 1),
+            ],
+          ),
+        ),
+        trailing: widget.conversations.length < 2
+            ? null
+            : Text(
+                '${widget.conversations.length - _index}/${widget.conversations.length}',
+                style: Ios.footnote(context),
+              ),
+      ),
+      child: PageView.builder(
+        controller: _pages,
+        // Newest first: swiping right goes back in time, like Photos.
+        reverse: true,
+        itemCount: widget.conversations.length,
+        onPageChanged: (i) => setState(() => _index = i),
+        itemBuilder: (context, i) => _Thread(
+          key: ValueKey(widget.conversations[i].session),
+          conversation: widget.conversations[i],
+          day: _day(widget.conversations[i].day),
+          focus: i == widget.initial ? widget.focus : null,
+          highlight: widget.highlight,
+          earlier: i + 1 < widget.conversations.length ? widget.conversations[i + 1] : null,
+          later: i > 0 ? widget.conversations[i - 1] : null,
+          onEarlier: () => _go(i + 1),
+          onLater: () => _go(i - 1),
+        ),
+      ),
+    );
+  }
+}
+
+/// One conversation: who was there, then the bubbles; at the end, the way
+/// to the one before and the one after.
+class _Thread extends StatefulWidget {
+  final Conversation conversation;
+  final Future<Day> day;
+  final String? focus, highlight;
+  final Conversation? earlier, later;
+  final VoidCallback onEarlier, onLater;
+  const _Thread({
+    super.key,
+    required this.conversation,
+    required this.day,
+    this.focus,
+    this.highlight,
+    this.earlier,
+    this.later,
+    required this.onEarlier,
+    required this.onLater,
+  });
+
+  @override
+  State<_Thread> createState() => _ThreadState();
+}
+
+class _ThreadState extends State<_Thread> with AutomaticKeepAliveClientMixin {
+  final _focusKey = GlobalKey();
+  final _scroll = ScrollController();
+  bool _scrolled = false;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final d = _day;
-    return TabScaffold(
-      title: longDay(widget.day),
-      previousPageTitle: widget.previousPageTitle ?? 'Trascrizioni',
-      onRefresh: _load,
-      slivers: d == null
-          ? [LoadState(loading: _error == null, error: _error, onRetry: _load)]
-          : [
-              SliverToBoxAdapter(child: DaySummaryCard(summary: d.summary, detailed: true)),
-              // Not lazy, so a searched paragraph can be scrolled to.
-              SliverToBoxAdapter(child: Column(children: _thread(context, d))),
-            ],
+    super.build(context);
+    return FutureBuilder<Day>(
+      future: widget.day,
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return Center(child: Text('Il Mac non ha risposto: torna indietro e riprova.', style: Ios.subhead(context)));
+        }
+        if (!snap.hasData) return const Center(child: CupertinoActivityIndicator());
+        final paragraphs = [
+          for (final p in snap.data!.paragraphs)
+            if (p.session == widget.conversation.session) p,
+        ];
+        if (widget.focus != null && !_scrolled) {
+          _scrolled = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            final c = _focusKey.currentContext;
+            if (c != null) Scrollable.ensureVisible(c, alignment: 0.35, duration: const Duration(milliseconds: 350));
+          });
+        }
+        return CupertinoScrollbar(
+          controller: _scroll,
+          thumbVisibility: true,
+          thickness: 6,
+          thicknessWhileDragging: 10,
+          child: SingleChildScrollView(
+            controller: _scroll,
+            padding: EdgeInsets.only(top: 12, bottom: MediaQuery.paddingOf(context).bottom + 24),
+            child: Column(
+              children: [
+                _Who(conversation: widget.conversation),
+                ..._bubbles(paragraphs),
+                const SizedBox(height: 24),
+                _Neighbours(
+                  earlier: widget.earlier,
+                  later: widget.later,
+                  onEarlier: widget.onEarlier,
+                  onLater: widget.onLater,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
-  List<Widget> _thread(BuildContext context, Day d) {
+  List<Widget> _bubbles(List<Paragraph> paragraphs) {
     final out = <Widget>[];
-    String? session, place, speaker;
-    for (final p in d.paragraphs) {
+    String? place, speaker;
+    for (final p in paragraphs) {
       final label = p.place?.label;
-      if (p.session != session || (label != null && label != place)) {
+      if (label != null && label != place && place != null) {
         out.add(_SessionHeader(time: hm(p.start), place: label, named: p.place?.name != null));
-        session = p.session;
-        place = label;
         speaker = null;
       }
+      place = label ?? place;
       final focused = p.id == widget.focus;
       out.add(
         Bubble(
@@ -87,9 +220,82 @@ class _DayPageState extends State<DayPage> {
       );
       speaker = p.speaker;
     }
-    if (out.isEmpty)
-      out.add(const Padding(padding: EdgeInsets.all(32), child: Empty('Nessun paragrafo in questo giorno.')));
+    if (out.isEmpty) out.add(const Empty('Nessun paragrafo: forse la conversazione è stata trascritta di nuovo.'));
     return out;
+  }
+}
+
+/// Who spoke, and for how long.
+class _Who extends StatelessWidget {
+  final Conversation conversation;
+  const _Who({required this.conversation});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = conversation;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        children: [
+          Text(
+            [
+              '${hm(c.start)}–${hm(c.end)}',
+              duration(c.minutes),
+              if (c.place != null && c.app != null) c.place!,
+            ].join(' · '),
+            style: Ios.caption(context),
+          ),
+          if (c.participants.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              alignment: WrapAlignment.center,
+              children: [
+                for (final p in c.participants)
+                  Pill(
+                    '${p.name} · ${duration(p.minutes)}',
+                    leading: PersonAvatar(name: p.name, me: p.isMe, size: 22),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _Neighbours extends StatelessWidget {
+  final Conversation? earlier, later;
+  final VoidCallback onEarlier, onLater;
+  const _Neighbours({this.earlier, this.later, required this.onEarlier, required this.onLater});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget side(Conversation? c, bool before) => Expanded(
+      child: c == null
+          ? const SizedBox()
+          : CupertinoButton(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              onPressed: before ? onEarlier : onLater,
+              child: Column(
+                crossAxisAlignment: before ? CrossAxisAlignment.start : CrossAxisAlignment.end,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (before) const Icon(CupertinoIcons.chevron_back, size: 16),
+                      Text(before ? 'Prima' : 'Dopo'),
+                      if (!before) const Icon(CupertinoIcons.chevron_forward, size: 16),
+                    ],
+                  ),
+                  Text('${longDay(c.day)} ${hm(c.start)}', style: Ios.caption(context)),
+                ],
+              ),
+            ),
+    );
+    return Row(children: [side(earlier, true), side(later, false)]);
   }
 }
 
@@ -178,8 +384,6 @@ class Bubble extends StatelessWidget {
           Icon(
             p.via!.kind == 'call'
                 ? (p.via!.app == 'iPhone' ? CupertinoIcons.phone_fill : CupertinoIcons.videocam_fill)
-                : p.via!.app == 'TV'
-                ? CupertinoIcons.tv_fill
                 : CupertinoIcons.play_rectangle_fill,
             size: 11,
             color: Ios.caption(context).color,

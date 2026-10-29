@@ -74,7 +74,14 @@ def main() -> int:
         .add_subparsers(dest="action", required=True)
     ts.add_parser("list", help="the days with a summary, and what is waiting to be transcribed")
     ts.add_parser("day", help="the paragraphs of a day").add_argument("day", type=date.fromisoformat)
-    ts.add_parser("search", help="paragraphs whose text or speaker contains QUERY").add_argument("query")
+    tss = ts.add_parser("search", help="paragraphs whose text or speaker contains QUERY")
+    tss.add_argument("query")
+    tsc = ts.add_parser("conversations", help="the sessions with a person or of a type, newest first")
+    for x in (tss, tsc):
+        x.add_argument("--person", help="a person id, or me")
+        x.add_argument("--type", choices=review.TYPES)
+    tsc.add_argument("--day", type=date.fromisoformat, help="YYYY-MM-DD")
+    tsc.add_argument("--limit", type=int, default=review.CONVERSATIONS_LIMIT, help=f"at most {review.CONVERSATIONS_MAX}")
 
     voice = sub.add_parser("voice", help="your voice profile for diarization").add_subparsers(dest="action", required=True)
     voice.add_parser("enroll", help="build it from the P: lines of the clips in ~/OmiArchive/voices/enroll")
@@ -83,13 +90,14 @@ def main() -> int:
         .add_subparsers(dest="action", required=True)
     spl = sp.add_parser("list", help="voices of the sessions of a day, with what they said")
     spl.add_argument("--day", type=date.fromisoformat, required=True, help="YYYY-MM-DD (Europe/Rome)")
+    sp.add_parser("todo", help=f"sessions of the last {people.TODO_DAYS} recorded days with voices to label")
     spp = sp.add_parser("play", help="write a few seconds of a voice to a WAV")
     spr = sp.add_parser("rename", help="this voice is NAME, in this and the other sessions")
     for x in (spp, spr):
         x.add_argument("session")
         x.add_argument("label", help="the voice's label, as in speakers list")
     spr.add_argument("name")
-    spk = sp.add_parser("kind", help="where these voices come from: in the room, an online meeting, a TV or video")
+    spk = sp.add_parser("kind", help="where these voices come from: in the room, an online meeting, a video, a TV")
     spk.add_argument("session")
     spk.add_argument("source", choices=["room", "meeting", "media", "auto"])
     spk.add_argument("labels", nargs="+", help="the voices' labels, as in speakers list")
@@ -97,6 +105,9 @@ def main() -> int:
     pe.add_parser("list", help="you and the named people")
     per = pe.add_parser("rename", help="new name (same as another person: merged)")
     ped = pe.add_parser("delete", help="delete the voice print and the name")
+    pek = pe.add_parser("kind", help="where all their voices come from; media: it was a video, the name and print go")
+    pek.add_argument("id")
+    pek.add_argument("source", choices=["room", "meeting", "media", "auto"])
     for x in (per, ped):
         x.add_argument("id")
     per.add_argument("name")
@@ -161,13 +172,15 @@ def main() -> int:
             result = {
                 "list": review.list_days,
                 "day": lambda: review.day(args.day),
-                "search": lambda: review.search(args.query),
+                "search": lambda: review.search(args.query, args.person, args.type),
+                "conversations": lambda: review.conversations(args.person, args.type, args.limit, args.day),
             }[args.action]()
         elif args.cmd == "voice":
             result = enroll.enroll()
         elif args.cmd == "speakers":
             result = {
                 "list": lambda: people.list_day(args.day),
+                "todo": people.unlabeled,
                 "play": lambda: people.play(args.session, args.label),
                 "rename": lambda: people.rename(args.session, args.label, args.name),
                 "kind": lambda: people.set_source(args.session, args.labels, args.source),
@@ -193,6 +206,7 @@ def main() -> int:
                 "list": people.list_people,
                 "rename": lambda: people.rename_person(args.id, args.name),
                 "delete": lambda: people.delete_person(args.id),
+                "kind": lambda: people.set_person_source(args.id, args.source),
             }[args.action]()
         else:
             result = periodic()

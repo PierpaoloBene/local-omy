@@ -408,7 +408,8 @@ class TabScaffold extends StatelessWidget {
           if (onRefresh != null) CupertinoSliverRefreshControl(onRefresh: onRefresh),
           const SliverToBoxAdapter(child: SizedBox(height: 8)),
           ...slivers,
-          const SliverToBoxAdapter(child: SizedBox(height: 40)),
+          // Clear of the tab bar, which the content scrolls under.
+          SliverToBoxAdapter(child: SizedBox(height: 40 + MediaQuery.paddingOf(context).bottom)),
         ],
       ),
     );

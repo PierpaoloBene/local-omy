@@ -34,14 +34,40 @@ class MacApi {
 
   Future<DayList> days() async => DayList.fromJson(await _get('/v1/transcripts'));
   Future<Day> day(String day) async => Day.fromJson(await _get('/v1/transcripts/$day'));
-  Future<SearchResult> search(String q) async => SearchResult.fromJson(
-    jsonDecode(utf8.decode((await _request('POST', '/v1/search', body: {'q': q}, timeout: _read)).bodyBytes)),
+
+  /// Paragraphs with [q], only in the conversations with [person] and of [type].
+  Future<SearchResult> search(String q, {String? person, String? type}) async => SearchResult.fromJson(
+    jsonDecode(
+      utf8.decode(
+        (await _request(
+          'POST',
+          '/v1/search',
+          body: {'q': q, 'person': ?person, 'type': ?type},
+          timeout: _read,
+        )).bodyBytes,
+      ),
+    ),
   );
+
+  /// The sessions with [person] (an id or 'me'), of [type] (room, meeting,
+  /// call, media) and of [day], newest first; at most [limit] (Mac: 100).
+  Future<ConversationList> conversations({String? person, String? type, String? day, int? limit}) async =>
+      ConversationList.fromJson(
+        await _get('/v1/conversations', {'person': ?person, 'type': ?type, 'day': ?day, 'limit': ?limit?.toString()}),
+      );
+
+  /// The sessions of the last days with voices still to label.
+  Future<Unlabeled> unlabeled() async => Unlabeled.fromJson(await _get('/v1/unlabeled'));
+
   Future<void> transcribeNow() => _send('POST', '/v1/transcribe');
 
   Future<People> people() async => People.fromJson(await _get('/v1/people'));
   Future<void> renamePerson(String id, String name) => _send('PUT', '/v1/people/$id', {'name': name});
   Future<void> deletePerson(String id) => _send('DELETE', '/v1/people/$id');
+
+  /// Where all the voices of a person come from: room, meeting, auto, or
+  /// media (it was a video: the name and voice print go).
+  Future<void> setPersonKind(String id, String source) => _send('POST', '/v1/people/$id/kind', {'source': source});
 
   Future<DayVoices> voices(String day) async => DayVoices.fromJson(await _get('/v1/voices/$day'));
   Future<void> nameVoice(String session, String label, String name) =>

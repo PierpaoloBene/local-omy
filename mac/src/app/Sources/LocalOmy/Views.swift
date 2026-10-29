@@ -316,9 +316,27 @@ struct IPhoneTab: View {
 
 // MARK: - Trascrizioni
 
+// Mirror of `omy --json transcripts search`.
+struct SearchResults: Decodable {
+    struct Paragraph: Decodable, Identifiable {
+        let id: String
+        let day: String
+        let start: String
+        let speaker: String?
+        let text: String
+    }
+    let results: [Paragraph]
+    let more: Bool
+}
+
 struct TranscriptsTab: View {
     let model: AppModel
     @State private var day: String?
+    @State private var query = ""
+    @State private var results: SearchResults?
+    @State private var searched = ""
+    @State private var searching = false
+    @State private var hit: String?
 
     var body: some View {
         VStack(alignment: .leading) {
@@ -328,46 +346,133 @@ struct TranscriptsTab: View {
                 Button("Apri nel Finder") {
                     if let p = model.status?.transcripts.path { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
                 }
+                Spacer()
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Cerca nelle conversazioni", text: $query)
+                        .textFieldStyle(.plain)
+                        .onSubmit(search)
+                    if searching { ProgressView().controlSize(.small) }
+                    if !query.isEmpty {
+                        Button { clear() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary))
+                .frame(width: 280)
             }
             if let p = model.progress { TranscriptionProgress(progress: p) }
             OperationLog(op: model.transcription)
             HSplitView {
-                List(model.status?.transcripts.days ?? [], id: \.self, selection: $day) { d in
-                    Text(longDay(d))
+                Group {
+                    if let results {
+                        List(results.results, selection: $hit) { r in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(longDay(r.day)) \(String(r.start.dropFirst(11).prefix(5))) · \(r.speaker ?? "?")")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text(marked(r.text, searched)).lineLimit(3)
+                            }
+                        }
+                        .overlay {
+                            if results.results.isEmpty { Text("Nessun risultato per «\(searched)»").foregroundStyle(.secondary) }
+                        }
+                    } else {
+                        List(model.status?.transcripts.days ?? [], id: \.self, selection: $day) { d in
+                            Text(longDay(d))
+                        }
+                    }
                 }
-                .frame(minWidth: 170, maxWidth: 220)
-                ScrollView {
-                    MarkdownDay(path: day.flatMap { d in model.status.map { "\($0.transcripts.path)/\(d).md" } })
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                .frame(minWidth: 170, idealWidth: results == nil ? 190 : 300, maxWidth: results == nil ? 220 : 420)
+                MarkdownDay(
+                    path: day.flatMap { d in model.status.map { "\($0.transcripts.path)/\(d).md" } },
+                    highlight: results == nil ? nil : searched,
+                    focus: results?.results.first(where: { $0.id == hit })?.text
+                )
             }
         }
         .onAppear { if day == nil { day = model.status?.transcripts.days.first } }
+        .onChange(of: hit) {
+            if let r = results?.results.first(where: { $0.id == hit }) { day = r.day }
+        }
+    }
+
+    private func search() {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 2 else { return clear() }
+        searching = true
+        Task {
+            do {
+                results = try await Omy.decode(SearchResults.self, ["transcripts", "search", q])
+                searched = q
+                hit = nil
+            } catch {
+                AppLog.write("[ricerca] failed: \(error.localizedDescription)")
+            }
+            searching = false
+        }
+    }
+
+    private func clear() {
+        query = ""
+        results = nil
+        hit = nil
     }
 }
 
+/// [text] with every occurrence of [query] (any case) on yellow.
+func marked(_ text: String, _ query: String?) -> AttributedString {
+    var s = (try? AttributedString(markdown: text)) ?? AttributedString(text)
+    guard let query, !query.isEmpty else { return s }
+    var from = s.startIndex
+    while let r = s[from...].range(of: query, options: .caseInsensitive) {
+        s[r].backgroundColor = .yellow.opacity(0.6)
+        from = r.upperBound
+    }
+    return s
+}
+
 /// Renders the day markdown written by omy: "# day", "## session", paragraphs
-/// with **bold** times.
+/// with **bold** times. With [focus] (a paragraph's text) it scrolls there.
 struct MarkdownDay: View {
     let path: String?
+    var highlight: String?
+    var focus: String?
 
     var body: some View {
         if let path, let text = try? String(contentsOfFile: path, encoding: .utf8) {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(text.split(separator: "\n").enumerated()), id: \.offset) { _, line in
-                    if line.hasPrefix("## ") {
-                        Text(line.dropFirst(3)).font(.headline).padding(.top, 8)
-                    } else if line.hasPrefix("# ") {
-                        Text(line.dropFirst(2)).font(.title2.bold())
-                    } else {
-                        Text((try? AttributedString(markdown: String(line))) ?? AttributedString(String(line)))
+            let lines = text.split(separator: "\n").map(String.init)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
+                            Group {
+                                if line.hasPrefix("## ") {
+                                    Text(line.dropFirst(3)).font(.headline).padding(.top, 8)
+                                } else if line.hasPrefix("# ") {
+                                    Text(line.dropFirst(2)).font(.title2.bold())
+                                } else {
+                                    Text(marked(line, highlight))
+                                }
+                            }
+                            .id(i)
+                        }
+                    }
+                    .textSelection(.enabled)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .onChange(of: "\(path)|\(focus ?? "")", initial: true) {
+                    guard let focus else { return }
+                    let needle = String(focus.prefix(40))
+                    if let i = lines.firstIndex(where: { $0.contains(needle) }) {
+                        withAnimation { proxy.scrollTo(i, anchor: .center) }
                     }
                 }
             }
-            .textSelection(.enabled)
         } else {
             Text("Scegli un giorno").foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

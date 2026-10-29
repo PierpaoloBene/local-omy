@@ -7,8 +7,12 @@ import '../api/models.dart';
 import '../features.dart';
 import 'app_shell.dart';
 import 'common.dart';
+import 'conversations.dart';
+import 'person_page.dart';
 
-/// "Persone": you, the people you named, and the voices of a day to name.
+/// "Persone": two views. The people (you and those you named), filtered by
+/// the kind of conversation, each opening their conversations; and the
+/// voices still to label, of all the last days in one queue.
 /// Every change runs on the Mac and rewrites the days where they speak.
 class PeoplePage extends StatefulWidget {
   final MacApi api;
@@ -22,14 +26,14 @@ class PeoplePage extends StatefulWidget {
 
 class _PeoplePageState extends State<PeoplePage> {
   People? _people;
-  List<String> _days = [];
-  String? _day;
-  DayVoices? _voices;
+  ConversationList? _convs;
+  List<VoiceSession> _todo = [];
+  String? _type;
+  bool _labeling = false;
   Object? _error;
   bool _busy = false;
   String? _playing;
   Timer? _playTimer;
-  bool _todoOnly = true;
 
   @override
   void initState() {
@@ -50,27 +54,24 @@ class _PeoplePageState extends State<PeoplePage> {
     setState(() => _error = null);
     try {
       final people = await widget.api.people();
-      _days = (await widget.api.days()).days.map((d) => d.day).toList();
-      if (_day == null || !_days.contains(_day)) _day = _days.firstOrNull;
-      final voices = _day == null ? null : await widget.api.voices(_day!);
+      final convs = await widget.api.conversations(type: _type);
+      final todo = (await widget.api.unlabeled()).sessions;
       if (!mounted) return;
       setState(() {
         _people = people;
-        _voices = voices;
+        _convs = convs;
+        _todo = todo;
       });
     } on MacError catch (e) {
       if (mounted) setState(() => _error = e);
     }
   }
 
-  Future<void> _selectDay(String day) async {
-    setState(() {
-      _day = day;
-      _voices = null;
-    });
+  Future<void> _setType(String? t) async {
+    setState(() => _type = t);
     try {
-      final v = await widget.api.voices(day);
-      if (mounted && _day == day) setState(() => _voices = v);
+      final c = await widget.api.conversations(type: t);
+      if (mounted && _type == t) setState(() => _convs = c);
     } on MacError catch (e) {
       if (mounted) showMessage(context, e, title: 'Non riuscito');
     }
@@ -124,7 +125,7 @@ class _PeoplePageState extends State<PeoplePage> {
     });
   }
 
-  /// The voices without a name of a session, all at once: a TV on, a meeting.
+  /// The voices without a name of a session, all at once: a video on, a meeting.
   Future<void> _labelSession(VoiceSession s) async {
     final unnamed = [
       for (final v in s.voices)
@@ -133,61 +134,45 @@ class _PeoplePageState extends State<PeoplePage> {
     if (unnamed.isEmpty) return;
     final type = await chooseAction(
       context,
-      title: unnamed.length == 1 ? 'La voce senza nome' : 'Le ${unnamed.length} voci senza nome',
-      message: 'Di questa sessione, tutte insieme.',
+      title: unnamed.length == 1 ? 'Segna la voce senza nome come' : 'Segna le ${unnamed.length} voci senza nome come',
       actions: [
-        ('media', 'Sono TV o video', false),
-        ('meeting', 'Sono in una riunione online', false),
-        ('room', 'Sono di persona', false),
-        ('auto', 'Come le ha riconosciute il Mac', false),
+        ('media', 'Video', false),
+        ('meeting', 'Riunione online', false),
+        ('room', 'Di persona', false),
+        ('auto', 'Automatico', false),
       ],
     );
     if (type != null) await _change(() => widget.api.setVoiceKind(s.session, unnamed, type));
   }
 
-  Future<void> _personActions(Person p) async {
-    final a = await chooseAction(
-      context,
-      title: p.name,
-      actions: [('rename', 'Rinomina', false), ('delete', 'Elimina', true)],
+  Future<void> _open({
+    required String id,
+    required String name,
+    required double minutes,
+    required int sessions,
+    String? lastSeen,
+  }) async {
+    final changed = await Navigator.of(context).push<bool>(
+      CupertinoPageRoute(
+        builder: (_) => PersonPage(
+          api: widget.api,
+          person: id,
+          name: name,
+          minutes: minutes,
+          sessions: sessions,
+          lastSeen: lastSeen,
+          index: _convs?.people[id],
+          others: _people?.people ?? [],
+        ),
+      ),
     );
-    if (!mounted) return;
-    if (a == 'rename') await _renamePerson(p);
-    if (a == 'delete') await _deletePerson(p);
-  }
-
-  Future<void> _renamePerson(Person p) async {
-    final name = await askName(context, title: 'Rinomina', initial: p.name);
-    if (name == null || name.isEmpty || name == p.name || !mounted) return;
-    final merging = _people!.people.any((o) => o.id != p.id && o.name.toLowerCase() == name.toLowerCase());
-    if (merging &&
-        !await confirm(
-          context,
-          title: 'Unire a $name?',
-          message: 'Esiste già $name: le due persone diventano una sola, con le voci di entrambe.',
-          action: 'Unisci',
-          destructive: false,
-        )) {
-      return;
-    }
-    await _change(() => widget.api.renamePerson(p.id, name));
-  }
-
-  Future<void> _deletePerson(Person p) async {
-    if (!await confirm(
-      context,
-      title: 'Eliminare ${p.name}?',
-      message:
-          'Si cancellano il nome e l\'impronta vocale. Le sue voci tornano senza nome e si possono nominare di nuovo.',
-    )) {
-      return;
-    }
-    await _change(() => widget.api.deletePerson(p.id));
+    if (changed == true) await _load();
   }
 
   @override
   Widget build(BuildContext context) {
     final people = _people;
+    final todo = _todo.fold(0, (n, s) => n + s.voices.where((v) => v.todo).length);
     return TabScaffold(
       title: 'Persone',
       onRefresh: _load,
@@ -204,32 +189,72 @@ class _PeoplePageState extends State<PeoplePage> {
                           'Impronte vocali disattivate: le voci nuove non vengono riconosciute, e non si '
                           'possono dare nomi (Impostazioni, Funzioni).',
                     ),
-                  _meCard(context, people.me),
-                  const SizedBox(height: 20),
-                  if (people.people.isEmpty)
-                    const Section(
-                      header: 'Persone note',
-                      children: [IosRow(title: 'Nessuna ancora', subtitle: 'Dai un nome a una voce qui sotto.')],
-                    )
-                  else
-                    Section(
-                      header: 'Persone note · ${people.people.length}',
-                      children: [for (final p in people.people) _personRow(context, p)],
-                    ),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(32, 16, 32, 8),
-                    child: Text('VOCI DEL GIORNO', style: Ios.footnote(context)),
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    child: CupertinoSlidingSegmentedControl<bool>(
+                      groupValue: _labeling,
+                      onValueChanged: (x) => setState(() => _labeling = x ?? _labeling),
+                      children: {
+                        false: const Text('Persone'),
+                        true: Text('Da etichettare${todo > 0 ? ' · $todo' : ''}'),
+                      },
+                    ),
                   ),
-                  _dayPicker(context),
-                  const SizedBox(height: 12),
-                  ..._voiceSections(context),
+                  if (_labeling) ..._voiceSections(context) else ..._peopleView(context, people),
                 ],
               ),
             ],
     );
   }
 
+  List<Widget> _peopleView(BuildContext context, People people) {
+    final index = _convs?.people ?? {};
+    final shown = [
+      for (final p in people.people)
+        if (_type == null || (index[p.id]?.types.contains(_type) ?? false)) p,
+    ];
+    final label = conversationTypes
+        .firstWhere((t) => t.$1 == _type, orElse: () => ('', 'Tutte', CupertinoIcons.circle))
+        .$2;
+    return [
+      FilterPills<String>(values: conversationTypes, selected: _type, onChanged: _setType),
+      const SizedBox(height: 16),
+      if (_type == null) ...[_meCard(context, people.me), const SizedBox(height: 20)],
+      if (_type != 'media')
+        Section(
+          header: _type == null ? 'Persone note · ${people.people.length}' : 'Persone · $label',
+          children: shown.isEmpty
+              ? [
+                  IosRow(
+                    title: _type == null ? 'Nessuna ancora' : 'Nessuna persona con un nome',
+                    subtitle: 'Dai un nome alle voci in «Da etichettare».',
+                  ),
+                ]
+              : [for (final p in shown) _personRow(context, p)],
+        ),
+      if (_convs != null)
+        ConversationSection(
+          api: widget.api,
+          list: _convs!,
+          previousPageTitle: 'Persone',
+          header: _type == null ? 'Conversazioni recenti' : 'Conversazioni · $label',
+          limit: 8,
+          onMore: () => Navigator.of(context).push(
+            CupertinoPageRoute(
+              builder: (_) => ConversationsPage(
+                api: widget.api,
+                title: _type == null ? 'Conversazioni' : label,
+                type: _type,
+                previousPageTitle: 'Persone',
+              ),
+            ),
+          ),
+        ),
+    ];
+  }
+
   Widget _meCard(BuildContext context, Me me) => InsetCard(
+    onTap: () => _open(id: 'me', name: me.name, minutes: me.minutes, sessions: me.sessions, lastSeen: me.lastSeen),
     child: Row(
       children: [
         PersonAvatar(name: me.name, me: true, size: 58),
@@ -254,82 +279,60 @@ class _PeoplePageState extends State<PeoplePage> {
     ),
   );
 
-  Widget _personRow(BuildContext context, Person p) => IosRow(
-    leading: PersonAvatar(name: p.name),
-    title: p.name,
-    subtitle:
-        '${duration(p.minutes)} · ${p.sessions} ${p.sessions == 1 ? 'sessione' : 'sessioni'}'
-        '${p.lastSeen == null ? '' : ' · ultima ${shortDay(p.lastSeen!)}'}',
-    trailing: Icon(CupertinoIcons.ellipsis_circle, color: resolve(context, tint)),
-    onTap: _busy ? null : () => _personActions(p),
-  );
-
-  Widget _dayPicker(BuildContext context) => SizedBox(
-    height: 34,
-    child: ListView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      children: [
-        for (final d in _days.take(14))
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: CupertinoButton(
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              minimumSize: const Size(0, 34),
-              borderRadius: BorderRadius.circular(17),
-              color: d == _day
-                  ? resolve(context, tint)
-                  : resolve(context, CupertinoColors.secondarySystemGroupedBackground),
-              onPressed: () => _selectDay(d),
-              child: Text(
-                longDay(d) == 'Oggi' || longDay(d) == 'Ieri' ? longDay(d) : shortDay(d),
-                style: Ios.subhead(context).copyWith(
-                  color: d == _day ? const Color(0xFFFFFFFF) : null,
-                  fontWeight: d == _day ? FontWeight.w600 : null,
-                ),
-              ),
+  Widget _personRow(BuildContext context, Person p) {
+    final places = _convs?.people[p.id]?.places ?? [];
+    return IosRow(
+      leading: PersonAvatar(name: p.name),
+      title: p.name,
+      subtitle: [
+        duration(p.minutes),
+        '${p.sessions} ${p.sessions == 1 ? 'sessione' : 'sessioni'}',
+        if (p.lastSeen != null) 'ultima ${shortDay(p.lastSeen!)}',
+        if (places.isNotEmpty) places.first,
+      ].join(' · '),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final t in _convs?.people[p.id]?.types ?? <String>[])
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: Icon(typeIcon(t), size: 14, color: resolve(context, CupertinoColors.tertiaryLabel)),
             ),
-          ),
-      ],
-    ),
-  );
-
-  List<Widget> _voiceSections(BuildContext context) {
-    final v = _voices;
-    if (_day == null) return [const Empty('Ancora nessuna trascrizione.')];
-    if (v == null) return [const Padding(padding: EdgeInsets.all(24), child: CupertinoActivityIndicator())];
-    if (v.sessions.isEmpty) return [const Empty('Nessuna voce separata in questo giorno.')];
-    final todo = v.sessions.fold(0, (n, s) => n + s.voices.where((x) => x.todo).length);
-    final shown = [
-      for (final s in v.sessions)
-        if (!_todoOnly || s.voices.any((x) => x.todo)) s,
-    ];
-    return [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        child: CupertinoSlidingSegmentedControl<bool>(
-          groupValue: _todoOnly,
-          onValueChanged: (x) => setState(() => _todoOnly = x ?? _todoOnly),
-          children: {true: Text('Da etichettare · $todo'), false: const Text('Tutte')},
-        ),
+        ],
       ),
-      if (shown.isEmpty) const Empty('Tutte le voci di questo giorno hanno un nome o un tipo.'),
-      for (final s in shown)
+      chevron: true,
+      onTap: () => _open(id: p.id, name: p.name, minutes: p.minutes, sessions: p.sessions, lastSeen: p.lastSeen),
+    );
+  }
+
+  /// The queue: sessions of the last days with voices to label, only those.
+  List<Widget> _voiceSections(BuildContext context) {
+    final sessions = [
+      for (final s in _todo)
+        if (s.voices.any((v) => v.todo)) s,
+    ];
+    if (sessions.isEmpty) {
+      return [const Empty('Nessuna voce da etichettare negli ultimi giorni: tutte hanno un nome o sono video.')];
+    }
+    return [
+      for (final s in sessions)
         Section(
-          header: s.start == null ? 'Sessione' : 'Sessione delle ${_localTime(s.start!)}',
-          headerTrailing: s.voices.any((x) => x.person == null)
-              ? CupertinoButton(
-                  padding: EdgeInsets.zero,
-                  minimumSize: const Size(0, 28),
-                  onPressed: _busy ? null : () => _labelSession(s),
-                  child: const Text('Tutte…'),
-                )
-              : null,
+          header: [if (s.day != null) longDay(s.day!), if (s.start != null) _localTime(s.start!)].join(' · '),
+          headerTrailing: CupertinoButton(
+            padding: EdgeInsets.zero,
+            minimumSize: const Size(0, 28),
+            onPressed: _busy ? null : () => _labelSession(s),
+            child: const Text('Segna tutte…'),
+          ),
           children: [
             for (final voice in s.voices)
-              if (!_todoOnly || voice.todo) _voiceRow(context, s, voice),
+              if (voice.todo) _voiceRow(context, s, voice),
           ],
         ),
+      const Padding(
+        padding: EdgeInsets.fromLTRB(32, 0, 32, 0),
+        child: Empty('Le sessioni degli ultimi 14 giorni con voci senza nome né tipo video.'),
+      ),
     ];
   }
 
@@ -387,13 +390,13 @@ class _PeoplePageState extends State<PeoplePage> {
 }
 
 IconData voiceTypeIcon(Voice v) => switch (v.type) {
-  'media' => CupertinoIcons.tv_fill,
+  'media' => CupertinoIcons.play_rectangle_fill,
   'meeting' => v.app == 'iPhone' ? CupertinoIcons.phone_fill : CupertinoIcons.videocam_fill,
   _ => CupertinoIcons.person_fill,
 };
 
 String voiceTypeLabel(Voice v) => switch (v.type) {
-  'media' => v.app == null || v.app == 'TV' ? 'TV o video' : 'Media · ${v.app}',
+  'media' => v.app == null || v.app == 'Video' ? 'Video' : 'Video · ${v.app}',
   'meeting' =>
     v.app == 'iPhone'
         ? 'Chiamata'
@@ -465,7 +468,7 @@ class _VoiceSheetState extends State<_VoiceSheet> {
             children: const {
               'room': _Segment(CupertinoIcons.person_fill, 'Di persona'),
               'meeting': _Segment(CupertinoIcons.videocam_fill, 'Online'),
-              'media': _Segment(CupertinoIcons.tv_fill, 'TV / video'),
+              'media': _Segment(CupertinoIcons.play_rectangle_fill, 'Video'),
             },
           ),
         ),
@@ -474,7 +477,7 @@ class _VoiceSheetState extends State<_VoiceSheet> {
           child: Text(switch (_type) {
             'media' =>
               'Una voce da uno schermo o da un altoparlante: nessun nome, nessuna impronta vocale. '
-                  'Nelle trascrizioni diventa «TV».',
+                  'Nelle trascrizioni diventa «Video».',
             'meeting' =>
               v.kind == 'call' && v.app != null && v.app != 'Riunione'
                   ? 'Riconosciuta dal Mac: ${v.app}. Puoi dirle chi è.'

@@ -37,9 +37,11 @@ open mac/build/local-omy.app
 - **iPhone:** scadenza della firma, "Compila e installa", "Rinnova ora", "Reinstalla
   l'ultima build". Ogni azione chiede conferma, perché chiude l'app sul telefono.
 - **Trascrizioni:** giorni trascritti e "Trascrivi ora". Durante una trascrizione,
-  anche lanciata dal job orario o dal terminale, compare la barra di avanzamento.
+  anche lanciata dal job orario o dal terminale, compare la barra di avanzamento. Il campo
+  "Cerca nelle conversazioni" mostra i paragrafi trovati al posto dei giorni. Toccandone uno
+  si apre il giorno su quel punto, con la parola evidenziata.
 - **Persone:** a sinistra le persone riconosciute (tu e quelle a cui hai dato un nome),
-  con il menu per rinominarle o eliminarle. A destra le voci di ogni
+  con il menu Modifica (nome e tipo) ed Elimina. A destra le voci di ogni
   sessione del giorno scelto: ▶︎ fa sentire qualche secondo, e scrivendo un nome (o
   scegliendolo da "Chi è") la voce prende quel nome. Vedi "Dare un nome alle voci".
 
@@ -270,6 +272,7 @@ uv run omy speakers kind <sessione> media SPEAKER_02 SPEAKER_03   # room | meeti
 uv run omy people list                                 # tu e le persone con un nome
 uv run omy people rename <id> "Marco Rossi"            # stesso nome di un'altra persona: le unisce
 uv run omy people delete <id>
+uv run omy people kind <id> media                      # tipo di tutte le sue voci; media: era un video
 ```
 
 - **Rinominare** una voce copia la sua impronta tra i campioni della persona e fissa quel
@@ -281,16 +284,19 @@ uv run omy people delete <id>
   - `room`: di persona, qualcuno nella stanza;
   - `meeting`: una riunione online o una chiamata. Nel nome compare l'app (`Marco (Teams)`),
     o `Riunione` se il Mac non l'ha vista;
-  - `media`: una TV, un video, una radio. È nessuno: non viene riconosciuta come persona e non
+  - `media`: un video (o una TV, una radio). È nessuno: non viene riconosciuta come persona e non
     ha nome. Se era nominata, il suo campione esce dall'impronta della persona. Nelle
-    trascrizioni diventa `TV`, con `via` `{"kind": "media", "app": "TV"}`;
+    trascrizioni diventa `Video`, con `via` `{"kind": "media", "app": "Video"}`;
   - `auto`: torna a quello che hanno visto il Mac (le app che usano microfono e altoparlanti)
     e l'iPhone (le chiamate).
 
   Il tipo scelto a mano sta nel documento della sessione (`"source"`) e sopravvive ai
   rinomina, come i nomi fissati. Nelle app, "Da etichettare" mostra le voci che non hanno
-  ancora né un nome né il tipo TV. "Le voci senza nome…" dà lo stesso tipo a tutte le voci
-  senza nome di una sessione, per esempio quando era accesa la TV.
+  ancora né un nome né il tipo video. "Segna tutte come…" dà lo stesso tipo a tutte le voci
+  senza nome di una sessione, per esempio quando era acceso un video. Il tipo si cambia anche per
+  una persona intera (Modifica, o `omy people kind ID TIPO`), su tutte le sue voci. Una
+  persona nominata per errore da un video diventa Video: le sue voci diventano video, e il nome
+  e l'impronta si cancellano.
 - **Eliminare** una persona cancella il nome e i suoi campioni (che sono copie). Le impronte
   delle voci restano in `voices/clusters`: nelle trascrizioni tornano `Persona N` e puoi
   dar loro di nuovo un nome, anche lo stesso.
@@ -473,12 +479,23 @@ L'app iPhone ha quattro schede:
   disconnesso (perso da meno di 10 minuti, si ricollega da solo) o non trovato. Poi la
   registrazione e la coda di invio, cosa resta da trascrivere sul Mac (con **Trascrivi ora**)
   e il riepilogo di oggi.
-- **Trascrizioni:** i giorni, ognuno con il riepilogo (orari, durata, chi ha parlato, dove).
-  Un giorno si apre paragrafo per paragrafo. La ricerca trova parole o persone in tutti i
-  giorni e porta al paragrafo.
-- **Persone:** tu, le persone con un nome (rinomina, unisci, elimina) e le voci di un giorno.
-  Le voci si possono ascoltare. Per ognuna scegli il tipo (di persona, online, TV o video) e
-  il nome; il tipo si può anche dare a tutte le voci senza nome di una sessione.
+- **Conversazioni:** una linea del tempo unica con tutte le conversazioni, cioè le sessioni,
+  dalla più recente.
+  - Il giorno resta fisso in alto mentre lo scorri, con il numero di conversazioni e la
+    durata. L'indice sul bordo destro, come le lettere in Contatti, salta a qualsiasi giorno.
+  - Una conversazione si apre come una chat. Si scorre a destra per quella prima e a sinistra
+    per quella dopo, come in Foto.
+  - La ricerca trova parole o persone in tutte le trascrizioni e apre la conversazione sul
+    paragrafo.
+  - I filtri per persona e per tipo (di persona, online, chiamate, video) valgono sia per la
+    linea del tempo sia per la ricerca.
+- **Persone:** due viste.
+  - **Persone:** tu e le persone con un nome, con un filtro per tipo di conversazione e le
+    conversazioni recenti. Toccando una persona si vedono quanto e dove ci parli e la linea del
+    tempo delle conversazioni con lei, e con Modifica se ne cambiano nome e tipo (di persona, online, video), o la si elimina.
+  - **Da etichettare:** tutte le voci degli ultimi 14 giorni ancora senza nome e non video, in
+    un'unica coda. Si possono ascoltare. Per ognuna scegli il tipo (di persona, online o
+    video) e il nome; il tipo si può anche dare a tutte le voci senza nome di una sessione.
 - **Luoghi:** come la scheda del Mac, con mappa e indirizzo. Si rinomina, si cambia il
   raggio, si elimina, e si dà un nome ai punti senza nome.
 
@@ -489,10 +506,12 @@ ricevitore esegue gli stessi comandi `omy` dell'app per Mac, come sottoprocessi:
 |---|---|
 | `GET /v1/transcripts` | `omy transcripts list`: giorni con riepilogo, e sessioni in attesa |
 | `GET /v1/transcripts/DAY` | `omy transcripts day DAY`: riepilogo e paragrafi (il JSONL del giorno) |
-| `POST /v1/search` `{"q"}` | `omy transcripts search Q`: al massimo 200 paragrafi, dal giorno più recente |
+| `POST /v1/search` `{"q", "person"?, "type"?}` | `omy transcripts search Q`: al massimo 200 paragrafi, dal giorno più recente |
+| `GET /v1/conversations?person=&type=` | `omy transcripts conversations`: le sessioni con una persona (id o `me`) o di un tipo (`room`, `meeting`, `call`, `media`), al massimo 100 |
 | `POST /v1/transcribe` | `omy transcribe --pending`, in background (log in `local-omy-periodic.log`) |
-| `GET /v1/people`, `PUT`/`DELETE /v1/people/ID` | `omy people list`, `rename`, `delete` |
+| `GET /v1/people`, `PUT`/`DELETE /v1/people/ID`, `POST /v1/people/ID/kind` `{"source"}` | `omy people list`, `rename`, `delete`, `kind` |
 | `GET /v1/voices/DAY`, `PUT /v1/voices/SESSION/LABEL` | `omy speakers list`, `rename` |
+| `GET /v1/unlabeled` | `omy speakers todo`: le sessioni degli ultimi 14 giorni con voci da etichettare |
 | `POST /v1/voices/SESSION/kind` `{"source", "labels"}` | `omy speakers kind` |
 | `GET /v1/voices/SESSION/LABEL/sample` | `omy speakers play`: il WAV (al massimo 8 s) |
 | `GET`/`POST /v1/places`, `PUT`/`DELETE /v1/places/NAME` | `omy places list`, `add`, `rename`, `remove` |

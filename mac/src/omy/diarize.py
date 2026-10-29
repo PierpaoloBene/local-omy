@@ -173,11 +173,11 @@ def cluster_embeddings(session_id: str) -> dict:
 
 
 # Where a voice comes from, set by hand (omy speakers kind): it overrides the
-# context found on the Mac and the iPhone (omy.context). "media" voices (a TV
-# in the room, a video) are nobody: never recognized, never named.
+# context found on the Mac and the iPhone (omy.context). "media" voices (a video,
+# a TV in the room) are nobody: never recognized, never named.
 SOURCES = ("room", "meeting", "media")
 MEETING_APP = "Riunione"
-MEDIA_APP = "TV"
+MEDIA_APP = "Video"
 
 
 def via(context: dict | None, source: str | None) -> dict | None:
@@ -205,7 +205,7 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
     appearance. contexts (label -> (kind, app), from omy.context) marks call
     participants, "Persona 2 (Teams)", "Marco (iPhone)", and media,
     "Media (Chrome)". sources (label -> SOURCES) are set by hand: "media"
-    voices are "TV" and nobody."""
+    voices are "Video" and nobody."""
     contexts, people, pins, sources = contexts or {}, people or {}, pins or {}, sources or {}
     pins = {k: v for k, v in pins.items() if (v == "me" or v in people) and sources.get(k) != "media"}
     emb = {k: v for k, v in result["embeddings"].items() if sources.get(k) != "media"}

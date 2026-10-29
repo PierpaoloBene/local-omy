@@ -69,7 +69,11 @@ class _AppShellState extends State<AppShell> {
       tabBar: CupertinoTabBar(
         items: const [
           BottomNavigationBarItem(icon: Icon(CupertinoIcons.dot_radiowaves_left_right), label: 'Oggi'),
-          BottomNavigationBarItem(icon: Icon(CupertinoIcons.text_quote), label: 'Trascrizioni'),
+          BottomNavigationBarItem(
+            icon: Icon(CupertinoIcons.chat_bubble_2),
+            activeIcon: Icon(CupertinoIcons.chat_bubble_2_fill),
+            label: 'Conversazioni',
+          ),
           BottomNavigationBarItem(
             icon: Icon(CupertinoIcons.person_2),
             activeIcon: Icon(CupertinoIcons.person_2_fill),

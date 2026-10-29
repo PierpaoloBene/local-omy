@@ -167,17 +167,18 @@ class Voice {
           ? 'meeting'
           : 'room');
 
-  /// Still to label: not a TV, and nobody yet.
+  /// Still to label: not a video, and nobody yet.
   bool get todo => person == null && type != 'media';
 }
 
 class VoiceSession {
   final String session;
-  final String? start;
+  final String? start, day;
   final List<Voice> voices;
   VoiceSession.fromJson(Json j)
     : session = j['session'],
       start = j['start'],
+      day = j['day'],
       voices = _list(j['voices'], Voice.fromJson);
 }
 
@@ -227,4 +228,77 @@ class Places {
   Places.fromJson(Json j)
     : places = _list(j['places'], NamedPlace.fromJson),
       unnamed = _list(j['unnamed'], Spot.fromJson);
+}
+
+class Participant {
+  final String name;
+  final String? person;
+  final String type;
+  final double minutes;
+  Participant.fromJson(Json j)
+    : name = j['name'],
+      person = j['person'],
+      type = j['type'],
+      minutes = (j['minutes'] as num).toDouble();
+  bool get isMe => person == 'me';
+}
+
+/// A session, seen from who spoke in it (omy transcripts conversations).
+class Conversation {
+  final String day, session, focus, start, end, snippet;
+  final String? place, app;
+  final int minutes;
+  final List<String> types;
+  final List<Participant> participants;
+  Conversation.fromJson(Json j)
+    : day = j['day'],
+      session = j['session'],
+      focus = j['focus'],
+      start = j['start'],
+      end = j['end'],
+      snippet = j['snippet'],
+      place = j['place'],
+      app = j['app'],
+      minutes = j['minutes'],
+      types = List<String>.from(j['types']),
+      participants = _list(j['participants'], Participant.fromJson);
+
+  /// Only where it is: for a paragraph found by a search.
+  Conversation.of(Paragraph p)
+    : day = p.day!,
+      session = p.session,
+      focus = p.id,
+      start = p.start,
+      end = p.end,
+      snippet = '',
+      place = p.place?.name,
+      app = p.via?.kind == 'call' ? p.via!.app : null,
+      minutes = 0,
+      types = const [],
+      participants = const [];
+}
+
+/// For a named person: the kinds of conversation, how many, where.
+class PersonIndex {
+  final List<String> types, places;
+  final int conversations;
+  PersonIndex.fromJson(Json j)
+    : types = List<String>.from(j['types']),
+      places = List<String>.from(j['places']),
+      conversations = j['conversations'];
+}
+
+class ConversationList {
+  final List<Conversation> conversations;
+  final bool more;
+  final Map<String, PersonIndex> people;
+  ConversationList.fromJson(Json j)
+    : conversations = _list(j['conversations'], Conversation.fromJson),
+      more = j['more'],
+      people = {for (final e in (j['people'] as Map).entries) e.key as String: PersonIndex.fromJson(e.value as Json)};
+}
+
+class Unlabeled {
+  final List<VoiceSession> sessions;
+  Unlabeled.fromJson(Json j) : sessions = _list(j['sessions'], VoiceSession.fromJson);
 }

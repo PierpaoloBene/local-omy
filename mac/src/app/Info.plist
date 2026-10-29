@@ -8,6 +8,8 @@
 	<string>local-omy</string>
 	<key>CFBundleDisplayName</key>
 	<string>local-omy</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleExecutable</key>
 	<string>LocalOmy</string>
 	<key>CFBundlePackageType</key>

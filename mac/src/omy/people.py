@@ -127,6 +127,21 @@ def list_day(day: date) -> dict:
     return {"day": day.isoformat(), "sessions": sessions}
 
 
+TODO_DAYS = 14
+
+
+def unlabeled(days: int = TODO_DAYS) -> dict:
+    """The sessions of the last recorded days with voices still to label
+    (nobody, and not a video), newest first, with all their voices."""
+    from omy.sessions import recorded_days
+    out = []
+    for day in sorted(recorded_days(), reverse=True)[:days]:
+        for s in reversed(list_day(day)["sessions"]):
+            if any(v["person"] is None and v["kind"] != "media" for v in s["voices"]):
+                out.append({"day": day.isoformat(), **s})
+    return {"sessions": out}
+
+
 def play(session_id: str, label: str) -> dict:
     """The longest turn of this voice (at most SAMPLE_MAX) into SAMPLE_WAV."""
     path, doc = _doc(session_id)
@@ -207,7 +222,7 @@ def rename(session_id: str, label: str, name: str) -> dict:
         if k != label and c.get("pinned") and c.get("person") == pin:
             c["pinned"] = False
     clusters[label].update(person=pin, pinned=True)
-    # A voice with a name is somebody, not a TV.
+    # A voice with a name is somebody, not a video.
     if clusters[label].get("source") == "media":
         del clusters[label]["source"]
     _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
@@ -238,6 +253,39 @@ def set_source(session_id: str, labels: list[str], source: str) -> dict:
     _save_people(people)
     _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
     return {"source": source, "labels": labels, "days": relabel()}
+
+
+def set_person_source(person_id: str, source: str) -> dict:
+    """Where all the voices of this person come from (diarize.SOURCES, or
+    "auto"). "media": it was a video, so its voices become video and the
+    name and its samples go."""
+    if source not in (*diarize.SOURCES, "auto"):
+        raise TranscribeError(f"invalid source {source!r}")
+    people = diarize.load_people()
+    if person_id not in people:
+        raise TranscribeError(f"no person {person_id}")
+    voices = 0
+    for path, doc in _docs():
+        changed = False
+        for c in doc.get("clusters", {}).values():
+            if c.get("person") != person_id:
+                continue
+            if source == "media":
+                c.update(person=None, pinned=False)
+            if source == "auto":
+                c.pop("source", None)
+            else:
+                c["source"] = source
+            changed = True
+            voices += 1
+        if changed:
+            _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
+    name = people[person_id]["name"]
+    if source == "media":
+        (diarize.PEOPLE_DIR / f"{person_id}.npz").unlink(missing_ok=True)
+        del people[person_id]
+        _save_people(people)
+    return {"person": person_id, "name": name, "source": source, "voices": voices, "days": relabel()}
 
 
 def list_people() -> dict:

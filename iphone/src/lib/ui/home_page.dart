@@ -11,7 +11,7 @@ import '../settings.dart';
 import '../upload/uploader.dart';
 import 'app_shell.dart';
 import 'common.dart';
-import 'day_page.dart';
+import 'chat.dart';
 import 'settings_page.dart';
 
 /// "Oggi": the pendant, recording and uploads on the phone; what the Mac
@@ -238,15 +238,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         padding: const EdgeInsets.fromLTRB(32, 16, 32, 6),
         child: Text('OGGI IN BREVE', style: Ios.footnote(context)),
       ),
-      DaySummaryCard(
-        summary: today,
-        onTap: () => Navigator.of(context).push(
-          CupertinoPageRoute(
-            builder: (_) => DayPage(api: widget.api, day: today.day, previousPageTitle: 'Oggi'),
-          ),
-        ),
-      ),
+      DaySummaryCard(summary: today, onTap: _openToday),
     ];
+  }
+
+  /// Today's conversations, from the latest.
+  Future<void> _openToday() async {
+    try {
+      final l = await widget.api.conversations(day: todayIso(), limit: 1000);
+      if (!mounted || l.conversations.isEmpty) return;
+      await ConversationViewer.open(context, widget.api, l.conversations, 0, previousPageTitle: 'Oggi');
+    } on MacError catch (e) {
+      if (mounted) showMessage(context, e, title: 'Non riuscito');
+    }
   }
 
   List<Widget> _errors(BuildContext context) {

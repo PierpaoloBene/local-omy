@@ -5,10 +5,13 @@ import 'package:flutter/cupertino.dart';
 import '../api/mac_api.dart';
 import '../api/models.dart';
 import 'app_shell.dart';
+import 'chat.dart';
 import 'common.dart';
-import 'day_page.dart';
+import 'conversations.dart';
+import 'timeline.dart';
 
-/// "Trascrizioni": the days, newest first, and a search over all of them.
+/// "Conversazioni": every conversation in one timeline, filtered by a person
+/// or a kind, and a search over all the transcripts.
 class TranscriptsPage extends StatefulWidget {
   final MacApi api;
   final TabShown shown;
@@ -18,14 +21,21 @@ class TranscriptsPage extends StatefulWidget {
   State<TranscriptsPage> createState() => _TranscriptsPageState();
 }
 
+/// All of them: the timeline jumps to any day.
+const timelineLimit = 5000;
+
 class _TranscriptsPageState extends State<TranscriptsPage> {
-  DayList? _days;
+  ConversationList? _list;
+  Pending? _pending;
   Object? _error;
   final _query = TextEditingController();
   Timer? _debounce;
   SearchResult? _results;
   String? _searched;
   bool _searching = false;
+  ({String id, String name})? _person;
+  String? _type;
+  People? _people;
 
   @override
   void initState() {
@@ -44,12 +54,51 @@ class _TranscriptsPageState extends State<TranscriptsPage> {
 
   Future<void> _load() async {
     setState(() => _error = null);
+    final person = _person?.id, type = _type;
     try {
+      final l = await widget.api.conversations(person: person, type: type, limit: timelineLimit);
+      if (mounted && _person?.id == person && _type == type) setState(() => _list = l);
       final d = await widget.api.days();
-      if (mounted) setState(() => _days = d);
+      if (mounted) setState(() => _pending = d.pending);
     } on MacError catch (e) {
       if (mounted) setState(() => _error = e);
     }
+  }
+
+  void _setFilter({({String id, String name})? person, String? type}) {
+    setState(() {
+      _person = person;
+      _type = type;
+      _list = null;
+    });
+    _load();
+    final q = _query.text.trim();
+    if (q.length >= 2) _search(q);
+  }
+
+  Future<void> _choosePerson() async {
+    try {
+      _people ??= await widget.api.people();
+    } on MacError catch (e) {
+      if (mounted) showMessage(context, e, title: 'Non riuscito');
+      return;
+    }
+    if (!mounted) return;
+    final p = _people!;
+    final id = await chooseAction(
+      context,
+      title: 'Conversazioni con',
+      actions: [
+        if (_person != null) ('', 'Tutti', false),
+        ('me', p.me.name, false),
+        for (final x in p.people) (x.id, x.name, false),
+      ],
+    );
+    if (id == null) return;
+    _setFilter(
+      person: id.isEmpty ? null : (id: id, name: id == 'me' ? p.me.name : p.people.firstWhere((x) => x.id == id).name),
+      type: _type,
+    );
   }
 
   void _onQuery(String q) {
@@ -67,8 +116,9 @@ class _TranscriptsPageState extends State<TranscriptsPage> {
   Future<void> _search(String q) async {
     setState(() => _searching = true);
     try {
-      final r = await widget.api.search(q);
-      if (mounted && _query.text.trim() == q) {
+      final person = _person?.id, type = _type;
+      final r = await widget.api.search(q, person: person, type: type);
+      if (mounted && _query.text.trim() == q && _person?.id == person && _type == type) {
         setState(() {
           _results = r;
           _searched = q;
@@ -81,27 +131,42 @@ class _TranscriptsPageState extends State<TranscriptsPage> {
     }
   }
 
-  void _open(String day, {String? focus}) => Navigator.of(context).push(
-    CupertinoPageRoute(
-      builder: (_) => DayPage(
-        api: widget.api,
-        day: day,
-        focus: focus,
-        highlight: focus == null ? null : _searched,
-        previousPageTitle: 'Trascrizioni',
-      ),
-    ),
-  );
+  /// A search result: its conversation, among those of the other results.
+  void _openResult(Paragraph p) {
+    final sessions = <String>{};
+    final convs = [
+      for (final r in _results!.results)
+        if (sessions.add(r.session))
+          _list?.conversations.where((c) => c.session == r.session).firstOrNull ?? Conversation.of(r),
+    ];
+    ConversationViewer.open(
+      context,
+      widget.api,
+      convs,
+      convs.indexWhere((c) => c.session == p.session),
+      previousPageTitle: 'Risultati',
+      focus: p.id,
+      highlight: _searched,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    return TabScaffold(
-      title: 'Trascrizioni',
+    final p = _pending;
+    return Timeline(
+      api: widget.api,
+      title: 'Conversazioni',
       onRefresh: _load,
       busy: _searching,
+      conversations: _list?.conversations,
+      error: _error,
+      onRetry: _load,
+      empty: _person != null || _type != null
+          ? 'Nessuna conversazione con questi filtri.'
+          : 'Ancora nessuna trascrizione.',
       searchField: CupertinoSearchTextField(
         controller: _query,
-        placeholder: 'Cerca parole o persone',
+        placeholder: 'Cerca nelle trascrizioni',
         onChanged: _onQuery,
         onSubmitted: (q) => q.trim().length >= 2 ? _search(q.trim()) : null,
         onSuffixTap: () {
@@ -109,7 +174,63 @@ class _TranscriptsPageState extends State<TranscriptsPage> {
           _onQuery('');
         },
       ),
-      slivers: _results != null ? _resultSlivers(context) : _daySlivers(context),
+      top: [
+        SliverToBoxAdapter(child: _filters(context)),
+        if (_results == null && p != null && (p.progress.running || p.sessions > 0))
+          SliverToBoxAdapter(
+            child: Notice(
+              icon: p.progress.running ? CupertinoIcons.hourglass : CupertinoIcons.clock,
+              text: p.progress.running
+                  ? 'Il Mac sta trascrivendo (${p.progress.sessionsDone} di ${p.progress.sessionsTotal} sessioni).'
+                  : '${p.sessions} ${p.sessions == 1 ? 'sessione' : 'sessioni'} da trascrivere (${duration(p.minutes)}): '
+                        'da Oggi puoi farle partire subito.',
+            ),
+          ),
+      ],
+      replacement: _results == null ? null : _resultSlivers(context),
+    );
+  }
+
+  Widget _filters(BuildContext context) {
+    final on = _person != null;
+    final fg = on ? const Color(0xFFFFFFFF) : resolve(context, CupertinoColors.label);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 16),
+            child: CupertinoButton(
+              padding: const EdgeInsets.symmetric(horizontal: 13),
+              minimumSize: const Size(0, 32),
+              borderRadius: BorderRadius.circular(16),
+              color: on ? resolve(context, tint) : resolve(context, CupertinoColors.secondarySystemGroupedBackground),
+              onPressed: _choosePerson,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(CupertinoIcons.person_fill, size: 15, color: fg),
+                  const SizedBox(width: 5),
+                  Text(
+                    _person?.name ?? 'Persona',
+                    style: Ios.subhead(context).copyWith(color: fg, fontWeight: on ? FontWeight.w600 : null),
+                  ),
+                  const SizedBox(width: 3),
+                  Icon(CupertinoIcons.chevron_down, size: 12, color: fg),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: FilterPills<String>(
+              values: conversationTypes,
+              selected: _type,
+              all: 'Tutte',
+              onChanged: (t) => _setFilter(person: _person, type: t),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -151,34 +272,10 @@ class _TranscriptsPageState extends State<TranscriptsPage> {
                     style: Ios.subhead(context).copyWith(color: resolve(context, CupertinoColors.secondaryLabel)),
                   ),
                 ),
-                onTap: () => _open(p.day!, focus: p.id),
+                onTap: () => _openResult(p),
               ),
           ],
         ),
-      ),
-    ];
-  }
-
-  List<Widget> _daySlivers(BuildContext context) {
-    final d = _days;
-    if (d == null) return [LoadState(loading: _error == null, error: _error, onRetry: _load)];
-    final p = d.pending;
-    return [
-      if (p.progress.running || p.sessions > 0)
-        SliverToBoxAdapter(
-          child: Notice(
-            icon: p.progress.running ? CupertinoIcons.hourglass : CupertinoIcons.clock,
-            text: p.progress.running
-                ? 'Il Mac sta trascrivendo (${p.progress.sessionsDone} di ${p.progress.sessionsTotal} sessioni).'
-                : '${p.sessions} ${p.sessions == 1 ? 'sessione' : 'sessioni'} da trascrivere (${duration(p.minutes)}): '
-                      'da Oggi puoi farle partire subito.',
-          ),
-        ),
-      if (d.days.isEmpty) const SliverToBoxAdapter(child: Empty('Ancora nessuna trascrizione.')),
-      SliverList.separated(
-        itemCount: d.days.length,
-        separatorBuilder: (_, _) => const SizedBox(height: 12),
-        itemBuilder: (context, i) => DaySummaryCard(summary: d.days[i], onTap: () => _open(d.days[i].day)),
       ),
     ];
   }

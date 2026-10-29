@@ -56,9 +56,11 @@ OMY_TIMEOUT = 600
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 VOICE_LABEL = re.compile(r"SPEAKER_[0-9]{2,3}")
 VOICE_SOURCES = {"room", "meeting", "media", "auto"}
+CONVERSATION_TYPES = {"room", "meeting", "call", "media"}
 PERSON_ID = re.compile(r"[0-9a-f]{12}")
 MAX_NAME = 80
 MAX_QUERY = 100
+MAX_CONVERSATIONS = 5000
 MAX_JSON_BODY = 4096
 
 log = logging.getLogger("uvicorn.error")
@@ -148,6 +150,20 @@ def _name(v) -> str:
             or any(ord(c) < 32 for c in v)):
         raise ValueError("invalid name")
     return v.strip()
+
+
+def _filters(person, kind) -> list[str]:
+    """--person/--type for omy transcripts, checked."""
+    out = []
+    if person is not None:
+        if not isinstance(person, str) or not (person == "me" or PERSON_ID.fullmatch(person)):
+            raise ValueError("invalid person")
+        out += ["--person", person]
+    if kind is not None:
+        if kind not in CONVERSATION_TYPES:
+            raise ValueError("invalid type")
+        out += ["--type", kind]
+    return out
 
 
 def _authorized(request: Request, token: bytes) -> bool:
@@ -430,12 +446,33 @@ def create_app(config: Config) -> FastAPI:
         if not _authorized(request, config.token):
             return _error(401, "unauthorized")
         try:
-            q = (await json_body(request))["q"]
+            b = await json_body(request)
+            q = b["q"]
             if not isinstance(q, str) or not q.strip() or len(q) > MAX_QUERY or q.lstrip().startswith("-"):
                 raise ValueError
+            filters = _filters(b.get("person"), b.get("type"))
         except (ValueError, KeyError):
             return _error(400, "invalid query")
-        return await run(request, "transcripts", "search", q)
+        return await run(request, "transcripts", "search", q, *filters)
+
+    # The sessions with a person (?person=ID|me), of a type (?type=room|meeting|call|media),
+    # of a day (?day=YYYY-MM-DD); ?limit=N (default 100).
+    @app.get("/v1/conversations")
+    async def conversations(request: Request, person: str | None = None, type: str | None = None,
+                            day: str | None = None, limit: str | None = None):
+        try:
+            filters = _filters(person, type)
+            if day is not None:
+                if not DAY.fullmatch(day):
+                    raise ValueError
+                filters += ["--day", day]
+            if limit is not None:
+                if not limit.isdigit() or not 0 < int(limit) <= MAX_CONVERSATIONS:
+                    raise ValueError
+                filters += ["--limit", limit]
+        except ValueError:
+            return _error(400, "invalid filter")
+        return await run(request, "transcripts", "conversations", *filters)
 
     # Starts transcribing the closed sessions now, without waiting for the
     # hourly job; GET /v1/transcripts shows the progress.
@@ -472,6 +509,24 @@ def create_app(config: Config) -> FastAPI:
         if not PERSON_ID.fullmatch(person):
             return _error(400, "invalid person")
         return await run(request, "people", "delete", person, change=True)
+
+    # The voices still to label, of the last recorded days.
+    @app.get("/v1/unlabeled")
+    async def unlabeled(request: Request):
+        return await run(request, "speakers", "todo")
+
+    # Where all the voices of a person come from (omy people kind): {"source"}.
+    @app.post("/v1/people/{person}/kind")
+    async def person_kind(person: str, request: Request):
+        if not PERSON_ID.fullmatch(person):
+            return _error(400, "invalid person")
+
+        def args(b: dict) -> list[str]:
+            if b["source"] not in VOICE_SOURCES:
+                raise ValueError("invalid source")
+            return ["people", "kind", person, b["source"]]
+
+        return await change(request, args)
 
     @app.get("/v1/voices/{day}")
     async def voices(day: str, request: Request):
