@@ -44,6 +44,10 @@ struct Status: Decodable {
         let fullChargeHours: Double?
         let remainingHours: Double?
     }
+    struct Firmware: Decodable {
+        let version: String?
+        let at: String?
+    }
 
     let receiver: Agent
     let periodic: Agent
@@ -53,6 +57,7 @@ struct Status: Decodable {
     let iphone: IPhone
     let transcripts: Transcripts
     let battery: Battery?
+    let firmware: Firmware?
     let logs: [String: String]
 }
 

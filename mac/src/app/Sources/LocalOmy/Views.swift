@@ -150,6 +150,9 @@ struct StatusTab: View {
                         level: model.progress != nil || s.transcripts.pendingSessions == 0 ? .ok : .unknown)
                     Row(title: "App iPhone", value: iphoneText(s.iphone), level: iphoneLevel(s.iphone))
                     Row(title: "Batteria ciondolo", value: batteryText(s.battery))
+                    Row(title: "Firmware ciondolo", value: s.firmware?.version.map { v in
+                        "\(v), visto alle \(localDate(s.firmware?.at))"
+                    } ?? "— (arriva con i prossimi segmenti)")
                     Row(title: "Job orario", value: s.periodic.loaded ? "installato" : "non installato (vedi Setup)",
                         level: s.periodic.loaded ? .ok : .warning)
                 }

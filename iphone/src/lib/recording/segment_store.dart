@@ -43,6 +43,9 @@ class SegmentStore {
   /// Pendant battery level (%), if connected: set by main.dart.
   int? Function() battery = () => null;
 
+  /// Pendant firmware revision, if read: set by main.dart.
+  String? Function() firmware = () => null;
+
   /// Whether a feature is on (features.dart): calls, location, battery.
   bool Function(String) feature = (_) => true;
 
@@ -135,6 +138,7 @@ class SegmentStore {
       locations: feature('location') ? _readList('locations.json') : const [],
       // A .part recovered at launch was closed long ago: its level is unknown.
       battery: recovering || !feature('battery') ? null : battery(),
+      firmware: recovering ? null : firmware(),
     );
     final tmp = File('${dir.path}/$id.json.tmp');
     final raf = tmp.openSync(mode: FileMode.write);
@@ -184,6 +188,9 @@ const _maxCall = Duration(hours: 4);
 
 /// A significant change older than this says little about where the phone is.
 const _maxMoveAge = Duration(hours: 2);
+
+// What the Mac accepts as a firmware revision.
+final _firmwareRe = RegExp(r'^[0-9A-Za-z._+-]{1,32}$');
 
 /// The best location fix for [startMs, endMs] from locations.json entries: a
 /// visit covering the middle of the segment, else the latest significant
@@ -235,6 +242,7 @@ Map<String, Object?> buildSidecar({
   List<(int, int?)> calls = const [],
   List<Map> locations = const [],
   int? battery,
+  String? firmware,
 }) {
   String iso(int ms) => DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true).toIso8601String();
   final startMs = seg.startMs, endMs = seg.startMs + seg.records.last.offsetMs;
@@ -257,6 +265,7 @@ Map<String, Object?> buildSidecar({
     if (overlapping.isNotEmpty) 'calls': overlapping.take(20).toList(),
     if (location != null) 'location': location,
     if (battery != null && battery >= 0 && battery <= 100) 'battery': battery,
+    if (firmware != null && _firmwareRe.hasMatch(firmware)) 'firmware': firmware,
   };
 }
 

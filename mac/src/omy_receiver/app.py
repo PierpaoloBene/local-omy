@@ -66,9 +66,10 @@ META_FIELDS: dict[str, type | tuple[type, ...]] = {
 # Optional: calls the phone saw connected during the segment, [{"start", "end"?}].
 MAX_CALLS = 20
 # Optional: where the phone was, {"lat", "lon", "acc" (m), "source", "at"};
-# and the pendant battery level, 0-100.
+# the pendant battery level, 0-100; its firmware revision, e.g. "3.0.21".
 LOCATION_SOURCES = {"visit", "move"}
-OPTIONAL_FIELDS = {"calls", "location", "battery"}
+FIRMWARE = re.compile(r"[0-9A-Za-z._+-]{1,32}")
+OPTIONAL_FIELDS = {"calls", "location", "battery", "firmware"}
 
 
 def _number(v) -> bool:
@@ -165,6 +166,8 @@ def _parse_meta(raw: str, segment_id: str, sha: str) -> dict:
         b = meta["battery"]
         if not isinstance(b, int) or isinstance(b, bool) or not 0 <= b <= 100:
             raise ValueError("meta field battery has wrong type")
+    if "firmware" in meta and not (isinstance(meta["firmware"], str) and FIRMWARE.fullmatch(meta["firmware"])):
+        raise ValueError("meta field firmware has wrong type")
     for key, typ in META_FIELDS.items():
         # bool is an int subclass: reject it explicitly.
         if not isinstance(meta[key], typ) or isinstance(meta[key], bool):

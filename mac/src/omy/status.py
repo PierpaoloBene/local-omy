@@ -89,5 +89,6 @@ def status() -> dict:
         "iphone": iphone.status(),
         "transcripts": _transcripts(),
         "battery": battery.battery(),
+        "firmware": battery.firmware(),
         "logs": LOGS,
     }

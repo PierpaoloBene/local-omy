@@ -85,7 +85,8 @@ class HomePage extends StatelessWidget {
   String _pendantLabel() {
     switch (ble.state) {
       case PendantState.streaming:
-        return 'Connesso · batteria ${ble.battery == null ? '?' : '${ble.battery}%'}';
+        return 'Connesso · batteria ${ble.battery == null ? '?' : '${ble.battery}%'}'
+            '${ble.firmware == null ? '' : ' · firmware ${ble.firmware}'}';
       case PendantState.connecting:
         return 'Non connesso (in attesa)';
       case PendantState.disconnected:

@@ -16,7 +16,8 @@ Future<void> main() async {
   final features = await Features.load(settings);
   final store = await SegmentStore.open()
     ..feature = features.on
-    ..battery = () => ble.battery;
+    ..battery = (() => ble.battery)
+    ..firmware = (() => ble.firmware);
   final recorder = Recorder(ble, store)..start();
   final uploader = Uploader(store, settings)..start();
   recorder.onSegmentClosed = uploader.trigger;

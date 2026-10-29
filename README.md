@@ -129,6 +129,8 @@ Campi opzionali, presenti solo quando ci sono (vedi `mac/README.md`):
 - `calls`: le chiamate CallKit che toccano il segmento, `[{"start", "end"?}]`;
 - `location`: la posizione migliore, `{"lat", "lon", "acc", "source", "at"}`;
 - `battery`: il livello della batteria del ciondolo alla chiusura del segmento, 0–100.
+- `firmware`: la versione del firmware del ciondolo (Device Information, `2a26`), letta a ogni
+  connessione, per esempio `"3.0.21"`.
 
 ## Upload al Mac
 

@@ -65,3 +65,21 @@ def battery(days: int = DAYS) -> dict:
         "remaining_hours": round(level / rate, 1) if rate else None,
         "charges": charges,
     }
+
+
+def firmware(days: int = DAYS) -> dict:
+    """The pendant firmware revision in the newest sidecar that has one
+    ("firmware", read by the iPhone app at each connection)."""
+    for day in reversed(recorded_days()[-days:]):
+        metas = []
+        for meta_path in (ARCHIVE / "raw" / "audio" / day.isoformat()).glob("*.json"):
+            try:
+                meta = json.loads(meta_path.read_text())
+                if isinstance(meta.get("firmware"), str):
+                    metas.append((meta["end"], meta["firmware"]))
+            except (ValueError, KeyError, TypeError):
+                continue
+        if metas:
+            at, version = max(metas)
+            return {"version": version, "at": at}
+    return {"version": None}

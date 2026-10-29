@@ -1,8 +1,10 @@
 /// BLE link to the Omi pendant: scan, connect to the saved device, automatic
-/// reconnection, codec, audio stream, battery level. Nothing else.
+/// reconnection, codec, audio stream, battery level, firmware version.
+/// Nothing else.
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -13,6 +15,9 @@ final Guid audioDataUuid = Guid('19b10001-e8f2-537e-4f6c-d104768a1214');
 final Guid audioCodecUuid = Guid('19b10002-e8f2-537e-4f6c-d104768a1214');
 final Guid batteryServiceUuid = Guid('180f');
 final Guid batteryLevelUuid = Guid('2a19');
+// Device Information Service: firmware revision string, e.g. "3.0.21".
+final Guid deviceInfoServiceUuid = Guid('180a');
+final Guid firmwareRevisionUuid = Guid('2a26');
 
 /// Codec ids as reported by the codec characteristic.
 const Map<int, String> codecNames = {1: 'pcm8', 20: 'opus', 21: 'opusFS320'};
@@ -51,6 +56,10 @@ class BleService {
   /// Raw audio notifications, 3-byte header included.
   final _audioController = StreamController<Uint8List>.broadcast();
   Stream<Uint8List> get audioStream => _audioController.stream;
+
+  /// Firmware revision read at the last connection; kept after a
+  /// disconnection (it is still the same pendant).
+  String? firmware;
 
   String? get deviceId => _device?.remoteId.str;
 
@@ -101,6 +110,7 @@ class BleService {
   Future<void> forget() async {
     final device = _device;
     _device = null;
+    firmware = null;
     await _connSub?.cancel();
     _connSub = null;
     codecId = null;
@@ -138,6 +148,16 @@ class BleService {
       if (codecChar != null) {
         final v = await codecChar.read();
         codecId = v.isNotEmpty ? v[0] : null;
+      }
+
+      final fwChar = find(deviceInfoServiceUuid, firmwareRevisionUuid);
+      if (fwChar != null) {
+        try {
+          final v = utf8.decode(await fwChar.read(), allowMalformed: true).replaceAll('\x00', '').trim();
+          firmware = v.isEmpty ? null : v;
+        } catch (e) {
+          debugPrint('BLE firmware revision: $e');
+        }
       }
 
       final batteryChar = find(batteryServiceUuid, batteryLevelUuid);
