@@ -187,6 +187,7 @@ cambia, le sessioni trascritte con la versione precedente vengono rifatte.
 | `~/OmiArchive/transcripts/AAAA-MM-GG/<sessione>.json` | frasi con inizio/fine in UTC, segmenti d'origine, modello |
 | `~/OmiArchive/transcripts/AAAA-MM-GG/speakers/<sessione>.json` | turni di parola in UTC e somiglianza di ogni voce alla tua (vedi Chi parla) |
 | `~/OmiArchive/transcripts/AAAA-MM-GG.md` | la giornata da leggere: una sezione per ogni sessione con parlato, un paragrafo nuovo a ogni cambio di chi parla, dopo ogni silenzio > 2 min o dopo 5 min di parlato |
+| `~/OmiArchive/transcripts/AAAA-MM-GG.jsonl` | gli stessi paragrafi, uno per riga, con ora, chi parla, chiamata o media, luogo: il formato per altre app (vedi Output per altre app) |
 
 Il markdown viene ripulito, mentre i JSON restano grezzi:
 - una frase ripetuta più volte di fila (un loop di whisper) compare una volta sola;
@@ -376,6 +377,53 @@ all'avvio, quando torna in primo piano, dopo ogni modifica e ogni 5 minuti, quin
 modifica fatta sul Mac arriva all'iPhone entro 5 minuti. Sul telefono i valori sono nelle
 preferenze dell'app, e quelli che servono al codice nativo (posizione, chiamate) anche in
 `Documents/features.json`.
+
+## Output per altre app
+
+Un'altra app (per esempio un second brain) dovrebbe leggere solo
+`~/OmiArchive/transcripts/AAAA-MM-GG.jsonl`: il resto dell'archivio è interno e può
+cambiare. Il file contiene un paragrafo per riga, gli stessi paragrafi del `.md` del giorno:
+- è già ripulito dai loop e dalle frasi inventate da whisper;
+- un paragrafo nuovo comincia a ogni cambio di chi parla, dopo 2 min di silenzio o dopo
+  5 min di parlato.
+
+Ogni riga è completa: non serve incrociarla con altri file.
+
+```json
+{"v": 1, "id": "20261029T055509Z-4a7fcd28/65610", "session": "20261029T055509Z-4a7fcd28",
+ "start": "2026-10-29T06:56:15+01:00", "end": "2026-10-29T06:58:26+01:00",
+ "speaker": "Marco", "person": "3f2c…", "via": {"kind": "call", "app": "Teams"},
+ "place": {"name": "Casa", "lat": 45.46421, "lon": 9.19003, "acc": 20},
+ "language": "it", "text": "…"}
+```
+
+| Campo | |
+|---|---|
+| `v` | versione del formato. Cresce solo se un campo cambia significato o sparisce; un campo nuovo non la cambia |
+| `id` | `<sessione>/<ms dall'inizio della sessione>` |
+| `session` | la registrazione continua di cui fa parte. Paragrafi della stessa sessione sono la stessa conversazione o lo stesso contesto |
+| `start`, `end` | ora locale (Europe/Rome) con offset, al secondo |
+| `speaker` | nome da mostrare: il tuo (`my_name`, default "Io"), il nome dato alla voce, "Persona N", "Media". `null` se la sessione non è diarizzata |
+| `person` | `"me"` per te, l'id di una persona con nome (stabile anche se la rinomini), `null` per le voci senza nome. "Persona N" vale solo dentro la sua sessione |
+| `via` | `{"kind": "call"\|"media", "app"}` se la voce veniva da una chiamata (Teams, Zoom, iPhone…) o da un media sul Mac (YouTube nel browser, Spotify…), altrimenti `null`. Una TV nella stanza non lascia traccia |
+| `place` | posizione del telefono a inizio paragrafo, con `name` se cade in un luogo di `places.json` (altrimenti `null`); `null` se non c'è posizione o la funzione Posizione è spenta |
+| `language` | `it` o `en`, la lingua prevalente del paragrafo |
+| `text` | il testo |
+
+**Aggiornamenti.** Il file di un giorno viene riscritto per intero, in modo atomico, ogni
+volta che il giorno cambia:
+- una sessione viene trascritta o si allunga;
+- dai un nome a una voce o ne cancelli uno;
+- aggiungi o togli un luogo.
+
+Il file è sempre la verità completa su quel giorno. Il modo più semplice di sincronizzarsi è
+rileggere i giorni il cui file ha un mtime più recente dell'ultima lettura, e sostituire
+tutti i paragrafi di quel giorno. L'`id` resta lo stesso finché non vengono rifatte la
+trascrizione o la separazione delle voci, quindi può servire anche per gli aggiornamenti
+puntuali. Un giorno con solo
+silenzio ha il file vuoto.
+
+I file hanno mode 600 e restano sul Mac, come il resto dell'archivio.
 
 ## Configurazione (variabili d'ambiente)
 

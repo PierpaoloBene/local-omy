@@ -8,6 +8,7 @@ timestamps back to wall-clock time.
 Output, derived and regenerable (the raw archive is only read):
   transcripts/YYYY-MM-DD/<session>.json   speech items with UTC start/end
   transcripts/YYYY-MM-DD.md               the readable day, Europe/Rome times
+  transcripts/YYYY-MM-DD.jsonl            the same paragraphs with their metadata, for other apps
 A session JSON exists only once complete (temp file + rename). Segments can
 reach the Mac hours late (Mac asleep, phone queue): a session that grew after
 being transcribed gets only its new segments transcribed and appended.
@@ -80,6 +81,8 @@ HALLUCINATIONS = {
     "grazie", "grazie a tutti", "grazie per la visione", "gracias", "merci", "you", "",
 }
 ISOLATED = timedelta(seconds=30)
+# Of the lines of DAY.jsonl: bumped when a field changes meaning or goes away.
+EXPORT_VERSION = 1
 # How far back --pending looks.
 PENDING_DAYS = 7
 PROGRESS = CACHE_DIR / "transcribe-progress.json"
@@ -314,77 +317,112 @@ def _clean(speech: list[dict]) -> list[dict]:
     return kept
 
 
-def _speakers(day_dir: Path, session_id: str) -> list[tuple[datetime, datetime, str]]:
+def _t(iso: str) -> datetime:
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+
+
+def _speakers_doc(day_dir: Path, session_id: str) -> dict:
+    """The session's speakers/<session>.json (omy.diarize), or {} if not diarized."""
     try:
-        doc = json.loads((day_dir / "speakers" / f"{session_id}.json").read_text())
+        return json.loads((day_dir / "speakers" / f"{session_id}.json").read_text())
     except (FileNotFoundError, ValueError):
-        return []
-    t = lambda iso: datetime.fromisoformat(iso.replace("Z", "+00:00"))  # noqa: E731
-    return [(t(x["start"]), t(x["end"]), x["speaker"]) for x in doc["turns"]]
+        return {}
 
 
-def _context(day_dir: Path, session_id: str) -> list[dict]:
-    """Calls and media during the session, as found by diarize (omy.context)."""
-    try:
-        return json.loads((day_dir / "speakers" / f"{session_id}.json").read_text()).get("context", [])
-    except (FileNotFoundError, ValueError):
-        return []
-
-
-def _speaker_of(turns: list, start: datetime, end: datetime) -> str | None:
+def _speaker_of(turns: list[dict], start: datetime, end: datetime) -> dict | None:
     best, overlap = None, timedelta(0)
-    for s, e, name in turns:
-        ov = min(end, e) - max(start, s)
+    for x in turns:
+        ov = min(end, _t(x["end"])) - max(start, _t(x["start"]))
         if ov > overlap:
-            best, overlap = name, ov
+            best, overlap = x, ov
     return best
 
 
+def _paragraphs(speech: list[dict], turns: list[dict]) -> list[tuple[dict | None, list[dict]]]:
+    """(turn of its first item, items) of the cleaned speech: a new paragraph
+    at each change of speaker, after BLOCK_GAP of silence, or after BLOCK_MAX."""
+    out: list[tuple[dict | None, list[dict]]] = []
+    block_start = prev_end = None
+    for it in speech:
+        start, end = _t(it["start"]), _t(it["end"])
+        turn = _speaker_of(turns, start, end)
+        name = turn and turn["speaker"]
+        if (not out or start - prev_end > BLOCK_GAP or start - block_start > BLOCK_MAX
+                or name != (out[-1][0] and out[-1][0]["speaker"])):
+            out.append((turn, []))
+            block_start = start
+        out[-1][1].append(it)
+        prev_end = end
+    return out
+
+
+def _local(iso: str) -> str:
+    return _t(iso).astimezone(LOCAL_TZ).isoformat(timespec="seconds")
+
+
+def _record(doc: dict, turn: dict | None, items: list[dict], clusters: dict,
+            fixes: list, place_list: list[dict] | None) -> dict:
+    """A paragraph as a line of DAY.jsonl (format in mac/README.md, "Output per
+    altre app")."""
+    from omy import places
+    start = _t(items[0]["start"])
+    cluster = clusters.get(turn["label"], {}) if turn else {}
+    via = cluster.get("context")
+    speaker = turn and turn["speaker"]
+    if speaker and via and speaker.endswith(f" ({via['app']})"):
+        speaker = speaker[:-len(via["app"]) - 3]
+    langs = [it["language"] for it in items if it.get("language")]
+    fix = next((f for f in fixes if f and f.start <= start < f.end), None) if place_list is not None else None
+    return {
+        "v": EXPORT_VERSION,
+        "id": f"{doc['session']}/{round((start - _t(doc['start'])).total_seconds() * 1000)}",
+        "session": doc["session"],
+        "start": _local(items[0]["start"]),
+        "end": _local(items[-1]["end"]),
+        "speaker": speaker,
+        "person": cluster.get("person"),
+        "via": via,
+        "place": fix and {"name": places.name_of(fix, place_list), "lat": round(fix.lat, 5),
+                          "lon": round(fix.lon, 5), "acc": round(fix.acc)},
+        "language": max(set(langs), key=langs.count) if langs else None,
+        "text": " ".join(it["text"] for it in items),
+    }
+
+
 def render_day(day: date) -> Path | None:
-    """Rebuild transcripts/DAY.md from the session JSONs of that day, with the
-    speaker of each paragraph when diarized. Sessions with no speech are left
-    out."""
+    """Rebuild transcripts/DAY.md (to read) and transcripts/DAY.jsonl (for
+    other apps) from the session JSONs of that day, with the speaker of each
+    paragraph when diarized. Sessions with no speech are left out."""
     day_dir = TRANSCRIPTS / day.isoformat()
     docs = sorted((json.loads(p.read_text()) for p in day_dir.glob("*.json")), key=lambda d: d["start"]) \
         if day_dir.is_dir() else []
     if not docs:
         return None
     from omy import places
-    place_list = places.load_places()
-    show_places = feature_on("location")
+    place_list = places.load_places() if feature_on("location") else None
     lines = [f"# {day.isoformat()}", ""]
+    records = []
     for doc in docs:
         speech = _clean(doc["speech"])
         if not speech:
             continue
         lines += [f"## {_hm(doc['start'])}–{_hm(doc['end'])}", ""]
-        where = places.session_places(doc["segments"], place_list) if show_places else []
+        where = places.session_places(doc["segments"], place_list) if place_list is not None else []
         if where:
             lines += ["_📍 " + " → ".join(where) + "_", ""]
-        calls = [c for c in _context(day_dir, doc["session"]) if c["kind"] == "call"]
+        spk = _speakers_doc(day_dir, doc["session"])
+        calls = [c for c in spk.get("context", []) if c["kind"] == "call"]
         if calls:
             lines += ["_" + ", ".join(f"Chiamata ({c['app']}) {_hm(c['start'])}–{_hm(c['end'])}" for c in calls) + "_", ""]
-        turns = _speakers(day_dir, doc["session"])
-        block: list[str] = []
-        block_start: datetime | None = None
-        prev_end: datetime | None = None
-        prev_speaker: str | None = None
-        for it in speech:
-            start = datetime.fromisoformat(it["start"].replace("Z", "+00:00"))
-            end = datetime.fromisoformat(it["end"].replace("Z", "+00:00"))
-            speaker = _speaker_of(turns, start, end) if turns else None
-            if (prev_end is None or start - prev_end > BLOCK_GAP or start - block_start > BLOCK_MAX
-                    or speaker != prev_speaker):
-                if block:
-                    lines += [" ".join(block), ""]
-                block = [f"**{_hm(it['start'])}" + (f" · {speaker}**" if speaker else "**")]
-                block_start = start
-                prev_speaker = speaker
-            block.append(it["text"])
-            prev_end = datetime.fromisoformat(it["end"].replace("Z", "+00:00"))
-        lines += [" ".join(block), ""]
+        fixes = [places.segment_fix(s) for s in doc["segments"]] if place_list is not None else []
+        for turn, items in _paragraphs(speech, spk.get("turns", [])):
+            head = f"**{_hm(items[0]['start'])}" + (f" · {turn['speaker']}**" if turn else "**")
+            lines += [" ".join([head] + [it["text"] for it in items]), ""]
+            records.append(_record(doc, turn, items, spk.get("clusters", {}), fixes, place_list))
     if len(lines) == 2:
         lines += ["_(nessun parlato)_", ""]
+    _write_atomic(TRANSCRIPTS / f"{day.isoformat()}.jsonl",
+                  "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
     path = TRANSCRIPTS / f"{day.isoformat()}.md"
     _write_atomic(path, "\n".join(lines))
     return path
