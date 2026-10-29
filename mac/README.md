@@ -224,9 +224,20 @@ Una volta sola:
 L'impronta vocale è un **dato biometrico**: ha permessi 600 e non lascia mai il Mac, come
 l'audio. Se la ricrei, le sessioni vengono ri-diarizzate.
 
-Una voce cantata non viene riconosciuta come tua. Una voce che passa dagli altoparlanti
-(Teams, TV, video) risulta come un'altra persona: distinguere i media dalle persone
-presenti resta da fare.
+**Chiamate e media.** L'app Mac registra ogni 10 s quali app usano il microfono e gli
+altoparlanti (CoreAudio, per processo). Lo fa solo quando ce n'è almeno una attiva, e scrive
+in `~/OmiArchive/context/audio-AAAA-MM-GG.jsonl` (mode 600): non registra audio, solo
+quale app e se usa ingresso o uscita. La diarizzazione lo usa per le voci che non sono tue:
+- una voce che parla per almeno metà del tempo mentre un'app usa il microfono (Teams, Zoom,
+  FaceTime, Meet nel browser) è un partecipante alla chiamata: `Persona 2 (Teams)`;
+- una voce che parla mentre un'app riproduce soltanto (YouTube nel browser, Musica,
+  Spotify) è un media: `Media (Chrome)`.
+
+Valgono solo per l'audio che passa dal Mac e solo dal 29 ottobre 2026: la TV in salotto e le
+chiamate sul telefono non lasciano traccia. Una persona presente nella stanza durante una
+chiamata sul Mac viene contata come partecipante.
+
+Una voce cantata non viene riconosciuta come tua.
 
 ## Misurare la precisione (`omy eval`)
 

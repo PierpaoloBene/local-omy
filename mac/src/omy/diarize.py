@@ -101,9 +101,12 @@ def load_profile():
     return np.load(PROFILE) if PROFILE.is_file() else None
 
 
-def name_clusters(result: dict, profile) -> dict[str, dict]:
-    """label -> {"name", "similarity", "seconds"}; the best match above
-    ME_THRESHOLD is you, the rest numbered by first appearance."""
+def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | None = None) -> dict[str, dict]:
+    """label -> {"name", "similarity", "seconds", "context"}; the best match
+    above ME_THRESHOLD is you, the rest numbered by first appearance.
+    contexts (label -> (kind, app), from omy.context) marks call
+    participants, "Persona 2 (Teams)", and media, "Media (Chrome)"."""
+    contexts = contexts or {}
     sims = {k: float(v @ profile) for k, v in result["embeddings"].items()} if profile is not None else {}
     me = max(sims, key=sims.get, default=None)
     if me is not None and sims[me] < ME_THRESHOLD:
@@ -112,13 +115,18 @@ def name_clusters(result: dict, profile) -> dict[str, dict]:
     for _, _, label in sorted(result["turns"]):
         if label in names:
             continue
+        kind, app = contexts.get(label, (None, None))
         if label == me:
             names[label] = my_name()
+        elif kind == "media":
+            names[label] = f"Media ({app})"
         else:
             n += 1
-            names[label] = f"Persona {n}"
+            names[label] = f"Persona {n}" + (f" ({app})" if kind == "call" else "")
     return {k: {"name": names.get(k, k), "similarity": round(sims[k], 3) if k in sims else None,
-                "seconds": round(result["seconds"].get(k, 0), 1)} for k in result["seconds"]}
+                "seconds": round(result["seconds"].get(k, 0), 1),
+                "context": dict(zip(("kind", "app"), contexts[k])) if k in contexts else None}
+            for k in result["seconds"]}
 
 
 def speakers_path(session: Session) -> Path:
@@ -138,13 +146,22 @@ def diarize_session(session: Session) -> dict:
     finally:
         dec.close()
         wav.unlink(missing_ok=True)
-    clusters = name_clusters(result, load_profile())
+    from omy import context
+    at = lambda sec: session.start + timedelta(seconds=sec)  # noqa: E731
+    ctx = context.intervals(session.start, session.end)
+    contexts = {}
+    for label in result["seconds"]:
+        c = context.classify([(at(s), at(e)) for s, e, k in result["turns"] if k == label], ctx)
+        if c:
+            contexts[label] = c
+    clusters = name_clusters(result, load_profile(), contexts)
     doc = {
         "version": VERSION,
         "session": session.id,
         "segments": [s.id for s in session.segments],
         "model": MODEL,
         "profile": PROFILE.is_file(),
+        "context": [{"start": _iso(i.start), "end": _iso(i.end), "app": i.app, "kind": i.kind} for i in ctx],
         "clusters": clusters,
         "turns": [
             {"start": _iso(session.start + timedelta(seconds=s)), "end": _iso(session.start + timedelta(seconds=e)),

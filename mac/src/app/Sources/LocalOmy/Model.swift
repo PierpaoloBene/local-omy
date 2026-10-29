@@ -165,8 +165,11 @@ final class AppModel {
 
     private var refreshing = false
     private var timers: [Timer] = []
+    private let audio = AudioActivity(
+        archive: ProcessInfo.processInfo.environment["OMY_ARCHIVE"] ?? "\(Omy.home)/OmiArchive")
 
     init() {
+        audio.start()
         Task { await refresh() }
         timers.append(Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
