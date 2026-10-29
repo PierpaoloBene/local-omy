@@ -1,16 +1,19 @@
 import CallKit
+import CoreLocation
 import Flutter
 import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private let callLog = CallLog()
+  private let locationLog = LocationLog()
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     callLog.start()
+    locationLog.start()
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -62,6 +65,89 @@ final class CallLog: NSObject, CXCallObserverDelegate {
 
   private func save(_ calls: [[String: String]]) {
     guard let data = try? JSONSerialization.data(withJSONObject: calls) else { return }
+    try? data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+  }
+}
+
+/// Where the phone was, in Documents/locations.json, cheaply: iOS visits
+/// (arrived at / left a place) and significant location changes (~500 m),
+/// which work in background and relaunch the app, without GPS running.
+///   {"kind": "visit", "lat", "lon", "acc", "arrive"?, "depart"?}
+///   {"kind": "move", "lat", "lon", "acc", "t"}
+/// UTC ISO 8601, acc in meters. The Dart side puts the best fix for each
+/// segment into its sidecar (segment_store.dart); the Mac names it with its
+/// own list of places. Nothing is geocoded: coordinates never leave the
+/// phone and the Mac.
+final class LocationLog: NSObject, CLLocationManagerDelegate {
+  private let manager = CLLocationManager()
+  private let file: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("locations.json")
+  private let iso = ISO8601DateFormatter()
+  private static let keep: TimeInterval = 3 * 86400
+
+  func start() {
+    manager.delegate = self
+    // iOS first grants "while using", then later offers to keep "always".
+    if manager.authorizationStatus == .notDetermined { manager.requestAlwaysAuthorization() }
+    begin()
+  }
+
+  func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    begin()
+  }
+
+  private func begin() {
+    guard [.authorizedAlways, .authorizedWhenInUse].contains(manager.authorizationStatus) else { return }
+    manager.startMonitoringVisits()
+    manager.startMonitoringSignificantLocationChanges()
+  }
+
+  func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+    var e = point(visit.coordinate, visit.horizontalAccuracy)
+    e["kind"] = "visit"
+    if visit.arrivalDate != .distantPast { e["arrive"] = iso.string(from: visit.arrivalDate) }
+    if visit.departureDate != .distantFuture { e["depart"] = iso.string(from: visit.departureDate) }
+    var list = load()
+    // The departure comes as the same visit again, now with depart.
+    list.removeAll { $0["kind"] as? String == "visit" && $0["arrive"] as? String == e["arrive"] as? String
+      && e["arrive"] != nil }
+    list.append(e)
+    save(list)
+  }
+
+  func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    var list = load()
+    for l in locations where l.horizontalAccuracy >= 0 {
+      var e = point(l.coordinate, l.horizontalAccuracy)
+      e["kind"] = "move"
+      e["t"] = iso.string(from: l.timestamp)
+      list.append(e)
+    }
+    save(list)
+  }
+
+  func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
+
+  private func point(_ c: CLLocationCoordinate2D, _ acc: CLLocationAccuracy) -> [String: Any] {
+    ["lat": (c.latitude * 1e6).rounded() / 1e6, "lon": (c.longitude * 1e6).rounded() / 1e6,
+     "acc": Int(acc.rounded())]
+  }
+
+  private func load() -> [[String: Any]] {
+    guard let data = try? Data(contentsOf: file),
+          let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+    return list
+  }
+
+  private func save(_ list: [[String: Any]]) {
+    let cutoff = Date().addingTimeInterval(-Self.keep)
+    let kept = list.filter { e in
+      // A visit still on (no depart) is kept: it is where the phone is.
+      if e["kind"] as? String == "visit", e["depart"] == nil { return true }
+      let when = (e["depart"] ?? e["t"] ?? e["arrive"]) as? String
+      return when.flatMap { iso.date(from: $0) }.map { $0 >= cutoff } ?? false
+    }
+    guard let data = try? JSONSerialization.data(withJSONObject: kept) else { return }
     try? data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
   }
 }

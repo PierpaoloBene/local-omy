@@ -24,6 +24,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import stat
@@ -63,6 +64,23 @@ META_FIELDS: dict[str, type | tuple[type, ...]] = {
 }
 # Optional: calls the phone saw connected during the segment, [{"start", "end"?}].
 MAX_CALLS = 20
+# Optional: where the phone was, {"lat", "lon", "acc" (m), "source", "at"};
+# and the pendant battery level, 0-100.
+LOCATION_SOURCES = {"visit", "move"}
+OPTIONAL_FIELDS = {"calls", "location", "battery"}
+
+
+def _number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _check_location(loc) -> None:
+    if (not isinstance(loc, dict) or set(loc) != {"lat", "lon", "acc", "source", "at"}
+            or not all(_number(loc[k]) for k in ("lat", "lon", "acc"))
+            or not -90 <= loc["lat"] <= 90 or not -180 <= loc["lon"] <= 180 or not 0 <= loc["acc"] <= 100_000
+            or loc["source"] not in LOCATION_SOURCES
+            or not isinstance(loc["at"], str) or not ISO_UTC.fullmatch(loc["at"])):
+        raise ValueError("meta field location has wrong type")
 
 
 class ConfigError(Exception):
@@ -130,7 +148,7 @@ def _parse_meta(raw: str, segment_id: str, sha: str) -> dict:
         meta = json.loads(base64.urlsafe_b64decode(raw.encode("ascii") + b"=" * (-len(raw) % 4)))
     except (binascii.Error, UnicodeError, ValueError) as e:
         raise ValueError("meta is not base64url JSON") from e
-    if not isinstance(meta, dict) or set(meta) - {"calls"} != set(META_FIELDS):
+    if not isinstance(meta, dict) or set(meta) - OPTIONAL_FIELDS != set(META_FIELDS):
         raise ValueError("meta has wrong fields")
     if "calls" in meta:
         calls = meta["calls"]
@@ -140,6 +158,12 @@ def _parse_meta(raw: str, segment_id: str, sha: str) -> dict:
             if (not isinstance(c, dict) or not {"start"} <= set(c) <= {"start", "end"}
                     or not all(isinstance(v, str) and ISO_UTC.fullmatch(v) for v in c.values())):
                 raise ValueError("meta field calls has wrong type")
+    if "location" in meta:
+        _check_location(meta["location"])
+    if "battery" in meta:
+        b = meta["battery"]
+        if not isinstance(b, int) or isinstance(b, bool) or not 0 <= b <= 100:
+            raise ValueError("meta field battery has wrong type")
     for key, typ in META_FIELDS.items():
         # bool is an int subclass: reject it explicitly.
         if not isinstance(meta[key], typ) or isinstance(meta[key], bool):

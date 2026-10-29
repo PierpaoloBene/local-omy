@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from omy import iphone, macsetup, transcribe
+from omy import battery, iphone, macsetup, transcribe
 from omy.config import ARCHIVE
 from omy.sessions import LOCAL_TZ, sessions_for_day
 from omy.transcribe import TRANSCRIPTS
@@ -88,5 +88,6 @@ def status() -> dict:
         "upload": _upload(),
         "iphone": iphone.status(),
         "transcripts": _transcripts(),
+        "battery": battery.battery(),
         "logs": LOGS,
     }

@@ -12,7 +12,8 @@ Future<void> main() async {
   await BleService.init();
   final settings = await Settings.load();
   final ble = BleService();
-  final store = await SegmentStore.open();
+  final store = await SegmentStore.open()
+    ..battery = () => ble.battery;
   final recorder = Recorder(ble, store)..start();
   final uploader = Uploader(store, settings)..start();
   recorder.onSegmentClosed = uploader.trigger;

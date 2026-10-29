@@ -29,7 +29,7 @@ open mac/build/local-omy.app
 - **Stato:** ricevitore, `tailscale serve`, iPhone online sul tailnet, ultimo segmento
   ricevuto, ultimo upload e quanti segmenti restavano in coda sull'iPhone, registrato
   oggi, trascrizione (in corso o quante sessioni mancano), scadenza dell'app iPhone,
-  job orario, log.
+  batteria del ciondolo, job orario, log.
 - **Setup:** la checklist di `omy setup check`. Ogni voce mancante ha il suo pulsante
   "Sistema" (`omy setup fix <voce>`). Ci sono anche:
   - "Copia URL" e "Copia token": il token va negli appunti e non viene mai mostrato;
@@ -38,6 +38,10 @@ open mac/build/local-omy.app
   l'ultima build". Ogni azione chiede conferma, perché chiude l'app sul telefono.
 - **Trascrizioni:** giorni trascritti e "Trascrivi ora". Durante una trascrizione,
   anche lanciata dal job orario o dal terminale, compare la barra di avanzamento.
+- **Persone:** a sinistra le persone riconosciute (tu e quelle a cui hai dato un nome),
+  con il menu per rinominarle o eliminarne l'impronta vocale. A destra le voci di ogni
+  sessione del giorno scelto: ▶︎ fa sentire qualche secondo, e scrivendo un nome (o
+  scegliendolo da "Chi è") la voce prende quel nome. Vedi "Dare un nome alle voci".
 
 La trascrizione gira per conto suo: mentre lavora, Setup, iPhone e l'aggiornamento
 dello stato restano utilizzabili. Le azioni di Setup e iPhone, invece, vanno una alla volta.
@@ -207,6 +211,8 @@ che gira sul Mac con la GPU (MPS) a circa 25 volte il tempo reale.
 - Le voci vengono raggruppate per sessione.
 - Il gruppo che somiglia alla tua **impronta vocale** (somiglianza coseno ≥ 0,5) si chiama
   `Io`. Il nome si cambia con `my_name = "…"` in `~/.config/local-omy/config.toml`.
+- Una voce che somiglia (≥ 0,4) ai campioni di una persona a cui hai dato un nome prende
+  quel nome, una sola voce per persona in ogni sessione.
 - Le altre voci diventano `Persona 1`, `Persona 2`… nell'ordine in cui compaiono. I
   numeri valgono solo dentro la sessione.
 - Nel markdown ogni paragrafo porta nome e orario: `**18:26 · Io** …`. Le frasi che non
@@ -246,6 +252,77 @@ computer (per esempio Teams sul Mac di lavoro) non lasciano traccia. Una persona
 nella stanza durante una chiamata viene contata come partecipante.
 
 Una voce cantata non viene riconosciuta come tua.
+
+### Dare un nome alle voci
+
+Dalla scheda **Persone** dell'app, o da terminale:
+
+```bash
+uv run omy speakers list --day 2026-10-29              # voci di ogni sessione, con cosa hanno detto
+uv run omy speakers play <sessione> SPEAKER_01         # qualche secondo in cache/voice-sample.wav
+uv run omy speakers rename <sessione> SPEAKER_01 Marco
+uv run omy people list                                 # tu e le persone con un nome
+uv run omy people rename <id> "Marco Rossi"            # stesso nome di un'altra persona: le unisce
+uv run omy people delete <id>
+```
+
+- **Rinominare** una voce copia la sua impronta tra i campioni della persona e fissa quel
+  nome a quella voce. Poi tutte le sessioni già diarizzate vengono rinominate dalle
+  impronte salvate, senza rifare pyannote, e i loro markdown riscritti. Le sessioni nuove
+  la riconoscono da sole. Più voci della stessa persona nomini, meglio la riconosce.
+- Dare a una voce il tuo nome (`Io`) la fissa a te, ma non cambia la tua impronta.
+- **Eliminare** una persona cancella i suoi campioni e le impronte delle voci che le avevi
+  attribuito. Nelle trascrizioni quelle voci tornano `Persona N` e non viene più
+  riconosciuta.
+
+Dove stanno, tutto con permessi 600 e niente fuori dal Mac:
+- `voices/clusters/<sessione>.npz`: l'impronta di ogni voce di ogni sessione, anche senza
+  nome. Serve a nominarla dopo.
+- `voices/people.json` e `voices/people/<id>.npz`: nomi e campioni.
+
+Sono impronte vocali di **altre persone**, cioè dati biometrici raccolti senza il loro
+consenso: tienine conto prima di condividere l'archivio, ed elimina chi non vuoi riconoscere.
+
+## Dove (luoghi)
+
+L'app iPhone usa le **visite** di iOS (arrivo e partenza da un luogo, precise a qualche
+decina di metri) e i **cambi di posizione significativi** (circa 500 m): funzionano in
+background e consumano poco, perché non tengono acceso il GPS. Li scrive in
+`Documents/locations.json` sul telefono (ultimi 3 giorni) e mette nel sidecar di ogni
+segmento la posizione migliore:
+`"location": {"lat", "lon", "acc", "source": "visit"|"move", "at"}`.
+- vale la visita in corso a metà del segmento;
+- altrimenti l'ultimo cambio significativo, se non ha più di 2 ore e non è precedente
+  all'uscita da una visita.
+
+La prima volta iOS chiede il permesso. Serve "Consenti sempre" con **Posizione esatta**
+attiva, altrimenti la posizione è approssimata a qualche chilometro.
+
+Le coordinate non vengono mai trasformate in indirizzi da un servizio esterno. Il nome lo dà
+il Mac, con la tua lista in `~/OmiArchive/places.json` (mode 600):
+
+```bash
+uv run omy places list                          # luoghi con nome, e dove hai registrato senza un nome
+uv run omy places add Casa 45.4642 9.1900       # --radius 150 (metri) di default
+uv run omy places remove Casa
+```
+
+`places list` riporta i punti senza nome dove hai registrato di più, con le coordinate da
+usare in `places add`. Aggiungere o togliere un luogo riscrive i markdown. Una posizione è
+un luogo se cade entro il suo raggio, più fino a 100 m dell'imprecisione della posizione
+stessa. Nel markdown, sotto il titolo della sessione:
+`_📍 Casa_`, `_📍 Casa → 45.4700, 9.1950 (±20 m)_` se ti sei spostato.
+
+## Batteria del ciondolo
+
+L'app iPhone mette nel sidecar il livello della batteria del ciondolo quando chiude un
+segmento (`"battery": 0–100`). `uv run omy battery` (e la riga "Batteria ciondolo" nella
+scheda Stato) ne ricava:
+- il consumo in %/ora, sul tempo reale tra una lettura e l'altra, registrando o no;
+- quanto dura una carica e quanto ne resta.
+
+Una risalita di almeno 3 punti è una ricarica, e chiude il tratto. Letture a più di 12 ore
+di distanza non vengono unite. La stima diventa sensata dopo qualche giorno di uso normale.
 
 ## Misurare la precisione (`omy eval`)
 
@@ -309,7 +386,8 @@ Controlli eseguiti, in quest'ordine, prima di leggere il corpo:
   Nessun altro input dell'utente entra nei percorsi dei file: la cartella del giorno è
   calcolata dalla data.
 - **Metadati:** `X-Segment-Meta` al massimo 4 KB, JSON con esattamente i campi attesi e
-  i tipi giusti. `id` e `sha256` devono coincidere con la richiesta, e `start` deve
+  i tipi giusti. Gli unici campi opzionali sono `calls`, `location` (coordinate nei limiti,
+  `source` tra `visit` e `move`, nessun altro campo) e `battery` (intero 0–100). `id` e `sha256` devono coincidere con la richiesta, e `start` deve
   coincidere con l'istante scritto nell'id.
 - **Dimensione del corpo:** `Content-Length` viene controllato subito, e i byte vengono
   contati anche durante lo streaming (risposta 413).

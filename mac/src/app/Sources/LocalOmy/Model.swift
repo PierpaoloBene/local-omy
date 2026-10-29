@@ -36,6 +36,14 @@ struct Status: Decodable {
         let openSessions: Int
         let progressFile: String
     }
+    struct Battery: Decodable {
+        let level: Int?
+        let at: String?
+        let hoursMeasured: Double?
+        let drainPerHour: Double?
+        let fullChargeHours: Double?
+        let remainingHours: Double?
+    }
 
     let receiver: Agent
     let periodic: Agent
@@ -44,6 +52,7 @@ struct Status: Decodable {
     let upload: Upload
     let iphone: IPhone
     let transcripts: Transcripts
+    let battery: Battery?
     let logs: [String: String]
 }
 

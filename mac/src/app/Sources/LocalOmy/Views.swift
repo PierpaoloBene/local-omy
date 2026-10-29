@@ -27,6 +27,7 @@ struct MainWindow: View {
             SetupTab(model: model).tabItem { Label("Setup", systemImage: "checklist") }
             IPhoneTab(model: model).tabItem { Label("iPhone", systemImage: "iphone") }
             TranscriptsTab(model: model).tabItem { Label("Trascrizioni", systemImage: "text.quote") }
+            PeopleTab(model: model).tabItem { Label("Persone", systemImage: "person.2") }
         }
     }
 }
@@ -148,6 +149,7 @@ struct StatusTab: View {
                     Row(title: "Trascrizione", value: transcriptionText(s.transcripts),
                         level: model.progress != nil || s.transcripts.pendingSessions == 0 ? .ok : .unknown)
                     Row(title: "App iPhone", value: iphoneText(s.iphone), level: iphoneLevel(s.iphone))
+                    Row(title: "Batteria ciondolo", value: batteryText(s.battery))
                     Row(title: "Job orario", value: s.periodic.loaded ? "installato" : "non installato (vedi Setup)",
                         level: s.periodic.loaded ? .ok : .warning)
                 }
@@ -186,6 +188,17 @@ struct StatusTab: View {
         if let p = model.progress { return "in corso, \(p.text)" }
         if t.pendingSessions == 0 { return "al passo" + (t.openSessions > 0 ? " (1 sessione in registrazione)" : "") }
         return "\(t.pendingSessions) sessioni da trascrivere, \(Int(t.pendingMinutes)) min"
+    }
+
+    private func batteryText(_ b: Status.Battery?) -> String {
+        guard let b, let level = b.level else { return "— (arriva con i prossimi segmenti)" }
+        var t = "\(level)% alle \(localDate(b.at))"
+        if let full = b.fullChargeHours, let left = b.remainingHours, let rate = b.drainPerHour {
+            t += String(format: ", %.1f%%/ora: una carica dura ~%.0f ore, ne restano ~%.0f", rate, full, left)
+        } else {
+            t += ", consumo ancora da misurare"
+        }
+        return t
     }
 
     private func iphoneText(_ i: Status.IPhone) -> String {

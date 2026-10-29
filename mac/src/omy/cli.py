@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import date, datetime
 
-from omy import evaluate, iphone, macsetup, status, transcribe
+from omy import battery, evaluate, iphone, macsetup, people, places, status, transcribe
 
 
 def periodic() -> dict:
@@ -77,6 +77,35 @@ def main() -> int:
     voice = sub.add_parser("voice", help="your voice profile for diarization").add_subparsers(dest="action", required=True)
     voice.add_parser("enroll", help="build it from the P: lines of the eval clips")
 
+    sp = sub.add_parser("speakers", help="the voices of each session, to name them") \
+        .add_subparsers(dest="action", required=True)
+    spl = sp.add_parser("list", help="voices of the sessions of a day, with what they said")
+    spl.add_argument("--day", type=date.fromisoformat, required=True, help="YYYY-MM-DD (Europe/Rome)")
+    spp = sp.add_parser("play", help="write a few seconds of a voice to a WAV")
+    spr = sp.add_parser("rename", help="this voice is NAME, in this and the other sessions")
+    for x in (spp, spr):
+        x.add_argument("session")
+        x.add_argument("label", help="the voice's label, as in speakers list")
+    spr.add_argument("name")
+    pe = sub.add_parser("people", help="the people you named").add_subparsers(dest="action", required=True)
+    pe.add_parser("list", help="you and the named people")
+    per = pe.add_parser("rename", help="new name (same as another person: merged)")
+    ped = pe.add_parser("delete", help="delete the voice print and the name")
+    for x in (per, ped):
+        x.add_argument("id")
+    per.add_argument("name")
+
+    pl = sub.add_parser("places", help="names for the places where you record").add_subparsers(dest="action", required=True)
+    pl.add_parser("list", help="named places, and where you spent time without a name")
+    pla = pl.add_parser("add", help="name a place (same name: replaced)")
+    pla.add_argument("name")
+    pla.add_argument("lat", type=float)
+    pla.add_argument("lon", type=float)
+    pla.add_argument("--radius", type=int, default=places.DEFAULT_RADIUS, help="meters")
+    pl.add_parser("remove", help="forget a place name").add_argument("name")
+    bat = sub.add_parser("battery", help="pendant battery: level, drain, how long a charge lasts")
+    bat.add_argument("--days", type=int, default=battery.DAYS)
+
     sub.add_parser("periodic", help="hourly job run by the LaunchAgent")
 
     args = p.parse_args()
@@ -123,6 +152,26 @@ def main() -> int:
                 result = evaluate.run(args.config, fresh=args.fresh)
         elif args.cmd == "voice":
             result = evaluate.enroll()
+        elif args.cmd == "speakers":
+            result = {
+                "list": lambda: people.list_day(args.day),
+                "play": lambda: people.play(args.session, args.label),
+                "rename": lambda: people.rename(args.session, args.label, args.name),
+            }[args.action]()
+        elif args.cmd == "places":
+            result = {
+                "list": places.list_places,
+                "add": lambda: places.add(args.name, args.lat, args.lon, args.radius),
+                "remove": lambda: places.remove(args.name),
+            }[args.action]()
+        elif args.cmd == "battery":
+            result = battery.battery(args.days)
+        elif args.cmd == "people":
+            result = {
+                "list": people.list_people,
+                "rename": lambda: people.rename_person(args.id, args.name),
+                "delete": lambda: people.delete_person(args.id),
+            }[args.action]()
         else:
             result = periodic()
     except (iphone.IphoneError, transcribe.TranscribeError, macsetup.SetupError) as e:

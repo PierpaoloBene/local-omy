@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>local-omy records where each recording was made. The position goes only to your Mac.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>local-omy records where each recording was made, also in background, using visits and significant changes to save battery. The position goes only to your Mac.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>local-omy uses Bluetooth to receive audio from your Omi pendant.</string>
 	<key>UIApplicationSceneManifest</key>

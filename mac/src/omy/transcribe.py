@@ -362,12 +362,17 @@ def render_day(day: date) -> Path | None:
         if day_dir.is_dir() else []
     if not docs:
         return None
+    from omy import places
+    place_list = places.load_places()
     lines = [f"# {day.isoformat()}", ""]
     for doc in docs:
         speech = _clean(doc["speech"])
         if not speech:
             continue
         lines += [f"## {_hm(doc['start'])}–{_hm(doc['end'])}", ""]
+        where = places.session_places(doc["segments"], place_list)
+        if where:
+            lines += ["_📍 " + " → ".join(where) + "_", ""]
         calls = [c for c in _context(day_dir, doc["session"]) if c["kind"] == "call"]
         if calls:
             lines += ["_" + ", ".join(f"Chiamata ({c['app']}) {_hm(c['start'])}–{_hm(c['end'])}" for c in calls) + "_", ""]

@@ -125,6 +125,11 @@ qualche decina di ms di jitter. Per l'ordine e i buchi fa fede l'indice pacchett
 `device_id` è l'identificatore che iOS assegna al ciondolo. È stabile su questo iPhone,
 ma non è il MAC address. `end` è l'inizio più l'offset dell'ultimo record.
 
+Campi opzionali, presenti solo quando ci sono (vedi `mac/README.md`):
+- `calls`: le chiamate CallKit che toccano il segmento, `[{"start", "end"?}]`;
+- `location`: la posizione migliore, `{"lat", "lon", "acc", "source", "at"}`;
+- `battery`: il livello della batteria del ciondolo alla chiusura del segmento, 0–100.
+
 ## Upload al Mac
 
 Il Mac è raggiungibile via Tailscale, con `tailscale serve` che fa da terminazione HTTPS
