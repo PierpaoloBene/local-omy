@@ -318,8 +318,22 @@ il Mac, con la tua lista in `~/OmiArchive/places.json` (mode 600):
 ```bash
 uv run omy places list                          # luoghi con nome, e dove hai registrato senza un nome
 uv run omy places add Casa 45.4642 9.1900       # --radius 150 (metri) di default
+uv run omy places rename Casa "Casa mia"
 uv run omy places remove Casa
 ```
+
+Nell'app per Mac, il tab **Luoghi** fa lo stesso. A sinistra ci sono i luoghi con nome, che
+puoi rinominare, eliminare o di cui puoi cambiare il raggio. A destra ci sono i punti dove hai
+registrato senza un nome, con un campo per darglielo. Per riconoscere un punto senza una
+mappa, ogni riga mostra:
+- quanto ci hai registrato e in quanti giorni;
+- la fascia oraria;
+- la distanza dal luogo con nome più vicino;
+- la frase più lunga detta lì l'ultimo giorno.
+
+Di proposito non c'è una mappa: le tile di Apple Maps rivelerebbero la zona ad Apple. Un
+luogo ha un solo centro, quindi non si può dare a un punto il nome di un luogo che esiste
+già. Se un punto è "ancora casa", conviene allargare il raggio di Casa.
 
 `places list` riporta i punti senza nome dove hai registrato di più, con le coordinate da
 usare in `places add`. Aggiungere o togliere un luogo riscrive i markdown. Una posizione è

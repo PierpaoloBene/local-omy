@@ -98,6 +98,9 @@ def main() -> int:
     pla.add_argument("lat", type=float)
     pla.add_argument("lon", type=float)
     pla.add_argument("--radius", type=int, default=places.DEFAULT_RADIUS, help="meters")
+    plr = pl.add_parser("rename", help="give a place another name")
+    plr.add_argument("name")
+    plr.add_argument("new")
     pl.add_parser("remove", help="forget a place name").add_argument("name")
     bat = sub.add_parser("battery", help="pendant battery: level, drain, how long a charge lasts")
     bat.add_argument("--days", type=int, default=battery.DAYS)
@@ -156,6 +159,7 @@ def main() -> int:
             result = {
                 "list": places.list_places,
                 "add": lambda: places.add(args.name, args.lat, args.lon, args.radius),
+                "rename": lambda: places.rename(args.name, args.new),
                 "remove": lambda: places.remove(args.name),
             }[args.action]()
         elif args.cmd == "features":

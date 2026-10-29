@@ -28,6 +28,7 @@ struct MainWindow: View {
             IPhoneTab(model: model).tabItem { Label("iPhone", systemImage: "iphone") }
             TranscriptsTab(model: model).tabItem { Label("Trascrizioni", systemImage: "text.quote") }
             PeopleTab(model: model).tabItem { Label("Persone", systemImage: "person.2") }
+            PlacesTab(model: model).tabItem { Label("Luoghi", systemImage: "mappin.and.ellipse") }
         }
     }
 }
