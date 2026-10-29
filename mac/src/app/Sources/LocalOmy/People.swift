@@ -306,8 +306,10 @@ private struct DayVoicesList: View {
                 List {
                     ForEach(v.sessions.filter { !todoOnly || $0.voices.contains(where: \.todo) }) { s in
                         Section {
-                            ForEach(s.voices.filter { !todoOnly || $0.todo }) { voice in
-                                VoiceRow(people: people, session: s.session, voice: voice, day: day)
+                            // "SPEAKER_00" repeats in every session: the row id must carry the session,
+                            // or the List reuses rows across sessions and shows other sessions' voices.
+                            ForEach(s.voices.filter { !todoOnly || $0.todo }.map { (id: "\(s.session)/\($0.label)", voice: $0) }, id: \.id) { row in
+                                VoiceRow(people: people, session: s.session, voice: row.voice, day: day)
                             }
                         } header: {
                             HStack {

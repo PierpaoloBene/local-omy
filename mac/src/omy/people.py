@@ -163,41 +163,55 @@ def unlabeled(days: int = TODO_DAYS, hours: int | None = None) -> dict:
 
 
 def play(session_id: str, label: str) -> dict:
-    """The longest turn of this voice (at most SAMPLE_MAX) into a WAV of its
-    own in the cache; whoever plays it deletes it."""
+    """What this voice said, up to SAMPLE_MAX (its longest turns, in order),
+    into a WAV of its own in the cache; whoever plays it deletes it."""
+    import numpy as np
     path, doc = _doc(session_id)
     turns = [(_t(x["start"]), _t(x["end"])) for x in doc["turns"] if x["label"] == label]
     if not turns:
         raise TranscribeError(f"no voice {label} in session {session_id}")
-    start, end = max(turns, key=lambda tr: tr[1] - tr[0])
-    end = min(end, start + SAMPLE_MAX)
     session = next((s for s in sessions_for_day(date.fromisoformat(path.parent.parent.name)) if s.id == session_id), None)
     if session is None:
         raise TranscribeError(f"audio of session {session_id} not found")
-    i = max((k for k, seg in enumerate(session.segments) if seg.start <= start), default=0)
-    first = session.segments[i]
+    # The longest turns first, until there are SAMPLE_MAX seconds of them.
+    chosen, left = [], SAMPLE_MAX
+    for start, end in sorted(turns, key=lambda tr: tr[0] - tr[1]):
+        if left <= timedelta(0):
+            break
+        end = min(end, start + left)
+        chosen.append((start, end))
+        left -= end - start
+    chosen.sort()
+    # Turns are seconds into the session's audio as diarization decoded it,
+    # from its first segment: decode the same way, or the times don't match.
+    last = max(e for _, e in chosen)
+    n = max((k for k, seg in enumerate(session.segments) if seg.start <= last), default=0)
     CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = CACHE_DIR / f"voice-{session_id}.wav"
-    dec = StreamDecoder(first.codec)
+    dec = StreamDecoder(session.segments[0].codec)
     dec.open(tmp)
     try:
-        # The turn may run into the next segment.
-        for seg in session.segments[i:i + 2]:
+        # Plus one segment: the audio runs shorter than the clock, never longer.
+        for seg in session.segments[:n + 2]:
             dec.add(parse(seg.bin.read_bytes()))
         dec.close()
         params, pcm = _read(tmp)
     finally:
         dec.close()
         tmp.unlink(missing_ok=True)
-    a = int((start - first.start).total_seconds() * SAMPLE_RATE)
-    b = int((end - first.start).total_seconds() * SAMPLE_RATE)
+    gap = np.zeros(SAMPLE_RATE // 4, dtype=pcm.dtype)
+    parts = []
+    for start, end in chosen:
+        a = int((start - session.start).total_seconds() * SAMPLE_RATE)
+        z = int((end - session.start).total_seconds() * SAMPLE_RATE)
+        parts += [pcm[max(a, 0):z], gap]
     for old in CACHE_DIR.glob(f"{SAMPLE_PREFIX}*.wav"):
         if time.time() - old.stat().st_mtime > SAMPLE_KEEP:
             old.unlink(missing_ok=True)
     fd, name = tempfile.mkstemp(dir=CACHE_DIR, prefix=SAMPLE_PREFIX, suffix=".wav")
     os.close(fd)
-    _write(Path(name), params, pcm[max(a, 0):b])
-    return {"path": name, "seconds": round((end - start).total_seconds(), 1)}
+    _write(Path(name), params, np.concatenate(parts))
+    return {"path": name, "seconds": round(sum((e - s).total_seconds() for s, e in chosen), 1)}
 
 
 def _remove_sample(people: dict, key: str) -> None:
