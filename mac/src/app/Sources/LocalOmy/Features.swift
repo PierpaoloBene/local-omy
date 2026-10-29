@@ -6,7 +6,8 @@ import SwiftUI
 struct Feature: Decodable, Identifiable {
     let key: String
     let device: String
-    let label: String
+    let name: String
+    let description: String
     let on: Bool
     let at: String?
     var id: String { key }
@@ -42,17 +43,21 @@ struct FeaturesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Funzioni").font(.headline)
-            Text("Le stesse sull'iPhone: le modifiche arrivano all'altro dispositivo alla prossima sincronizzazione (apertura dell'app, o entro 5 minuti).")
+            Text("Le stesse dell'app iPhone: una modifica arriva all'altro dispositivo alla prossima sincronizzazione (apertura dell'app, o entro 5 minuti).")
                 .font(.caption).foregroundStyle(.secondary)
-            ForEach(model.features) { f in
-                Toggle(isOn: Binding(get: { f.on }, set: { model.setFeature(f.key, $0) })) {
-                    HStack {
-                        Text(f.label)
-                        Text(f.device == "iphone" ? "iPhone" : "Mac")
-                            .font(.caption).foregroundStyle(.secondary)
+            ForEach([("iphone", "iPhone"), ("mac", "Mac")], id: \.0) { device, title in
+                Text(title).font(.subheadline.bold()).padding(.top, 6)
+                ForEach(model.features.filter { $0.device == device }) { f in
+                    Toggle(isOn: Binding(get: { f.on }, set: { model.setFeature(f.key, $0) })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(f.name)
+                            Text(f.description).font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
+            Text("Spegnere una funzione interrompe la raccolta, ma non cancella quello che c'è già.")
+                .font(.caption).foregroundStyle(.secondary).padding(.top, 6)
         }
     }
 }

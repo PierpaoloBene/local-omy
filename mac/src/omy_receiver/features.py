@@ -22,15 +22,22 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-# key -> (device that applies it, label)
+# key -> (device that applies it, name, what it does): shown by both apps.
 FEATURES = {
-    "location": ("iphone", "Posizione: dove sono state fatte le registrazioni"),
-    "calls": ("iphone", "Chiamate sull'iPhone (inizio e fine, non chi)"),
-    "battery": ("iphone", "Livello della batteria del ciondolo"),
-    "mac_audio": ("mac", "Chiamate e media sul Mac (quali app usano microfono e altoparlanti)"),
-    "diarization": ("mac", "Chi parla (diarizzazione)"),
-    "voice_prints": ("mac", "Impronte vocali: salvare le voci e riconoscere le persone con un nome"),
-    "auto_transcribe": ("mac", "Trascrizione automatica ogni ora"),
+    "location": ("iphone", "Posizione",
+                 "Salva dove è stata fatta ogni registrazione, con le visite e i cambi di posizione di iOS, senza tenere acceso il GPS."),
+    "calls": ("iphone", "Chiamate",
+                 "Segna quando sei al telefono, su FaceTime o WhatsApp: solo inizio e fine, non chi chiama."),
+    "battery": ("iphone", "Batteria del ciondolo",
+                 "Salva il livello della batteria a ogni segmento, per stimare quanto dura una carica."),
+    "mac_audio": ("mac", "Chiamate e media sul Mac",
+                 "Segna quali app usano microfono e altoparlanti, per distinguere una chiamata da un video o dalla musica."),
+    "diarization": ("mac", "Chi parla",
+                 "Separa le voci di ogni sessione e riconosce la tua."),
+    "voice_prints": ("mac", "Impronte vocali",
+                 "Salva l'impronta delle altre voci, per dar loro un nome e riconoscerle nelle sessioni successive."),
+    "auto_transcribe": ("mac", "Trascrizione automatica",
+                 "Trascrive ogni ora le sessioni concluse."),
 }
 ISO_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z")
 MAX_BODY = 4096

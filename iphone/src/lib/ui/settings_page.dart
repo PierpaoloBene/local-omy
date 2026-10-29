@@ -87,18 +87,26 @@ class _SettingsPageState extends State<SettingsPage> {
         : f.lastSyncAt == null
         ? 'Non ancora sincronizzate con il Mac'
         : 'Sincronizzate con il Mac alle ${TimeOfDay.fromDateTime(f.lastSyncAt!).format(context)}';
+    final small = Theme.of(context).textTheme.bodySmall;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(sync, style: Theme.of(context).textTheme.bodySmall),
-        for (final MapEntry(key: key, value: (device, label)) in featureInfo.entries)
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(label),
-            subtitle: Text(device == 'iphone' ? 'su questo iPhone' : 'sul Mac'),
-            value: f.on(key),
-            onChanged: (v) => f.set(key, v),
-          ),
+        Text(sync, style: small),
+        for (final (device, title) in [('iphone', 'iPhone'), ('mac', 'Mac')]) ...[
+          const SizedBox(height: 12),
+          Text(title, style: Theme.of(context).textTheme.titleSmall),
+          for (final MapEntry(key: key, value: (d, name, description)) in featureInfo.entries)
+            if (d == device)
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(name),
+                subtitle: Text(description),
+                value: f.on(key),
+                onChanged: (v) => f.set(key, v),
+              ),
+        ],
+        const SizedBox(height: 12),
+        Text('Spegnere una funzione interrompe la raccolta, ma non cancella quello che c\'è già.', style: small),
       ],
     );
   }

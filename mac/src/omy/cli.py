@@ -180,8 +180,8 @@ def main() -> int:
             if args.action == "set":
                 features.set_feature(ARCHIVE, args.key, args.state == "on")
             result = {"features": [
-                {"key": k, "device": dev, "label": label, **features.load(ARCHIVE)[k]}
-                for k, (dev, label) in features.FEATURES.items()
+                {"key": k, "device": dev, "name": name, "description": what, **features.load(ARCHIVE)[k]}
+                for k, (dev, name, what) in features.FEATURES.items()
             ]}
         elif args.cmd == "battery":
             result = battery.battery(args.days)

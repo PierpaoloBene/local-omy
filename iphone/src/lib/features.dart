@@ -19,15 +19,35 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'settings.dart';
 
-/// Same keys as omy_receiver/features.py on the Mac.
-const featureInfo = <String, (String device, String label)>{
-  'location': ('iphone', 'Posizione delle registrazioni'),
-  'calls': ('iphone', 'Chiamate sull\'iPhone (inizio e fine, non chi)'),
-  'battery': ('iphone', 'Batteria del ciondolo'),
-  'mac_audio': ('mac', 'Chiamate e media sul Mac'),
-  'diarization': ('mac', 'Chi parla (diarizzazione)'),
-  'voice_prints': ('mac', 'Impronte vocali e riconoscimento delle persone'),
-  'auto_transcribe': ('mac', 'Trascrizione automatica ogni ora'),
+/// Same keys, names and descriptions as omy_receiver/features.py on the Mac.
+const featureInfo = <String, (String device, String name, String description)>{
+  'location': (
+    'iphone',
+    'Posizione',
+    'Salva dove è stata fatta ogni registrazione, con le visite e i cambi di posizione di iOS, senza tenere acceso il GPS.',
+  ),
+  'calls': (
+    'iphone',
+    'Chiamate',
+    'Segna quando sei al telefono, su FaceTime o WhatsApp: solo inizio e fine, non chi chiama.',
+  ),
+  'battery': (
+    'iphone',
+    'Batteria del ciondolo',
+    'Salva il livello della batteria a ogni segmento, per stimare quanto dura una carica.',
+  ),
+  'mac_audio': (
+    'mac',
+    'Chiamate e media sul Mac',
+    'Segna quali app usano microfono e altoparlanti, per distinguere una chiamata da un video o dalla musica.',
+  ),
+  'diarization': ('mac', 'Chi parla', 'Separa le voci di ogni sessione e riconosce la tua.'),
+  'voice_prints': (
+    'mac',
+    'Impronte vocali',
+    'Salva l\'impronta delle altre voci, per dar loro un nome e riconoscerle nelle sessioni successive.',
+  ),
+  'auto_transcribe': ('mac', 'Trascrizione automatica', 'Trascrive ogni ora le sessioni concluse.'),
 };
 
 class Features extends ChangeNotifier with WidgetsBindingObserver {
