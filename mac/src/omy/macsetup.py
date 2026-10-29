@@ -204,12 +204,12 @@ def fix(id_: str) -> dict:
     elif id_ == "iphone":
         iphone.ensure_config()
     elif id_ == "diarize":
-        from omy import diarize, evaluate
+        from omy import diarize, enroll
         if not diarize.TOKEN_FILE.is_file() and not (diarize.HF_HOME / "hub").is_dir():
             raise SetupError("save a Hugging Face token in ~/.config/local-omy/hf_token first (README, Chi parla)")
         diarize._load()
         if not diarize.PROFILE.is_file():
-            evaluate.enroll()
+            enroll.enroll()
     else:
         raise SetupError(f"unknown item {id_}")
     return next(c for c in checks() if c["id"] == id_)

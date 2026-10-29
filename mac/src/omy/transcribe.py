@@ -52,17 +52,11 @@ MODELS = {
         "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
         "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987", 885098),
 }
-# Not needed to transcribe, downloaded on demand (omy eval).
-OPTIONAL_MODELS = {
-    "ggml-large-v3.bin": (
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
-        "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2", 3095033483),
-}
 WHISPER_MODEL = "ggml-large-v3-turbo.bin"
 VAD_MODEL = "ggml-silero-v6.2.0.bin"
 
 CHUNK = timedelta(minutes=30)
-# Measured with omy eval on a hand-corrected sample (README): language detected
+# Measured on a hand-corrected sample (README): language detected
 # per ~30 s window instead of per chunk (whisper otherwise translates Italian
 # into English for half an hour), quiet stretches raised, a more sensitive VAD
 # with more padding. People's words found went from 49% to 77%.
@@ -112,12 +106,11 @@ def models_status() -> dict[str, bool]:
 
 
 def download_models(names: list[str] | None = None) -> dict[str, str]:
-    """The required models, or these names from MODELS / OPTIONAL_MODELS."""
+    """The required models, or these names from MODELS."""
     MODELS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    catalog = {**MODELS, **OPTIONAL_MODELS}
     result = {}
     for name in names or list(MODELS):
-        url, sha, size = catalog[name]
+        url, sha, size = MODELS[name]
         dest = MODELS_DIR / name
         if dest.is_file():
             result[name] = "present"
@@ -148,18 +141,17 @@ def _whisper_cli() -> str:
     return path
 
 
-def _run_whisper(wav: Path, model: str = WHISPER_MODEL, language: str = LANGUAGE,
-                 extra: list[str] | None = None, vad: bool = True) -> list[dict]:
+def _run_whisper(wav: Path, language: str = LANGUAGE) -> list[dict]:
     """Speech items of one WAV, with offsets in ms from its start and the
-    detected language. extra, vad: experiments of omy eval."""
+    detected language."""
     base = wav.with_suffix("")
     r = subprocess.run([
-        _whisper_cli(), "-m", str(MODELS_DIR / model), "-l", language,
+        _whisper_cli(), "-m", str(MODELS_DIR / WHISPER_MODEL), "-l", language,
         # No text context between windows: stops the repetition loops
         # ("Grazie a tutti." x18) that whisper produces on noise.
         "-mc", "0",
-        *(["--vad", "-vm", str(MODELS_DIR / VAD_MODEL)] if vad else []),
-        "-np", "-oj", "-of", str(base), *(extra or []), "-f", str(wav),
+        "--vad", "-vm", str(MODELS_DIR / VAD_MODEL), *VAD_ARGS,
+        "-np", "-oj", "-of", str(base), "-f", str(wav),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     if r.returncode != 0:
         raise TranscribeError(f"whisper-cli failed (exit {r.returncode}): {r.stderr.strip()[-500:]}")
@@ -175,26 +167,21 @@ def _run_whisper(wav: Path, model: str = WHISPER_MODEL, language: str = LANGUAGE
     ]
 
 
-def transcribe_wav(wav: Path, model: str = WHISPER_MODEL, language: str = LANGUAGE,
-                   window_s: int = WINDOW_S, normalize: bool = True,
-                   extra: list[str] | None = None, vad: bool = True) -> list[dict]:
+def transcribe_wav(wav: Path) -> list[dict]:
     """_run_whisper over a whole WAV, prepared as measured best: normalized,
-    then cut at pauses into windows (window_s 0: in one go)."""
-    extra = VAD_ARGS if extra is None else extra
-    temp: list[Path] = []
+    then cut at pauses into windows of about WINDOW_S, each with its own
+    language detection."""
+    norm = wav.with_name(f"{wav.stem}-norm.wav")
+    temp: list[Path] = [norm]
     try:
-        if normalize:
-            norm = wav.with_name(f"{wav.stem}-norm.wav")
-            normalize_wav(wav, norm)
-            temp.append(norm)
-            wav = norm
-        pieces = split_at_pauses(wav, window_s, wav.parent) if window_s else [(wav, 0)]
-        temp += [p for p, _ in pieces if p != wav]
+        normalize_wav(wav, norm)
+        pieces = split_at_pauses(norm, WINDOW_S, norm.parent)
+        temp += [p for p, _ in pieces if p != norm]
         items = []
         for piece, offset_ms in pieces:
-            found = _run_whisper(piece, model, language, extra, vad)
-            if language == "auto" and found and found[0]["language"] not in LANGUAGES:
-                found = _run_whisper(piece, model, FALLBACK_LANGUAGE, extra, vad)
+            found = _run_whisper(piece)
+            if LANGUAGE == "auto" and found and found[0]["language"] not in LANGUAGES:
+                found = _run_whisper(piece, FALLBACK_LANGUAGE)
             for it in found:
                 items.append({**it, "from": offset_ms + it["from"], "to": offset_ms + it["to"]})
         return items

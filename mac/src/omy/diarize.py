@@ -10,7 +10,8 @@ close to a named person (omy.people) is that person, the others "Persona 1",
 
 Voice data, all biometric (mode 600, never leaves the Mac), in
 ~/OmiArchive/voices:
-  me.npy                 your profile, from `omy voice enroll`
+  me.npy                 your profile, from `omy voice enroll` (omy.enroll)
+  enroll/                the clips annotated by hand it is built from
   clusters/<session>.npz the embedding of each voice of each session, so a
                          voice can be named later without running pyannote
   people.json            the people you named, people/<id>.npz their samples
@@ -39,8 +40,9 @@ HF_HOME = ARCHIVE / "models" / "hf"
 TOKEN_FILE = CONFIG_DIR / "hf_token"
 VOICES = ARCHIVE / "voices"
 PROFILE = VOICES / "me.npy"
+ENROLL_DIR = VOICES / "enroll"
 # Cosine similarity to the profile above which a cluster is you. Measured on
-# the eval clips: your voice 0.74-0.75, every other voice (people, TV, Teams)
+# hand-annotated clips: your voice 0.74-0.75, every other voice (people, TV, Teams)
 # 0.18 or less.
 ME_THRESHOLD = 0.5
 # The same for a named person, against the mean of the voices named after them.

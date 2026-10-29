@@ -224,8 +224,12 @@ Una volta sola:
 2. Crea un token **Read** su Hugging Face e salvalo, senza incollarlo da nessuna parte:
    `(umask 077; pbpaste | tr -d '\n' > ~/.config/local-omy/hf_token)`. Serve solo a scaricare
    il modello in `~/OmiArchive/models/hf`. Dopo, la diarizzazione gira offline.
-3. `uv run omy voice enroll`: ricava l'impronta vocale dalle righe `P:` degli spezzoni
-   annotati (vedi sotto) e la salva in `~/OmiArchive/voices/me.npy`.
+3. `uv run omy voice enroll`: ricava l'impronta vocale dagli spezzoni annotati a mano in
+   `~/OmiArchive/voices/enroll` e la salva in `~/OmiArchive/voices/me.npy`. Ogni spezzone è
+   un `<X>.wav` di 2 minuti con un `<X>.txt`: una battuta per riga con chi parla (`P:` tu,
+   `A:`, `B:`… altre persone, `TV:` audio registrato). Le righe con `#` sono ignorate,
+   `# default: P` vale per le righe senza etichetta, `[...]` e `(...)` sono note.
+   Contano solo gli spezzoni con righe `P:`.
 
 L'impronta vocale è un **dato biometrico**: ha permessi 600 e non lascia mai il Mac, come
 l'audio. Se la ricrei, le sessioni vengono ri-diarizzate.
@@ -325,30 +329,11 @@ scheda Stato) ne ricava:
 Una risalita di almeno 3 punti è una ricarica, e chiude il tratto. Letture a più di 12 ore
 di distanza non vengono unite. La stima diventa sensata dopo qualche giorno di uso normale.
 
-## Misurare la precisione (`omy eval`)
+## Come è stata scelta la pipeline
 
-Le scelte della pipeline vengono da una misura su spezzoni trascritti a mano, non da
-impressioni.
-
-```bash
-uv run omy eval make        # 7 spezzoni da 2 min in ~/OmiArchive/eval: <X>.wav e <X>.txt da correggere
-uv run omy eval run         # confronta le configurazioni (CONFIGS in omy/evaluate.py)
-uv run omy eval diarize     # quanto del tuo parlato viene attribuito a te, e viceversa
-```
-
-- **Annotazione:** in `<X>.txt` si scrive quello che viene detto davvero, una battuta per
-  riga, con chi parla:
-  - `P:` sei tu;
-  - `A:`, `B:`… sono le altre persone;
-  - `TV:` è audio registrato. Una descrizione è ammessa: `TV (Teams):`.
-
-  Le righe con `#` sono ignorate. `# default: P` vale per le righe senza etichetta.
-  `[...]` e `(...)` sono note e non vengono contate.
-- **Misure:**
-  - **WER** (parole sbagliate / parole del riferimento) sugli spezzoni annotati per intero;
-  - **parole delle persone ritrovate** sugli spezzoni con tratti "(incomprensibili)", dove
-    whisper sentirebbe la TV che chi annota non ha capito;
-  - **parole inventate** negli spezzoni senza parlato.
+Le scelte della trascrizione vengono da una misura su 7 spezzoni da 2 minuti trascritti a
+mano, non da impressioni. Le prove sono concluse e il materiale è stato rimosso; restano
+solo gli spezzoni che servono all'impronta vocale.
 
 Risultati del 29 ottobre 2026 (1.000 parole circa):
 
