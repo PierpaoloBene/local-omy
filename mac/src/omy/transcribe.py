@@ -8,7 +8,12 @@ timestamps back to wall-clock time.
 Output, derived and regenerable (the raw archive is only read):
   transcripts/YYYY-MM-DD/<session>.json   speech items with UTC start/end
   transcripts/YYYY-MM-DD.md               the readable day, Europe/Rome times
-A session JSON exists only once complete (temp file + rename).
+A session JSON exists only once complete (temp file + rename). Segments can
+reach the Mac hours late (Mac asleep, phone queue): a session that grew after
+being transcribed gets only its new segments transcribed and appended.
+
+While running, cache/transcribe-progress.json says how far it got (read by
+omy status and, directly, by the Mac app).
 """
 
 from __future__ import annotations
@@ -17,12 +22,14 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 from omy.audio import StreamDecoder
 from omy.config import ARCHIVE
@@ -49,10 +56,20 @@ WHISPER_MODEL = "ggml-large-v3-turbo.bin"
 VAD_MODEL = "ggml-silero-v6.2.0.bin"
 
 CHUNK = timedelta(minutes=30)
-# Silence longer than this starts a new paragraph in the day markdown.
+# Silence longer than this starts a new paragraph in the day markdown, and so
+# does a paragraph that has run this long without one.
 BLOCK_GAP = timedelta(minutes=2)
+BLOCK_MAX = timedelta(minutes=5)
+# Whisper's stock phrases on noise. Dropped from the markdown when nothing else
+# is said within ISOLATED of them; the JSON keeps them.
+HALLUCINATIONS = {
+    "thank you", "thank you very much", "thanks for watching", "thank you for watching",
+    "grazie", "grazie a tutti", "grazie per la visione", "gracias", "merci", "you", "",
+}
+ISOLATED = timedelta(seconds=30)
 # How far back --pending looks.
 PENDING_DAYS = 7
+PROGRESS = CACHE_DIR / "transcribe-progress.json"
 
 
 class TranscribeError(Exception):
@@ -157,9 +174,22 @@ def session_path(session: Session) -> Path:
     return TRANSCRIPTS / session.day.isoformat() / f"{session.id}.json"
 
 
-def transcribe_session(session: Session) -> dict:
+def _load_doc(session: Session) -> dict | None:
+    try:
+        return json.loads(session_path(session).read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def transcribe_session(session: Session, prior: dict | None = None,
+                       on_progress: Callable[[int], None] | None = None) -> dict:
+    """Transcribe a session, or with prior (its transcript when it had fewer
+    segments) only the segments added since. on_progress gets the ms of audio
+    decoded so far."""
+    done = len(prior["segments"]) if prior else 0
+    work = Session(session.segments[done:])
     CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    decoder = StreamDecoder(session.segments[0].codec)
+    decoder = StreamDecoder(work.segments[0].codec)
     speech: list[dict] = []
     chunk_start_ms = 0
     wav = CACHE_DIR / f"{session.id}.wav"
@@ -167,19 +197,21 @@ def transcribe_session(session: Session) -> dict:
     def flush() -> None:
         decoder.close()
         if decoder.position_ms > chunk_start_ms:
-            log(f"  whisper {session.id} +{chunk_start_ms // 60000} min")
+            log(f"  whisper {work.id} +{chunk_start_ms // 60000} min")
             for it in _run_whisper(wav):
                 speech.append({
-                    "start": _iso(session.start + timedelta(milliseconds=chunk_start_ms + it["from"])),
-                    "end": _iso(session.start + timedelta(milliseconds=chunk_start_ms + it["to"])),
+                    "start": _iso(work.start + timedelta(milliseconds=chunk_start_ms + it["from"])),
+                    "end": _iso(work.start + timedelta(milliseconds=chunk_start_ms + it["to"])),
                     "language": it["language"],
                     "text": it["text"],
                 })
+            if on_progress:
+                on_progress(decoder.position_ms)
         wav.unlink(missing_ok=True)
 
     try:
         decoder.open(wav)
-        for seg in session.segments:
+        for seg in work.segments:
             try:
                 decoder.add(parse(seg.bin.read_bytes()))
             except SegmentError as e:
@@ -203,9 +235,9 @@ def transcribe_session(session: Session) -> dict:
         "model": WHISPER_MODEL,
         "vad": VAD_MODEL,
         "language": LANGUAGE,
-        "frames_decoded": decoder.decoded,
-        "frames_concealed": decoder.concealed,
-        "speech": speech,
+        "frames_decoded": decoder.decoded + (prior["frames_decoded"] if prior else 0),
+        "frames_concealed": decoder.concealed + (prior["frames_concealed"] if prior else 0),
+        "speech": (prior["speech"] if prior else []) + speech,
     }
     _write_atomic(session_path(session), json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
     return doc
@@ -215,8 +247,37 @@ def _hm(iso: str) -> str:
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(LOCAL_TZ).strftime("%H:%M")
 
 
+def _norm(text: str) -> str:
+    return " ".join(re.sub(r"[^\w]+", " ", text.lower()).split())
+
+
+def _clean(speech: list[dict]) -> list[dict]:
+    """Speech fit to read: whisper's repetition loops (the same line over and
+    over) collapsed to one line, stock phrases alone in silence dropped."""
+    out: list[dict] = []
+    for it in speech:
+        if out and _norm(it["text"]) == _norm(out[-1]["text"]):
+            out[-1] = {**out[-1], "end": it["end"]}
+            continue
+        out.append(it)
+
+    def t(iso: str) -> datetime:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+
+    kept = []
+    for i, it in enumerate(out):
+        if _norm(it["text"]) in HALLUCINATIONS:
+            before = i > 0 and t(it["start"]) - t(out[i - 1]["end"]) < ISOLATED
+            after = i + 1 < len(out) and t(out[i + 1]["start"]) - t(it["end"]) < ISOLATED
+            if not (before or after):
+                continue
+        kept.append(it)
+    return kept
+
+
 def render_day(day: date) -> Path | None:
-    """Rebuild transcripts/DAY.md from the session JSONs of that day."""
+    """Rebuild transcripts/DAY.md from the session JSONs of that day. Sessions
+    with no speech are left out."""
     day_dir = TRANSCRIPTS / day.isoformat()
     docs = sorted((json.loads(p.read_text()) for p in day_dir.glob("*.json")), key=lambda d: d["start"]) \
         if day_dir.is_dir() else []
@@ -224,29 +285,82 @@ def render_day(day: date) -> Path | None:
         return None
     lines = [f"# {day.isoformat()}", ""]
     for doc in docs:
-        lines += [f"## {_hm(doc['start'])}–{_hm(doc['end'])}", ""]
-        if not doc["speech"]:
-            lines += ["_(nessun parlato)_", ""]
+        speech = _clean(doc["speech"])
+        if not speech:
             continue
+        lines += [f"## {_hm(doc['start'])}–{_hm(doc['end'])}", ""]
         block: list[str] = []
+        block_start: datetime | None = None
         prev_end: datetime | None = None
-        for it in doc["speech"]:
+        for it in speech:
             start = datetime.fromisoformat(it["start"].replace("Z", "+00:00"))
-            if prev_end is None or start - prev_end > BLOCK_GAP:
+            if prev_end is None or start - prev_end > BLOCK_GAP or start - block_start > BLOCK_MAX:
                 if block:
                     lines += [" ".join(block), ""]
                 block = [f"**{_hm(it['start'])}**"]
+                block_start = start
             block.append(it["text"])
             prev_end = datetime.fromisoformat(it["end"].replace("Z", "+00:00"))
         lines += [" ".join(block), ""]
+    if len(lines) == 2:
+        lines += ["_(nessun parlato)_", ""]
     path = TRANSCRIPTS / f"{day.isoformat()}.md"
     _write_atomic(path, "\n".join(lines))
     return path
 
 
+def remaining(session: Session, prior: dict | None) -> list:
+    """The segments of session still to transcribe."""
+    return session.segments[len(prior["segments"]) if prior else 0:]
+
+
+def plan(days: list[date], force: bool = False) -> tuple[list[tuple[Session, dict | None]], list[str]]:
+    """(closed sessions to transcribe, each with its prior transcript if it
+    only grew since; ids of sessions still open)."""
+    todo: list[tuple[Session, dict | None]] = []
+    still_open: list[str] = []
+    for day in days:
+        for session in sessions_for_day(day):
+            if not session.closed():
+                still_open.append(session.id)
+                continue
+            doc = None if force else _load_doc(session)
+            ids = [s.id for s in session.segments]
+            if doc is not None:
+                if doc["segments"] == ids:
+                    continue
+                if ids[:len(doc["segments"])] != doc["segments"]:
+                    doc = None  # regrouped differently: start over
+            todo.append((session, doc))
+    return todo, still_open
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def progress() -> dict:
+    """The running transcription, by whichever process (app, terminal, hourly
+    job), or {"running": False}."""
+    try:
+        p = json.loads(PROGRESS.read_text())
+    except (FileNotFoundError, ValueError):
+        return {"running": False}
+    if not _pid_alive(p.get("pid", 0)):
+        return {"running": False}
+    return {"running": True, **p}
+
+
 def transcribe(days: list[date], force: bool = False) -> dict:
     """Transcribe the closed sessions of these days that have no transcript yet
-    (all closed sessions with force), then rebuild those days' markdown."""
+    or grew since (all closed sessions with force), then rebuild those days'
+    markdown."""
     missing = [n for n, ok in models_status().items() if not ok]
     if missing:
         raise TranscribeError(f"missing models {missing}: run omy setup models")
@@ -259,26 +373,53 @@ def transcribe(days: list[date], force: bool = False) -> dict:
 
     result: dict = {"transcribed": [], "failed": {}, "open": [], "days": []}
     with lock:
-        for day in days:
-            touched = False
-            for session in sessions_for_day(day):
-                if not session.closed():
-                    result["open"].append(session.id)
-                    continue
-                if session_path(session).exists() and not force:
-                    continue
-                log(f"session {session.id}: {len(session.segments)} segments, "
-                    f"{(session.end - session.start).total_seconds() / 60:.0f} min")
+        todo, result["open"] = plan(days, force)
+        work = [remaining(session, prior) for session, prior in todo]
+        state = {
+            "pid": os.getpid(),
+            "started": _iso(datetime.now(timezone.utc)),
+            "sessions_total": len(todo),
+            "sessions_done": 0,
+            "minutes_total": round(sum(_minutes(w) for w in work), 1),
+            "minutes_done": 0.0,
+            "session": None,
+            "day": None,
+        }
+
+        def save(**changes) -> None:
+            state.update(changes)
+            _write_atomic(PROGRESS, json.dumps(state) + "\n")
+
+        log(f"{len(todo)} sessions to transcribe, {state['minutes_total']:.0f} min of audio"
+            + (f", {len(result['open'])} still recording" if result["open"] else ""))
+        touched: set[date] = set()
+        minutes_before = 0.0
+        try:
+            for i, ((session, prior), segs) in enumerate(zip(todo, work), 1):
+                save(session=session.id, day=session.day.isoformat(), minutes_done=round(minutes_before, 1))
+                log(f"[{i}/{len(todo)}] {session.day} session {session.id}: "
+                    + (f"{len(segs)} new segments" if prior else f"{len(segs)} segments")
+                    + f", {_minutes(segs):.0f} min")
                 try:
-                    transcribe_session(session)
+                    transcribe_session(session, prior, lambda ms, base=minutes_before:
+                                       save(minutes_done=round(base + ms / 60000, 1)))
                     result["transcribed"].append(session.id)
-                    touched = True
+                    touched.add(session.day)
                 except TranscribeError as e:
                     log(f"  failed: {e}")
                     result["failed"][session.id] = str(e)
-            if touched or force:
-                if render_day(day):
-                    result["days"].append(day.isoformat())
+                minutes_before += _minutes(segs)
+                save(sessions_done=i, minutes_done=round(minutes_before, 1))
+                # Rebuild a day's markdown as soon as its last session is done.
+                nxt = todo[i][0].day if i < len(todo) else None
+                if session.day in touched and nxt != session.day and render_day(session.day):
+                    result["days"].append(session.day.isoformat())
+            if force:
+                for day in days:
+                    if day not in touched and render_day(day):
+                        result["days"].append(day.isoformat())
+        finally:
+            PROGRESS.unlink(missing_ok=True)
     return result
 
 

@@ -27,12 +27,21 @@ struct Status: Decodable {
         let needsReopen: Bool
         let device: Device?
     }
-    struct Transcripts: Decodable { let path: String; let days: [String] }
+    struct Upload: Decodable { let lastUploadAt: String?; let minutesSince: Double?; let queueRemaining: Int? }
+    struct Transcripts: Decodable {
+        let path: String
+        let days: [String]
+        let pendingSessions: Int
+        let pendingMinutes: Double
+        let openSessions: Int
+        let progressFile: String
+    }
 
     let receiver: Agent
     let periodic: Agent
     let tailscale: Tailscale
     let archive: Archive
+    let upload: Upload
     let iphone: IPhone
     let transcripts: Transcripts
     let logs: [String: String]
@@ -43,6 +52,68 @@ struct Check: Decodable, Identifiable {
     let label: String
     let ok: Bool
     let detail: String
+}
+
+/// cache/transcribe-progress.json, written by whichever omy transcribe is
+/// running (app, terminal or hourly job).
+struct TranscribeProgress: Decodable {
+    let pid: Int32
+    let sessionsTotal: Int
+    let sessionsDone: Int
+    let minutesTotal: Double
+    let minutesDone: Double
+    let session: String?
+    let day: String?
+
+    var fraction: Double { minutesTotal > 0 ? min(minutesDone / minutesTotal, 1) : 0 }
+
+    var text: String {
+        var t = "sessione \(min(sessionsDone + 1, sessionsTotal))/\(sessionsTotal)"
+        if let day { t += " · \(day)" }
+        return t + " · \(Int(minutesDone))/\(Int(minutesTotal)) min di audio"
+    }
+
+    /// The file, if the process that wrote it is still alive.
+    static func read(_ path: String) -> TranscribeProgress? {
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let p = try? decoder.decode(TranscribeProgress.self, from: data) else { return nil }
+        return kill(p.pid, 0) == 0 || errno == EPERM ? p : nil
+    }
+}
+
+/// One long omy command at a time per lane, with its streamed log.
+@MainActor
+@Observable
+final class Job {
+    private(set) var running: String?
+    private(set) var log: [String] = []
+    var lastError: String?
+
+    /// Runs `omy --json <args>`, then onDone (e.g. a refresh).
+    func start(_ name: String, _ args: [String], onDone: @escaping @MainActor () async -> Void) {
+        guard running == nil else { return }
+        running = name
+        log = []
+        lastError = nil
+        Task {
+            do {
+                _ = try await Omy.run(args) { line in
+                    Task { @MainActor in self.append(line) }
+                }
+            } catch {
+                lastError = error.localizedDescription
+            }
+            running = nil
+            await onDone()
+        }
+    }
+
+    private func append(_ line: String) {
+        log.append(line)
+        if log.count > 2000 { log.removeFirst(log.count - 2000) }
+    }
 }
 
 private struct Checks: Decodable { let checks: [Check] }
@@ -56,24 +127,35 @@ final class AppModel {
     var status: Status?
     var checks: [Check] = []
     var refreshError: String?
-    /// Name of the long operation in progress (one at a time), and its log.
-    var busy: String?
-    var log: [String] = []
+    /// Setup fixes and iPhone installs: one at a time.
+    let task = Job()
+    /// Transcription, independent of the above: it can take an hour.
+    let transcription = Job()
+    /// Progress of any running transcription, also one started by the
+    /// hourly job or a terminal.
+    var progress: TranscribeProgress?
+    /// Errors of short actions (token, login item).
     var lastError: String?
     var loginItem = SMAppService.mainApp.status == .enabled
 
-    private var timer: Timer?
+    private var refreshing = false
+    private var timers: [Timer] = []
 
     init() {
         Task { await refresh() }
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                if self?.busy == nil { await self?.refresh() }
-            }
-        }
+        timers.append(Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.refresh() }
+        })
+        // Cheap: one small file read.
+        timers.append(Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.readProgress() }
+        })
     }
 
     func refresh() async {
+        guard !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false }
         do {
             async let s = Omy.decode(Status.self, ["status"])
             async let c = Omy.decode(Checks.self, ["setup", "check"])
@@ -82,30 +164,22 @@ final class AppModel {
         } catch {
             refreshError = error.localizedDescription
         }
+        readProgress()
     }
 
-    /// Run a long omy command, streaming its log, then refresh.
+    private func readProgress() {
+        progress = status.flatMap { TranscribeProgress.read($0.transcripts.progressFile) }
+    }
+
+    var transcribing: Bool { transcription.running != nil || progress != nil }
+
+    func transcribeNow() {
+        guard !transcribing else { return }
+        transcription.start("Trascrizione", ["transcribe", "--pending"]) { [weak self] in await self?.refresh() }
+    }
+
     func perform(_ name: String, _ args: [String]) {
-        guard busy == nil else { return }
-        busy = name
-        log = []
-        lastError = nil
-        Task {
-            do {
-                _ = try await Omy.run(args) { line in
-                    Task { @MainActor in self.appendLog(line) }
-                }
-            } catch {
-                lastError = error.localizedDescription
-            }
-            busy = nil
-            await refresh()
-        }
-    }
-
-    private func appendLog(_ line: String) {
-        log.append(line)
-        if log.count > 2000 { log.removeFirst(log.count - 2000) }
+        task.start(name, args) { [weak self] in await self?.refresh() }
     }
 
     /// Copies the receiver token to the clipboard; it is never displayed.

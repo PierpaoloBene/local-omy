@@ -9,6 +9,10 @@ Environment:
   OMY_ARCHIVE     archive root (default ~/OmiArchive)
   OMY_PORT        port on 127.0.0.1 (default 8787)
   OMY_MAX_BODY    max upload size in bytes (default 32 MiB)
+
+After every accepted upload, <archive>/receiver.json records when it arrived
+and how many segments the phone still had queued (X-Queue-Remaining, sent by
+the phone; absent from older builds).
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import stat
@@ -31,6 +36,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.requests import ClientDisconnect
 
 from .segment import SegmentError, parse_header
 
@@ -40,6 +46,9 @@ ISO_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[
 MAX_META_HEADER = 4096
 MIN_TOKEN_LEN = 32
 LOCAL_TZ = ZoneInfo("Europe/Rome")
+MAX_QUEUE = 1_000_000
+
+log = logging.getLogger("uvicorn.error")
 
 META_FIELDS: dict[str, type | tuple[type, ...]] = {
     "id": str,
@@ -159,6 +168,17 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _write_state(path: Path, state: dict) -> None:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def create_app(config: Config) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     audio_root = config.archive / "raw" / "audio"
@@ -166,6 +186,15 @@ def create_app(config: Config) -> FastAPI:
     for d in (config.archive, audio_root, tmp_dir):
         d.mkdir(mode=0o700, parents=True, exist_ok=True)
     store_lock = asyncio.Lock()
+    state_file = config.archive / "receiver.json"
+
+    def record_upload(segment_id: str, request: Request) -> None:
+        queue = request.headers.get("x-queue-remaining", "")
+        _write_state(state_file, {
+            "last_upload_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "last_segment_id": segment_id,
+            "queue_remaining": int(queue) if queue.isdigit() and int(queue) <= MAX_QUEUE else None,
+        })
 
     @app.post("/v1/segments/{segment_id}")
     async def upload(segment_id: str, request: Request):
@@ -193,14 +222,19 @@ def create_app(config: Config) -> FastAPI:
             size = 0
             head = b""
             with os.fdopen(fd, "wb") as f:
-                async for chunk in request.stream():
-                    size += len(chunk)
-                    if size > config.max_body:
-                        return _error(413, "body too large")
-                    if len(head) < 14:
-                        head += chunk[: 14 - len(head)]
-                    h.update(chunk)
-                    f.write(chunk)
+                try:
+                    async for chunk in request.stream():
+                        size += len(chunk)
+                        if size > config.max_body:
+                            return _error(413, "body too large")
+                        if len(head) < 14:
+                            head += chunk[: 14 - len(head)]
+                        h.update(chunk)
+                        f.write(chunk)
+                except ClientDisconnect:
+                    # The phone keeps the segment and retries: nothing to store.
+                    log.warning("upload %s interrupted by the phone after %d bytes", segment_id, size)
+                    return _error(400, "client disconnected")
                 f.flush()
                 os.fsync(f.fileno())
             if h.hexdigest() != sha:
@@ -218,6 +252,7 @@ def create_app(config: Config) -> FastAPI:
             async with store_lock:
                 if final_bin.exists():
                     if _sha256_file(final_bin) == sha:
+                        record_upload(segment_id, request)
                         return {"id": segment_id, "sha256": sha, "status": "duplicate"}
                     return _error(409, "segment id exists with different content")
                 day_dir.mkdir(mode=0o700, exist_ok=True)
@@ -232,6 +267,7 @@ def create_app(config: Config) -> FastAPI:
                 tmp_json = None
                 os.replace(tmp_bin, final_bin)
                 _fsync_dir(day_dir)
+                record_upload(segment_id, request)
             return {"id": segment_id, "sha256": sha, "status": "stored"}
         finally:
             for p in (tmp_bin, tmp_json):

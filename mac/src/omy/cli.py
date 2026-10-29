@@ -63,6 +63,7 @@ def main() -> int:
     which.add_argument("--pending", action="store_true",
                        help=f"sessions not yet transcribed in the last {transcribe.PENDING_DAYS} recorded days")
     tr.add_argument("--force", action="store_true", help="transcribe again sessions already done")
+    tr.add_argument("--render", action="store_true", help="only rebuild the day markdown from the JSONs")
 
     sub.add_parser("periodic", help="hourly job run by the LaunchAgent")
 
@@ -95,7 +96,10 @@ def main() -> int:
                 result = transcribe.download_models()
         elif args.cmd == "transcribe":
             days = [args.day] if args.day else transcribe.pending_days()
-            result = transcribe.transcribe(days, force=args.force)
+            if args.render:
+                result = {"days": [d.isoformat() for d in days if transcribe.render_day(d)]}
+            else:
+                result = transcribe.transcribe(days, force=args.force)
         else:
             result = periodic()
     except (iphone.IphoneError, transcribe.TranscribeError, macsetup.SetupError) as e:

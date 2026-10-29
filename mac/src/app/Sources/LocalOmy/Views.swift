@@ -23,37 +23,38 @@ struct MainWindow: View {
 struct Row: View {
     let title: String
     let value: String
-    var level: Level = .unknown
+    /// nil for plain information: no dot.
+    var level: Level?
 
     var body: some View {
         GridRow {
-            Circle().fill(level.color).frame(width: 9, height: 9)
+            Circle().fill(level?.color ?? .clear).frame(width: 9, height: 9)
             Text(title).foregroundStyle(.secondary)
             Text(value).textSelection(.enabled)
         }
     }
 }
 
-/// Progress log of the running (or last) operation, plus its error.
+/// Progress log of the running (or last) operation of a lane, plus its error.
 struct OperationLog: View {
-    let model: AppModel
+    let op: Job
 
     var body: some View {
-        if model.busy != nil || !model.log.isEmpty || model.lastError != nil {
+        if op.running != nil || !op.log.isEmpty || op.lastError != nil {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    if let busy = model.busy {
+                    if let running = op.running {
                         ProgressView().controlSize(.small)
-                        Text("\(busy)…")
+                        Text("\(running)…")
                     }
-                    if let err = model.lastError {
+                    if let err = op.lastError {
                         Label(err, systemImage: "xmark.octagon").foregroundStyle(.red)
                     }
                 }
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(model.log.enumerated()), id: \.offset) { i, line in
+                            ForEach(Array(op.log.enumerated()), id: \.offset) { i, line in
                                 Text(line).font(.system(.caption, design: .monospaced)).id(i)
                             }
                         }
@@ -62,9 +63,20 @@ struct OperationLog: View {
                     }
                     .frame(minHeight: 120)
                     .background(.background.secondary)
-                    .onChange(of: model.log.count) { _, n in proxy.scrollTo(n - 1, anchor: .bottom) }
+                    .onChange(of: op.log.count) { _, n in proxy.scrollTo(n - 1, anchor: .bottom) }
                 }
             }
+        }
+    }
+}
+
+/// Bar of the running transcription, whoever started it.
+struct TranscriptionProgress: View {
+    let progress: TranscribeProgress
+
+    var body: some View {
+        ProgressView(value: progress.fraction) {
+            Text("Trascrizione in corso: \(progress.text)")
         }
     }
 }
@@ -73,6 +85,22 @@ private func tail(_ path: String, lines: Int) -> String {
     guard let data = FileManager.default.contents(atPath: path) else { return "(nessun log)" }
     return String(decoding: data.suffix(64 * 1024), as: UTF8.self)
         .split(separator: "\n", omittingEmptySubsequences: false).suffix(lines).joined(separator: "\n")
+}
+
+private let isoParser = ISO8601DateFormatter()
+
+/// "3 nov 2026, 10:48" in the local time zone, from an ISO 8601 timestamp.
+func localDate(_ iso: String?) -> String {
+    guard let iso, let d = isoParser.date(from: iso) else { return iso ?? "—" }
+    return d.formatted(.dateTime.day().month(.abbreviated).year().hour().minute())
+}
+
+/// "giovedì 29 ottobre" from YYYY-MM-DD.
+func longDay(_ day: String) -> String {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd"
+    guard let d = f.date(from: day) else { return day }
+    return d.formatted(.dateTime.weekday(.wide).day().month(.wide))
 }
 
 private func ago(_ minutes: Double?) -> String {
@@ -105,7 +133,10 @@ struct StatusTab: View {
                     }
                     Row(title: "Ultimo segmento", value: ago(s.archive.minutesSinceLast),
                         level: (s.archive.minutesSinceLast ?? 999) < 15 ? .ok : .unknown)
+                    Row(title: "Ultimo upload", value: uploadText(s.upload))
                     Row(title: "Oggi", value: "\(s.archive.todaySegments) segmenti, \(s.archive.todaySessions) sessioni, \(Int(s.archive.todayMinutes)) min registrati")
+                    Row(title: "Trascrizione", value: transcriptionText(s.transcripts),
+                        level: model.progress != nil || s.transcripts.pendingSessions == 0 ? .ok : .unknown)
                     Row(title: "App iPhone", value: iphoneText(s.iphone), level: iphoneLevel(s.iphone))
                     Row(title: "Job orario", value: s.periodic.loaded ? "installato" : "non installato (vedi Setup)",
                         level: s.periodic.loaded ? .ok : .warning)
@@ -128,6 +159,23 @@ struct StatusTab: View {
             }
             .background(.background.secondary)
         }
+    }
+
+    private func uploadText(_ u: Status.Upload) -> String {
+        guard u.lastUploadAt != nil else { return "—" }
+        var t = ago(u.minutesSince)
+        switch u.queueRemaining {
+        case nil: break
+        case 0?: t += ", coda dell'iPhone vuota"
+        case let n?: t += ", ne restavano \(n) in coda sull'iPhone"
+        }
+        return t
+    }
+
+    private func transcriptionText(_ t: Status.Transcripts) -> String {
+        if let p = model.progress { return "in corso, \(p.text)" }
+        if t.pendingSessions == 0 { return "al passo" + (t.openSessions > 0 ? " (1 sessione in registrazione)" : "") }
+        return "\(t.pendingSessions) sessioni da trascrivere, \(Int(t.pendingMinutes)) min"
     }
 
     private func iphoneText(_ i: Status.IPhone) -> String {
@@ -161,10 +209,10 @@ struct SetupTab: View {
                         }
                         if !c.ok {
                             Button("Sistema") { model.perform(c.label, ["setup", "fix", c.id]) }
-                                .disabled(model.busy != nil)
+                                .disabled(model.task.running != nil)
                         } else if c.id == "receiver" || c.id == "periodic" {
                             Button("Reinstalla") { model.perform(c.label, ["setup", "fix", c.id]) }
-                                .disabled(model.busy != nil)
+                                .disabled(model.task.running != nil)
                         }
                     }
                 }
@@ -181,8 +229,11 @@ struct SetupTab: View {
             }
             Toggle("Apri local-omy al login", isOn: Binding(
                 get: { model.loginItem }, set: { model.setLoginItem($0) }))
+            if let err = model.lastError {
+                Label(err, systemImage: "xmark.octagon").foregroundStyle(.red)
+            }
 
-            OperationLog(model: model)
+            OperationLog(op: model.task)
             Spacer()
         }
     }
@@ -201,9 +252,9 @@ struct IPhoneTab: View {
                     Row(title: "iPhone", value: i.device.map { "\($0.name ?? "?") (\($0.transport ?? "?"))" } ?? "non trovato",
                         level: i.device?.paired == true ? .ok : .warning)
                     Row(title: "Team", value: i.teamId ?? "—")
-                    Row(title: "Firma scade", value: i.expires.map { "\($0) (\(String(format: "%.1f", i.daysLeft ?? 0)) giorni)" } ?? "—",
+                    Row(title: "Firma scade", value: i.expires.map { "\(localDate($0)) (tra \(String(format: "%.1f", i.daysLeft ?? 0)) giorni)" } ?? "—",
                         level: (i.daysLeft ?? 0) < 1 ? .error : (i.daysLeft ?? 0) < 3 ? .warning : .ok)
-                    Row(title: "Installata", value: i.installedAt ?? "—")
+                    Row(title: "Installata", value: localDate(i.installedAt))
                     if i.needsReopen {
                         Row(title: "Attenzione", value: "riapri local-omy sull'iPhone: dall'installazione non è arrivato nessun segmento", level: .warning)
                     }
@@ -216,10 +267,11 @@ struct IPhoneTab: View {
                 Button("Rinnova ora") { confirm = ("Rinnovo", ["iphone", "renew", "--force"]) }
                 Button("Reinstalla l'ultima build") { confirm = ("Installazione", ["iphone", "install", "--no-build"]) }
             }
-            .disabled(model.busy != nil)
-            OperationLog(model: model)
+            .disabled(model.task.running != nil)
+            OperationLog(op: model.task)
             Spacer()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .confirmationDialog("L'app sull'iPhone verrà chiusa e andrà riaperta.",
                             isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } })) {
             Button("Procedi") {
@@ -238,18 +290,19 @@ struct TranscriptsTab: View {
     var body: some View {
         VStack(alignment: .leading) {
             HStack {
-                Button("Trascrivi ora") { model.perform("Trascrizione", ["transcribe", "--pending"]) }
-                    .disabled(model.busy != nil)
+                Button("Trascrivi ora") { model.transcribeNow() }
+                    .disabled(model.transcribing)
                 Button("Apri nel Finder") {
                     if let p = model.status?.transcripts.path { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
                 }
             }
-            OperationLog(model: model)
+            if let p = model.progress { TranscriptionProgress(progress: p) }
+            OperationLog(op: model.transcription)
             HSplitView {
                 List(model.status?.transcripts.days ?? [], id: \.self, selection: $day) { d in
-                    Text(d)
+                    Text(longDay(d))
                 }
-                .frame(minWidth: 130, maxWidth: 180)
+                .frame(minWidth: 170, maxWidth: 220)
                 ScrollView {
                     MarkdownDay(path: day.flatMap { d in model.status.map { "\($0.transcripts.path)/\(d).md" } })
                         .padding()

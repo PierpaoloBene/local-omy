@@ -53,15 +53,16 @@ struct MenuContent: View {
         } else if let err = model.refreshError {
             Text("Errore: \(err)")
         }
-        if let busy = model.busy { Text("In corso: \(busy)…") }
+        if let running = model.task.running { Text("In corso: \(running)…") }
+        if let p = model.progress { Text("Trascrizione: \(p.text) (\(Int(p.fraction * 100))%)") }
         Divider()
         Button("Apri local-omy") {
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)
         }
         Button("Aggiorna") { Task { await model.refresh() } }
-        Button("Trascrivi ora") { model.perform("Trascrizione", ["transcribe", "--pending"]) }
-            .disabled(model.busy != nil)
+        Button("Trascrivi ora") { model.transcribeNow() }
+            .disabled(model.transcribing)
         Divider()
         Button("Esci") { NSApp.terminate(nil) }
     }

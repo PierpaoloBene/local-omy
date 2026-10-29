@@ -27,14 +27,20 @@ open mac/build/local-omy.app
 
 **Schede della finestra:**
 - **Stato:** ricevitore, `tailscale serve`, iPhone online sul tailnet, ultimo segmento
-  ricevuto, registrato oggi, scadenza dell'app iPhone, job orario, log.
+  ricevuto, ultimo upload e quanti segmenti restavano in coda sull'iPhone, registrato
+  oggi, trascrizione (in corso o quante sessioni mancano), scadenza dell'app iPhone,
+  job orario, log.
 - **Setup:** la checklist di `omy setup check`. Ogni voce mancante ha il suo pulsante
   "Sistema" (`omy setup fix <voce>`). Ci sono anche:
   - "Copia URL" e "Copia token": il token va negli appunti e non viene mai mostrato;
   - "Apri local-omy al login".
 - **iPhone:** scadenza della firma, "Compila e installa", "Rinnova ora", "Reinstalla
   l'ultima build". Ogni azione chiede conferma, perché chiude l'app sul telefono.
-- **Trascrizioni:** giorni trascritti e "Trascrivi ora".
+- **Trascrizioni:** giorni trascritti e "Trascrivi ora". Durante una trascrizione,
+  anche lanciata dal job orario o dal terminale, compare la barra di avanzamento.
+
+La trascrizione gira per conto suo: mentre lavora, Setup, iPhone e l'aggiornamento
+dello stato restano utilizzabili. Le azioni di Setup e iPhone, invece, vanno una alla volta.
 
 L'app trova `mac/src` partendo dalla propria posizione (`mac/build/../src`). Se la sposti,
 indica il percorso con:
@@ -59,6 +65,8 @@ I LaunchAgent vengono generati dai template in `launchd/` con i percorsi di ques
 un `PATH` che contiene Homebrew e uv. `fix` li reinstalla anche se sposti il repo.
 
 **Ricevitore:**
+- Dopo ogni upload accettato scrive `~/OmiArchive/receiver.json`: ora d'arrivo, id del
+  segmento e segmenti ancora in coda sull'iPhone (header `X-Queue-Remaining`).
 - Log in `~/Library/Logs/local-omy-receiver.log`. Per riavviarlo:
   `launchctl kickstart -k gui/$(id -u)/com.example.local-omy.receiver`.
 - `KeepAlive` lo rilancia se si chiude. Se la configurazione è sbagliata (token assente,
@@ -137,6 +145,10 @@ uv run omy transcribe --day 2026-10-27 [--force]
 - Una sessione appartiene al giorno (ora di Roma) in cui inizia.
 - È **chiusa** quando non arrivano nuovi segmenti da 10 minuti. Solo le sessioni chiuse
   vengono trascritte.
+- I segmenti possono arrivare con ore di ritardo, per esempio se il Mac era in stop e
+  l'iPhone li ha tenuti in coda. Se una sessione già trascritta si allunga, vengono
+  trascritti solo i segmenti nuovi e accodati al suo JSON. Se invece cambia in altro modo,
+  la sessione viene ritrascritta da capo.
 
 **Come trascrive:**
 1. L'audio della sessione viene decodificato in blocchi da ~30 minuti, tagliati ai
@@ -158,10 +170,22 @@ uv run omy transcribe --day 2026-10-27 [--force]
 | File | Cosa |
 |---|---|
 | `~/OmiArchive/transcripts/AAAA-MM-GG/<sessione>.json` | frasi con inizio/fine in UTC, segmenti d'origine, modello |
-| `~/OmiArchive/transcripts/AAAA-MM-GG.md` | la giornata da leggere: una sezione per sessione, un paragrafo dopo ogni silenzio > 2 min |
+| `~/OmiArchive/transcripts/AAAA-MM-GG.md` | la giornata da leggere: una sezione per ogni sessione con parlato, un paragrafo nuovo dopo ogni silenzio > 2 min o dopo 5 min di parlato |
+
+Il markdown viene ripulito, mentre i JSON restano grezzi:
+- una frase ripetuta più volte di fila (un loop di whisper) compare una volta sola;
+- le frasi tipiche che whisper inventa sul rumore ("Thank you.", "Grazie per la visione."…)
+  vengono tolte se nei 30 s prima e dopo non c'è altro parlato;
+- le sessioni senza parlato non compaiono.
+
+`uv run omy transcribe --pending --render` rigenera il markdown dai JSON senza ritrascrivere.
 
 Il job `periodic` trascrive ogni ora le sessioni appena chiuse. Un lock impedisce che due
 trascrizioni girino insieme.
+
+Mentre lavora, `~/OmiArchive/cache/transcribe-progress.json` registra pid, sessioni fatte
+e totali e minuti di audio fatti e totali. `omy status` e l'app lo leggono, e alla fine il
+file viene cancellato. Il markdown di un giorno si riscrive appena ne finisce l'ultima sessione.
 
 ## Configurazione (variabili d'ambiente)
 

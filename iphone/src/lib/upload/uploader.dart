@@ -59,8 +59,9 @@ class Uploader extends ChangeNotifier with WidgetsBindingObserver {
     try {
       do {
         _again = false;
-        for (final id in _store.queuedIds()) {
-          await _upload(id);
+        final ids = _store.queuedIds();
+        for (var i = 0; i < ids.length; i++) {
+          await _upload(ids[i], remaining: ids.length - i - 1);
           _refreshQueued();
         }
       } while (_again);
@@ -79,7 +80,9 @@ class Uploader extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _upload(String id) async {
+  /// remaining: segments still queued after this one, so the Mac can tell a
+  /// backlog from an idle phone.
+  Future<void> _upload(String id, {required int remaining}) async {
     final base = _settings.macUrl;
     final token = _settings.token;
     if (base == null || token == null) throw const UploadException('Mac URL or token not set');
@@ -98,6 +101,7 @@ class Uploader extends ChangeNotifier with WidgetsBindingObserver {
             'X-Segment-Id': id,
             'X-Sha256': sha,
             'X-Segment-Meta': base64Url.encode(metaBytes),
+            'X-Queue-Remaining': '$remaining',
           },
           body: bin,
         )
