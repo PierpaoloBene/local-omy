@@ -31,7 +31,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from omy.audio import StreamDecoder
+from omy.audio import StreamDecoder, normalize_wav, split_at_pauses
 from omy.config import ARCHIVE
 from omy.sessions import LOCAL_TZ, Session, recorded_days, sessions_for_day
 from omy_receiver.segment import SegmentError, parse
@@ -52,10 +52,29 @@ MODELS = {
         "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
         "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987", 885098),
 }
+# Not needed to transcribe, downloaded on demand (omy eval).
+OPTIONAL_MODELS = {
+    "ggml-large-v3.bin": (
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+        "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2", 3095033483),
+}
 WHISPER_MODEL = "ggml-large-v3-turbo.bin"
 VAD_MODEL = "ggml-silero-v6.2.0.bin"
 
 CHUNK = timedelta(minutes=30)
+# Measured with omy eval on a hand-corrected sample (README): language detected
+# per ~30 s window instead of per chunk (whisper otherwise translates Italian
+# into English for half an hour), quiet stretches raised, a more sensitive VAD
+# with more padding. People's words found went from 49% to 77%.
+WINDOW_S = 30
+VAD_ARGS = ["-vt", "0.35", "-vp", "200"]
+# The languages spoken here. A window detected as anything else (short or
+# noisy, where whisper also makes text up: "Gracias por ver el video.") is
+# transcribed again in FALLBACK_LANGUAGE.
+LANGUAGES = {"it", "en"}
+FALLBACK_LANGUAGE = "it"
+# Bumped when the above changes: older transcripts are redone (plan()).
+PIPELINE = 3
 # Silence longer than this starts a new paragraph in the day markdown, and so
 # does a paragraph that has run this long without one.
 BLOCK_GAP = timedelta(minutes=2)
@@ -92,10 +111,13 @@ def models_status() -> dict[str, bool]:
     return {name: (MODELS_DIR / name).is_file() for name in MODELS}
 
 
-def download_models() -> dict[str, str]:
+def download_models(names: list[str] | None = None) -> dict[str, str]:
+    """The required models, or these names from MODELS / OPTIONAL_MODELS."""
     MODELS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    catalog = {**MODELS, **OPTIONAL_MODELS}
     result = {}
-    for name, (url, sha, size) in MODELS.items():
+    for name in names or list(MODELS):
+        url, sha, size = catalog[name]
         dest = MODELS_DIR / name
         if dest.is_file():
             result[name] = "present"
@@ -126,17 +148,18 @@ def _whisper_cli() -> str:
     return path
 
 
-def _run_whisper(wav: Path) -> list[dict]:
+def _run_whisper(wav: Path, model: str = WHISPER_MODEL, language: str = LANGUAGE,
+                 extra: list[str] | None = None, vad: bool = True) -> list[dict]:
     """Speech items of one WAV, with offsets in ms from its start and the
-    detected language."""
+    detected language. extra, vad: experiments of omy eval."""
     base = wav.with_suffix("")
     r = subprocess.run([
-        _whisper_cli(), "-m", str(MODELS_DIR / WHISPER_MODEL), "-l", LANGUAGE,
+        _whisper_cli(), "-m", str(MODELS_DIR / model), "-l", language,
         # No text context between windows: stops the repetition loops
         # ("Grazie a tutti." x18) that whisper produces on noise.
         "-mc", "0",
-        "--vad", "-vm", str(MODELS_DIR / VAD_MODEL),
-        "-np", "-oj", "-of", str(base), "-f", str(wav),
+        *(["--vad", "-vm", str(MODELS_DIR / VAD_MODEL)] if vad else []),
+        "-np", "-oj", "-of", str(base), *(extra or []), "-f", str(wav),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     if r.returncode != 0:
         raise TranscribeError(f"whisper-cli failed (exit {r.returncode}): {r.stderr.strip()[-500:]}")
@@ -150,6 +173,34 @@ def _run_whisper(wav: Path) -> list[dict]:
         {"from": it["offsets"]["from"], "to": it["offsets"]["to"], "text": it["text"].strip(), "language": lang}
         for it in data["transcription"] if it["text"].strip()
     ]
+
+
+def transcribe_wav(wav: Path, model: str = WHISPER_MODEL, language: str = LANGUAGE,
+                   window_s: int = WINDOW_S, normalize: bool = True,
+                   extra: list[str] | None = None, vad: bool = True) -> list[dict]:
+    """_run_whisper over a whole WAV, prepared as measured best: normalized,
+    then cut at pauses into windows (window_s 0: in one go)."""
+    extra = VAD_ARGS if extra is None else extra
+    temp: list[Path] = []
+    try:
+        if normalize:
+            norm = wav.with_name(f"{wav.stem}-norm.wav")
+            normalize_wav(wav, norm)
+            temp.append(norm)
+            wav = norm
+        pieces = split_at_pauses(wav, window_s, wav.parent) if window_s else [(wav, 0)]
+        temp += [p for p, _ in pieces if p != wav]
+        items = []
+        for piece, offset_ms in pieces:
+            found = _run_whisper(piece, model, language, extra, vad)
+            if language == "auto" and found and found[0]["language"] not in LANGUAGES:
+                found = _run_whisper(piece, model, FALLBACK_LANGUAGE, extra, vad)
+            for it in found:
+                items.append({**it, "from": offset_ms + it["from"], "to": offset_ms + it["to"]})
+        return items
+    finally:
+        for p in temp:
+            p.unlink(missing_ok=True)
 
 
 def _iso(t: datetime) -> str:
@@ -198,7 +249,7 @@ def transcribe_session(session: Session, prior: dict | None = None,
         decoder.close()
         if decoder.position_ms > chunk_start_ms:
             log(f"  whisper {work.id} +{chunk_start_ms // 60000} min")
-            for it in _run_whisper(wav):
+            for it in transcribe_wav(wav):
                 speech.append({
                     "start": _iso(work.start + timedelta(milliseconds=chunk_start_ms + it["from"])),
                     "end": _iso(work.start + timedelta(milliseconds=chunk_start_ms + it["to"])),
@@ -235,6 +286,7 @@ def transcribe_session(session: Session, prior: dict | None = None,
         "model": WHISPER_MODEL,
         "vad": VAD_MODEL,
         "language": LANGUAGE,
+        "pipeline": PIPELINE,
         "frames_decoded": decoder.decoded + (prior["frames_decoded"] if prior else 0),
         "frames_concealed": decoder.concealed + (prior["frames_concealed"] if prior else 0),
         "speech": (prior["speech"] if prior else []) + speech,
@@ -275,9 +327,28 @@ def _clean(speech: list[dict]) -> list[dict]:
     return kept
 
 
+def _speakers(day_dir: Path, session_id: str) -> list[tuple[datetime, datetime, str]]:
+    try:
+        doc = json.loads((day_dir / "speakers" / f"{session_id}.json").read_text())
+    except (FileNotFoundError, ValueError):
+        return []
+    t = lambda iso: datetime.fromisoformat(iso.replace("Z", "+00:00"))  # noqa: E731
+    return [(t(x["start"]), t(x["end"]), x["speaker"]) for x in doc["turns"]]
+
+
+def _speaker_of(turns: list, start: datetime, end: datetime) -> str | None:
+    best, overlap = None, timedelta(0)
+    for s, e, name in turns:
+        ov = min(end, e) - max(start, s)
+        if ov > overlap:
+            best, overlap = name, ov
+    return best
+
+
 def render_day(day: date) -> Path | None:
-    """Rebuild transcripts/DAY.md from the session JSONs of that day. Sessions
-    with no speech are left out."""
+    """Rebuild transcripts/DAY.md from the session JSONs of that day, with the
+    speaker of each paragraph when diarized. Sessions with no speech are left
+    out."""
     day_dir = TRANSCRIPTS / day.isoformat()
     docs = sorted((json.loads(p.read_text()) for p in day_dir.glob("*.json")), key=lambda d: d["start"]) \
         if day_dir.is_dir() else []
@@ -289,16 +360,22 @@ def render_day(day: date) -> Path | None:
         if not speech:
             continue
         lines += [f"## {_hm(doc['start'])}–{_hm(doc['end'])}", ""]
+        turns = _speakers(day_dir, doc["session"])
         block: list[str] = []
         block_start: datetime | None = None
         prev_end: datetime | None = None
+        prev_speaker: str | None = None
         for it in speech:
             start = datetime.fromisoformat(it["start"].replace("Z", "+00:00"))
-            if prev_end is None or start - prev_end > BLOCK_GAP or start - block_start > BLOCK_MAX:
+            end = datetime.fromisoformat(it["end"].replace("Z", "+00:00"))
+            speaker = _speaker_of(turns, start, end) if turns else None
+            if (prev_end is None or start - prev_end > BLOCK_GAP or start - block_start > BLOCK_MAX
+                    or speaker != prev_speaker):
                 if block:
                     lines += [" ".join(block), ""]
-                block = [f"**{_hm(it['start'])}**"]
+                block = [f"**{_hm(it['start'])}" + (f" · {speaker}**" if speaker else "**")]
                 block_start = start
+                prev_speaker = speaker
             block.append(it["text"])
             prev_end = datetime.fromisoformat(it["end"].replace("Z", "+00:00"))
         lines += [" ".join(block), ""]
@@ -330,6 +407,8 @@ def plan(days: list[date], force: bool = False) -> tuple[list[tuple[Session, dic
                 continue
             doc = None if force else _load_doc(session)
             ids = [s.id for s in session.segments]
+            if doc is not None and doc.get("pipeline", 1) != PIPELINE:
+                doc = None  # transcribed the old way: redo
             if doc is not None:
                 if doc["segments"] == ids:
                     continue
@@ -418,13 +497,41 @@ def transcribe(days: list[date], force: bool = False) -> dict:
                 nxt = todo[i][0].day if i < len(todo) else None
                 if session.day in touched and nxt != session.day and render_day(session.day):
                     result["days"].append(session.day.isoformat())
-            if force:
-                for day in days:
-                    if day not in touched and render_day(day):
-                        result["days"].append(day.isoformat())
+            result["diarized"], result["diarize_failed"] = [], {}
+            for session in _to_diarize(days, result["open"]):
+                from omy import diarize
+                save(session=session.id, day=session.day.isoformat(), phase="diarize")
+                log(f"speakers {session.day} session {session.id}")
+                try:
+                    diarize.diarize_session(session)
+                    result["diarized"].append(session.id)
+                    touched.add(session.day)
+                    if session.day.isoformat() not in result["days"]:
+                        result["days"].append(session.day.isoformat())
+                except TranscribeError as e:
+                    log(f"  failed: {e}")
+                    result["diarize_failed"][session.id] = str(e)
+            for day in {date.fromisoformat(d) for d in result["days"]} | (set(days) if force else set()):
+                render_day(day)
         finally:
             PROGRESS.unlink(missing_ok=True)
     return result
+
+
+def _to_diarize(days: list[date], still_open: list[str]) -> list[Session]:
+    """Transcribed closed sessions whose speakers are missing or stale."""
+    from omy import diarize
+    if not diarize.available():
+        return []
+    out = []
+    for day in days:
+        for session in sessions_for_day(day):
+            if session.id in still_open or _load_doc(session) is None:
+                continue
+            doc = _load_doc(session)
+            if doc["segments"] == [s.id for s in session.segments] and diarize.needs_diarization(session):
+                out.append(session)
+    return out
 
 
 def pending_days() -> list[date]:

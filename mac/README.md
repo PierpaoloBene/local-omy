@@ -156,21 +156,33 @@ uv run omy transcribe --day 2026-10-27 [--force]
    parola si spezza tra due blocchi.
 2. I pacchetti persi diventano PLC di Opus, quindi la linea del tempo resta esatta: ogni
    frame vale 20 ms.
-3. Il **VAD Silero** di whisper.cpp salta i silenzi. Questo riduce anche le frasi inventate
-   da Whisper sul rumore.
-4. **Nessun contesto fra una finestra e l'altra** (`-mc 0`): elimina i loop di ripetizione
+3. **Volume normalizzato:** i tratti deboli vengono alzati fino a +20 dB, con il guadagno
+   smussato su ~1 s. Servono per le voci lontane dal ciondolo e la TV dall'altra parte della
+   stanza.
+4. Ogni blocco viene **tagliato nelle pause in finestre da ~30 s**, e su ognuna whisper
+   rileva la lingua. Con la lingua rilevata una volta per blocco, whisper traduceva in
+   inglese mezz'ora di italiano. La lingua viene salvata in ogni frase. Se in una finestra
+   viene rilevata una lingua diversa da italiano e inglese, succede su tratti brevi o
+   rumorosi dove whisper inventa anche testo ("Gracias por ver el video."). In quel caso la
+   finestra viene ritrascritta in italiano.
+5. Il **VAD Silero** di whisper.cpp salta i silenzi, e così riduce le frasi inventate sul
+   rumore. Ha una soglia più sensibile del default (`-vt 0.35` invece di 0.5) e 200 ms di
+   margine (`-vp 200`): con il default si perdeva la voce debole.
+6. **Nessun contesto fra una finestra e l'altra** (`-mc 0`): elimina i loop di ripetizione
    (es. "Grazie a tutti." ripetuto per mezzo minuto).
-5. **Lingua rilevata in automatico** per ogni blocco, sui primi 30 s di parlato, e salvata in
-   ogni frase. Forzare l'italiano faceva tradurre male il parlato inglese. Limite: un blocco
-   che passa da una lingua all'altra viene trascritto tutto nella prima.
-6. I WAV temporanei stanno in `~/OmiArchive/cache/` e vengono cancellati subito dopo l'uso.
+7. I WAV temporanei stanno in `~/OmiArchive/cache/` e vengono cancellati subito dopo l'uso.
+
+Velocità: circa 15 volte il tempo reale, quindi una giornata da 8 ore si trascrive in circa
+mezz'ora. Ogni JSON registra la versione della pipeline (`pipeline`). Quando la pipeline
+cambia, le sessioni trascritte con la versione precedente vengono rifatte.
 
 **Output** (derivato: si rigenera con `--force`, il raw non viene mai toccato):
 
 | File | Cosa |
 |---|---|
 | `~/OmiArchive/transcripts/AAAA-MM-GG/<sessione>.json` | frasi con inizio/fine in UTC, segmenti d'origine, modello |
-| `~/OmiArchive/transcripts/AAAA-MM-GG.md` | la giornata da leggere: una sezione per ogni sessione con parlato, un paragrafo nuovo dopo ogni silenzio > 2 min o dopo 5 min di parlato |
+| `~/OmiArchive/transcripts/AAAA-MM-GG/speakers/<sessione>.json` | turni di parola in UTC e somiglianza di ogni voce alla tua (vedi Chi parla) |
+| `~/OmiArchive/transcripts/AAAA-MM-GG.md` | la giornata da leggere: una sezione per ogni sessione con parlato, un paragrafo nuovo a ogni cambio di chi parla, dopo ogni silenzio > 2 min o dopo 5 min di parlato |
 
 Il markdown viene ripulito, mentre i JSON restano grezzi:
 - una frase ripetuta più volte di fila (un loop di whisper) compare una volta sola;
@@ -186,6 +198,76 @@ trascrizioni girino insieme.
 Mentre lavora, `~/OmiArchive/cache/transcribe-progress.json` registra pid, sessioni fatte
 e totali e minuti di audio fatti e totali. `omy status` e l'app lo leggono, e alla fine il
 file viene cancellato. Il markdown di un giorno si riscrive appena ne finisce l'ultima sessione.
+
+## Chi parla (diarizzazione)
+
+Dopo la trascrizione, ogni sessione passa da
+[pyannote](https://github.com/pyannote/pyannote-audio) (`speaker-diarization-community-1`),
+che gira sul Mac con la GPU (MPS) a circa 25 volte il tempo reale.
+- Le voci vengono raggruppate per sessione.
+- Il gruppo che somiglia alla tua **impronta vocale** (somiglianza coseno ≥ 0,5) si chiama
+  `Io`. Il nome si cambia con `my_name = "…"` in `~/.config/local-omy/config.toml`.
+- Le altre voci diventano `Persona 1`, `Persona 2`… nell'ordine in cui compaiono. I
+  numeri valgono solo dentro la sessione.
+- Nel markdown ogni paragrafo porta nome e orario: `**18:26 · Io** …`. Le frasi che non
+  cadono in nessun turno restano senza nome.
+
+Una volta sola:
+1. Accetta le condizioni del modello su
+   https://huggingface.co/pyannote/speaker-diarization-community-1.
+2. Crea un token **Read** su Hugging Face e salvalo, senza incollarlo da nessuna parte:
+   `(umask 077; pbpaste | tr -d '\n' > ~/.config/local-omy/hf_token)`. Serve solo a scaricare
+   il modello in `~/OmiArchive/models/hf`. Dopo, la diarizzazione gira offline.
+3. `uv run omy voice enroll`: ricava l'impronta vocale dalle righe `P:` degli spezzoni
+   annotati (vedi sotto) e la salva in `~/OmiArchive/voices/me.npy`.
+
+L'impronta vocale è un **dato biometrico**: ha permessi 600 e non lascia mai il Mac, come
+l'audio. Se la ricrei, le sessioni vengono ri-diarizzate.
+
+Una voce cantata non viene riconosciuta come tua. Una voce che passa dagli altoparlanti
+(Teams, TV, video) risulta come un'altra persona: distinguere i media dalle persone
+presenti resta da fare.
+
+## Misurare la precisione (`omy eval`)
+
+Le scelte della pipeline vengono da una misura su spezzoni trascritti a mano, non da
+impressioni.
+
+```bash
+uv run omy eval make        # 7 spezzoni da 2 min in ~/OmiArchive/eval: <X>.wav e <X>.txt da correggere
+uv run omy eval run         # confronta le configurazioni (CONFIGS in omy/evaluate.py)
+uv run omy eval diarize     # quanto del tuo parlato viene attribuito a te, e viceversa
+```
+
+- **Annotazione:** in `<X>.txt` si scrive quello che viene detto davvero, una battuta per
+  riga, con chi parla:
+  - `P:` sei tu;
+  - `A:`, `B:`… sono le altre persone;
+  - `TV:` è audio registrato. Una descrizione è ammessa: `TV (Teams):`.
+
+  Le righe con `#` sono ignorate. `# default: P` vale per le righe senza etichetta.
+  `[...]` e `(...)` sono note e non vengono contate.
+- **Misure:**
+  - **WER** (parole sbagliate / parole del riferimento) sugli spezzoni annotati per intero;
+  - **parole delle persone ritrovate** sugli spezzoni con tratti "(incomprensibili)", dove
+    whisper sentirebbe la TV che chi annota non ha capito;
+  - **parole inventate** negli spezzoni senza parlato.
+
+Risultati del 29 ottobre 2026 (1.000 parole circa):
+
+| | trascrizione a blocchi da 30 min | pipeline attuale |
+|---|---|---|
+| Parole delle persone ritrovate | 49% | 78% |
+| WER sul tuo italiano finito in inglese (B) | 56% | 16% |
+| Parole inventate nel silenzio | 2 | 0 |
+
+`large-v3` (non turbo) non ha migliorato le misure ed è 3 volte più lento. La
+conversazione in famiglia, con più voci lontane e rumore, resta il caso difficile:
+lì si ritrova circa metà delle parole.
+
+Diarizzazione: il 95% delle tue parole viene attribuito a te, e il 92% di quelle
+attribuite a te è davvero tuo. La misura è ottimista, perché gli spezzoni sono gli stessi
+da cui viene ricavata l'impronta vocale.
 
 ## Configurazione (variabili d'ambiente)
 

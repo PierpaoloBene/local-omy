@@ -161,6 +161,13 @@ def checks() -> list[dict]:
     add("models", "Modelli di trascrizione", all(models.values()),
         "ok" if all(models.values()) else f"missing: {[n for n, v in models.items() if not v]}")
 
+    from omy import diarize
+    model = any((diarize.HF_HOME / "hub").glob("models--pyannote--speaker-diarization-community-1"))
+    detail = "ok" if model and diarize.PROFILE.is_file() else \
+        "Hugging Face token missing (README, Chi parla)" if not model and not diarize.TOKEN_FILE.is_file() else \
+        "model not downloaded" if not model else "no voice profile: omy voice enroll"
+    add("diarize", "Chi parla (pyannote e impronta vocale)", detail == "ok", detail)
+
     cfg = iphone.load_config()
     ok = "team_id" in cfg and "device_udid" in cfg
     add("iphone", "Team Apple e iPhone", ok,
@@ -196,6 +203,13 @@ def fix(id_: str) -> dict:
         transcribe.download_models()
     elif id_ == "iphone":
         iphone.ensure_config()
+    elif id_ == "diarize":
+        from omy import diarize, evaluate
+        if not diarize.TOKEN_FILE.is_file() and not (diarize.HF_HOME / "hub").is_dir():
+            raise SetupError("save a Hugging Face token in ~/.config/local-omy/hf_token first (README, Chi parla)")
+        diarize._load()
+        if not diarize.PROFILE.is_file():
+            evaluate.enroll()
     else:
         raise SetupError(f"unknown item {id_}")
     return next(c for c in checks() if c["id"] == id_)

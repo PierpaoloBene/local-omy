@@ -8,6 +8,8 @@ dependencies = [
     "uvicorn>=0.32",
     # tools/inspect_segment.py; needs libopus (brew install opus)
     "opuslib>=3.0.1",
+    # speaker diarization (omy diarize); the model needs a Hugging Face token
+    "pyannote-audio>=4",
 ]
 
 [project.scripts]

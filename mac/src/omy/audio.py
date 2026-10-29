@@ -111,3 +111,60 @@ def decode_to_wav(seg: Segment, out: Path, fill_gaps: bool = True) -> tuple[int,
     d.add(seg)
     d.close()
     return d.decoded, d.concealed
+
+
+# --- preparing audio for whisper ---
+
+# Quiet stretches (people away from the pendant, a TV across the room) are
+# raised up to this much: the default VAD and whisper miss them otherwise.
+MAX_GAIN_DB = 20
+
+
+def _read(wav: Path):
+    import numpy as np
+    with wave.open(str(wav), "rb") as w:
+        return w.getparams(), np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+
+
+def _write(path: Path, params, pcm) -> None:
+    with wave.open(str(path), "wb") as w:
+        w.setparams(params)
+        w.writeframes(pcm.tobytes())
+
+
+def normalize_wav(src: Path, dst: Path) -> None:
+    """Speech-level gain: per 100 ms towards -20 dBFS RMS, capped at
+    +MAX_GAIN_DB, smoothed over ~1 s so noise isn't pumped up abruptly."""
+    import numpy as np
+    params, pcm = _read(src)
+    x = pcm.astype(np.float32) / 32768
+    hop = SAMPLE_RATE // 10
+    n = len(x) // hop + 1
+    padded = np.pad(x, (0, n * hop - len(x)))
+    rms = np.sqrt(np.mean(padded.reshape(n, hop) ** 2, axis=1) + 1e-10)
+    gain = np.log(np.clip(10 ** (-20 / 20) / rms, 1, 10 ** (MAX_GAIN_DB / 20)))
+    gain = np.convolve(gain, np.ones(10) / 10, mode="same")
+    g = np.exp(np.interp(np.arange(len(x)), np.arange(n) * hop + hop // 2, gain))
+    _write(dst, params, (np.clip(x * g, -1, 1) * 32767).astype(np.int16))
+
+
+def split_at_pauses(wav: Path, window_s: int, out_dir: Path) -> list[tuple[Path, int]]:
+    """Cut wav into pieces of about window_s, each cut at the quietest 100 ms
+    within 5 s of the target, so whisper detects the language per piece.
+    Returns (piece, offset ms)."""
+    import numpy as np
+    params, pcm = _read(wav)
+    hop = SAMPLE_RATE // 10
+    n = len(pcm) // hop
+    energy = np.abs(pcm[:n * hop].astype(np.int32)).reshape(n, hop).sum(axis=1) if n else np.zeros(0)
+    cuts = [0]
+    target = window_s * 10
+    while cuts[-1] + target + 50 < n:
+        lo = cuts[-1] + target - 50
+        cuts.append(lo + int(np.argmin(energy[lo:lo + 100])))
+    pieces = []
+    for k, (a, b) in enumerate(zip(cuts, cuts[1:] + [None])):
+        piece = out_dir / f"{wav.stem}-{k}.wav"
+        _write(piece, params, pcm[a * hop:None if b is None else b * hop])
+        pieces.append((piece, a * 100))
+    return pieces

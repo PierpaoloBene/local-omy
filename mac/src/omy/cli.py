@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import date, datetime
 
-from omy import iphone, macsetup, status, transcribe
+from omy import evaluate, iphone, macsetup, status, transcribe
 
 
 def periodic() -> dict:
@@ -53,7 +53,7 @@ def main() -> int:
     setup = sub.add_parser("setup", help="prepare this Mac").add_subparsers(dest="action", required=True)
     setup.add_parser("check", help="checklist of what this Mac needs")
     fix = setup.add_parser("fix", help="fix one checklist item")
-    fix.add_argument("item", choices=["brew", "token", *macsetup.AGENTS, "tailscale", "models", "iphone"])
+    fix.add_argument("item", choices=["brew", "token", *macsetup.AGENTS, "tailscale", "models", "iphone", "diarize"])
     setup.add_parser("token", help="print the receiver token (to paste into the iPhone app)")
     setup.add_parser("models", help="download the whisper and VAD models (same as fix models)")
 
@@ -64,6 +64,18 @@ def main() -> int:
                        help=f"sessions not yet transcribed in the last {transcribe.PENDING_DAYS} recorded days")
     tr.add_argument("--force", action="store_true", help="transcribe again sessions already done")
     tr.add_argument("--render", action="store_true", help="only rebuild the day markdown from the JSONs")
+
+    ev = sub.add_parser("eval", help="transcription accuracy on a hand-corrected sample") \
+        .add_subparsers(dest="action", required=True)
+    ev.add_parser("make", help="cut the sample clips into ~/OmiArchive/eval, with texts to correct")
+    ev.add_parser("models", help="download the optional models the configs use")
+    evr = ev.add_parser("run", help="word error rate of each config against the corrected texts")
+    evr.add_argument("--config", action="append", choices=list(evaluate.CONFIGS),
+                     help="only this config (repeatable)")
+    evr.add_argument("--fresh", action="store_true", help="transcribe again instead of reusing eval/runs")
+    ev.add_parser("diarize", help="how well your words are attributed to you, on the eval clips")
+    voice = sub.add_parser("voice", help="your voice profile for diarization").add_subparsers(dest="action", required=True)
+    voice.add_parser("enroll", help="build it from the P: lines of the eval clips")
 
     sub.add_parser("periodic", help="hourly job run by the LaunchAgent")
 
@@ -100,6 +112,17 @@ def main() -> int:
                 result = {"days": [d.isoformat() for d in days if transcribe.render_day(d)]}
             else:
                 result = transcribe.transcribe(days, force=args.force)
+        elif args.cmd == "eval":
+            if args.action == "make":
+                result = evaluate.make()
+            elif args.action == "models":
+                result = transcribe.download_models(list(transcribe.OPTIONAL_MODELS))
+            elif args.action == "diarize":
+                result = evaluate.diarization()
+            else:
+                result = evaluate.run(args.config, fresh=args.fresh)
+        elif args.cmd == "voice":
+            result = evaluate.enroll()
         else:
             result = periodic()
     except (iphone.IphoneError, transcribe.TranscribeError, macsetup.SetupError) as e:
