@@ -297,12 +297,20 @@ background e consumano poco, perché non tengono acceso il GPS. Li scrive in
 `Documents/locations.json` sul telefono (ultimi 3 giorni) e mette nel sidecar di ogni
 segmento la posizione migliore:
 `"location": {"lat", "lon", "acc", "source": "visit"|"move", "at"}`.
+All'avvio, e quando cambia il permesso, l'app chiede anche una posizione singola e aggiornata
+(`requestLocation`). Senza, un telefono fermo resterebbe senza posizione finché non arriva
+una visita, cosa che con iOS può richiedere ore.
 - vale la visita in corso a metà del segmento;
 - altrimenti l'ultimo cambio significativo, se non ha più di 2 ore e non è precedente
   all'uscita da una visita.
 
-La prima volta iOS chiede il permesso. Serve "Consenti sempre" con **Posizione esatta**
-attiva, altrimenti la posizione è approssimata a qualche chilometro.
+Serve "Sempre" con **Posizione esatta** attiva. Con "Mentre usi l'app", iOS non dà la
+posizione in background, quindi le registrazioni fatte con il telefono in tasca restano
+senza luogo. Senza Posizione esatta, la posizione è approssimata a qualche chilometro.
+- iOS concede prima solo "Mentre usi l'app". All'apertura successiva l'app chiede di passare
+  a "Sempre", ma iOS mostra questa richiesta una volta sola.
+- Se la posizione non va bene, nelle impostazioni dell'app, sotto Posizione, compare un
+  avviso con il pulsante per aprire Impostazioni.
 
 Le coordinate non vengono mai trasformate in indirizzi da un servizio esterno. Il nome lo dà
 il Mac, con la tua lista in `~/OmiArchive/places.json` (mode 600):

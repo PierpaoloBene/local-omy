@@ -26,15 +26,50 @@ class SettingsPage extends StatefulWidget {
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
-class _SettingsPageState extends State<SettingsPage> {
+class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver {
   late final _url = TextEditingController(text: widget.settings.macUrl ?? '');
   final _token = TextEditingController();
   StreamSubscription<List<ScanResult>>? _scan;
   List<ScanResult> _results = [];
   String? _urlError;
+  ({String auth, bool precise})? _location;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkLocation();
+  }
+
+  /// Back from the iOS Settings app: the permission may have changed.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _checkLocation();
+  }
+
+  Future<void> _checkLocation() async {
+    final s = await widget.features.locationStatus();
+    if (mounted) setState(() => _location = s);
+  }
+
+  /// Why the location can't work in background, or null if it can.
+  String? _locationProblem() {
+    final s = _location;
+    if (s == null || !widget.features.on('location')) return null;
+    return switch (s.auth) {
+      'always' when s.precise => null,
+      'always' => 'Posizione approssimata: in Impostazioni attiva "Posizione esatta".',
+      'when_in_use' =>
+        'iOS dà la posizione solo mentre l\'app è aperta, quindi le registrazioni in tasca restano '
+            'senza luogo. In Impostazioni scegli "Sempre" e attiva "Posizione esatta".',
+      'not_determined' => 'Permesso non ancora chiesto: riapri l\'app.',
+      _ => 'Posizione negata: in Impostazioni scegli "Sempre" e attiva "Posizione esatta".',
+    };
+  }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scan?.cancel();
     widget.ble.stopScan();
     _url.dispose();
@@ -104,6 +139,13 @@ class _SettingsPageState extends State<SettingsPage> {
                 value: f.on(key),
                 onChanged: (v) => f.set(key, v),
               ),
+          if (device == 'iphone' && _locationProblem() != null)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.location_off, color: Theme.of(context).colorScheme.error),
+              title: Text(_locationProblem()!),
+              trailing: TextButton(onPressed: f.openSettings, child: const Text('Impostazioni')),
+            ),
         ],
         const SizedBox(height: 12),
         Text('Spegnere una funzione interrompe la raccolta, ma non cancella quello che c\'è già.', style: small),

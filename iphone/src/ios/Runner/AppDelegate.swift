@@ -23,8 +23,18 @@ import UIKit
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LocalOmyFeatures") {
       let channel = FlutterMethodChannel(name: "local_omy/features", binaryMessenger: registrar.messenger())
       channel.setMethodCallHandler { [weak self] call, result in
-        if call.method == "reload" { self?.locationLog.reload() }
-        result(nil)
+        switch call.method {
+        case "reload":
+          self?.locationLog.reload()
+          result(nil)
+        case "locationStatus":
+          result(self?.locationLog.status())
+        case "openSettings":
+          if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+          result(nil)
+        default:
+          result(FlutterMethodNotImplemented)
+        }
       }
     }
   }
@@ -119,9 +129,24 @@ final class LocationLog: NSObject, CLLocationManagerDelegate {
       manager.stopMonitoringSignificantLocationChanges()
       return
     }
-    // iOS first grants "while using", then later offers to keep "always".
-    if manager.authorizationStatus == .notDetermined { manager.requestAlwaysAuthorization() }
+    // iOS first grants only "while using" (no background visits or changes);
+    // asking again from there shows, once, the prompt to upgrade to "always".
+    if [.notDetermined, .authorizedWhenInUse].contains(manager.authorizationStatus) {
+      manager.requestAlwaysAuthorization()
+    }
     begin()
+  }
+
+  /// For the settings page: {"auth": "always"|"when_in_use"|"denied"|"not_determined", "precise": Bool}.
+  func status() -> [String: Any] {
+    let auth: String
+    switch manager.authorizationStatus {
+    case .authorizedAlways: auth = "always"
+    case .authorizedWhenInUse: auth = "when_in_use"
+    case .notDetermined: auth = "not_determined"
+    default: auth = "denied"
+    }
+    return ["auth": auth, "precise": manager.accuracyAuthorization == .fullAccuracy]
   }
 
   func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -132,6 +157,11 @@ final class LocationLog: NSObject, CLLocationManagerDelegate {
     guard [.authorizedAlways, .authorizedWhenInUse].contains(manager.authorizationStatus) else { return }
     manager.startMonitoringVisits()
     manager.startMonitoringSignificantLocationChanges()
+    // Significant changes start with iOS's cached fix (possibly hours old)
+    // and then wait for ~500 m of movement, visits come late: one fresh fix
+    // now, so a phone that stays put has a position too.
+    manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    manager.requestLocation()
   }
 
   func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
@@ -155,6 +185,10 @@ final class LocationLog: NSObject, CLLocationManagerDelegate {
       var e = point(l.coordinate, l.horizontalAccuracy)
       e["kind"] = "move"
       e["t"] = iso.string(from: l.timestamp)
+      // The cached fix comes again at every start.
+      if list.contains(where: { $0["kind"] as? String == "move" && $0["t"] as? String == e["t"] as? String }) {
+        continue
+      }
       list.append(e)
     }
     save(list)

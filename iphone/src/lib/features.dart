@@ -143,6 +143,21 @@ class Features extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// iOS location permission: (auth: always|when_in_use|denied|not_determined,
+  /// precise), null if the native side can't say.
+  Future<({String auth, bool precise})?> locationStatus() async {
+    try {
+      final s = await _channel.invokeMapMethod<String, Object>('locationStatus');
+      if (s == null) return null;
+      return (auth: s['auth'] as String, precise: s['precise'] as bool);
+    } catch (e) {
+      debugPrint('features: $e');
+      return null;
+    }
+  }
+
+  Future<void> openSettings() => _channel.invokeMethod('openSettings');
+
   Future<void> _save() async {
     await _prefs.setString(
       _prefsKey,
