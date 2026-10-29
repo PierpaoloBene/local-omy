@@ -19,6 +19,27 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    // features.dart rewrote Documents/features.json: apply it.
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LocalOmyFeatures") {
+      let channel = FlutterMethodChannel(name: "local_omy/features", binaryMessenger: registrar.messenger())
+      channel.setMethodCallHandler { [weak self] call, result in
+        if call.method == "reload" { self?.locationLog.reload() }
+        result(nil)
+      }
+    }
+  }
+}
+
+/// The phone features on or off, from Documents/features.json written by
+/// features.dart ({"location": true, "calls": false, …}). Missing: on.
+enum PhoneFeatures {
+  private static let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("features.json")
+
+  static func on(_ key: String) -> Bool {
+    guard let data = try? Data(contentsOf: file),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Bool] else { return true }
+    return obj[key] ?? true
   }
 }
 
@@ -40,6 +61,7 @@ final class CallLog: NSObject, CXCallObserverDelegate {
   }
 
   func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
+    guard PhoneFeatures.on("calls") else { return }
     let id = call.uuid.uuidString
     var calls = load()
     let now = iso.string(from: Date())
@@ -87,13 +109,23 @@ final class LocationLog: NSObject, CLLocationManagerDelegate {
 
   func start() {
     manager.delegate = self
+    reload()
+  }
+
+  /// Start or stop following the feature switch.
+  func reload() {
+    guard PhoneFeatures.on("location") else {
+      manager.stopMonitoringVisits()
+      manager.stopMonitoringSignificantLocationChanges()
+      return
+    }
     // iOS first grants "while using", then later offers to keep "always".
     if manager.authorizationStatus == .notDetermined { manager.requestAlwaysAuthorization() }
     begin()
   }
 
   func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-    begin()
+    if PhoneFeatures.on("location") { begin() }
   }
 
   private func begin() {
@@ -103,6 +135,7 @@ final class LocationLog: NSObject, CLLocationManagerDelegate {
   }
 
   func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+    guard PhoneFeatures.on("location") else { return }
     var e = point(visit.coordinate, visit.horizontalAccuracy)
     e["kind"] = "visit"
     if visit.arrivalDate != .distantPast { e["arrive"] = iso.string(from: visit.arrivalDate) }
@@ -116,6 +149,7 @@ final class LocationLog: NSObject, CLLocationManagerDelegate {
   }
 
   func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    guard PhoneFeatures.on("location") else { return }
     var list = load()
     for l in locations where l.horizontalAccuracy >= 0 {
       var e = point(l.coordinate, l.horizontalAccuracy)

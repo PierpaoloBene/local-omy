@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Callable
 
 from omy.audio import StreamDecoder, normalize_wav, split_at_pauses
-from omy.config import ARCHIVE
+from omy.config import ARCHIVE, feature_on
 from omy.sessions import LOCAL_TZ, Session, recorded_days, sessions_for_day
 from omy_receiver.segment import SegmentError, parse
 
@@ -364,13 +364,14 @@ def render_day(day: date) -> Path | None:
         return None
     from omy import places
     place_list = places.load_places()
+    show_places = feature_on("location")
     lines = [f"# {day.isoformat()}", ""]
     for doc in docs:
         speech = _clean(doc["speech"])
         if not speech:
             continue
         lines += [f"## {_hm(doc['start'])}–{_hm(doc['end'])}", ""]
-        where = places.session_places(doc["segments"], place_list)
+        where = places.session_places(doc["segments"], place_list) if show_places else []
         if where:
             lines += ["_📍 " + " → ".join(where) + "_", ""]
         calls = [c for c in _context(day_dir, doc["session"]) if c["kind"] == "call"]
@@ -537,7 +538,7 @@ def transcribe(days: list[date], force: bool = False) -> dict:
 def _to_diarize(days: list[date], still_open: list[str]) -> list[Session]:
     """Transcribed closed sessions whose speakers are missing or stale."""
     from omy import diarize
-    if not diarize.available():
+    if not diarize.available() or not feature_on("diarization"):
         return []
     out = []
     for day in days:

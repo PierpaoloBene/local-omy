@@ -9,8 +9,9 @@ Naming a voice copies its embedding (from voices/clusters) into the person's
 samples (voices/people/<id>.npz) and pins that voice to them; every other
 session is then relabelled from the stored embeddings, without running
 pyannote again: the voices close to the person's samples get their name.
-Deleting a person deletes their samples and the embeddings of the voices
-named after them, and those voices go back to "Persona N".
+Deleting a person deletes the name and their samples (copies), not the
+voices' embeddings: those voices go back to "Persona N" and can be named
+again.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pathlib import Path
 
 from omy import diarize
 from omy.audio import StreamDecoder, _read, _write
+from omy.config import feature_on
 from omy.sessions import sessions_for_day
 from omy.transcribe import CACHE_DIR, TRANSCRIPTS, TranscribeError, _clean, _iso, _write_atomic, render_day
 from omy_receiver.segment import SAMPLE_RATE, parse
@@ -167,8 +169,14 @@ def _remove_sample(people: dict, key: str) -> None:
                 del people[pid]
 
 
+def _require_prints() -> None:
+    if not feature_on("voice_prints"):
+        raise TranscribeError("voice prints are turned off (Setup, Funzioni)")
+
+
 def rename(session_id: str, label: str, name: str) -> dict:
     """This voice is name (you, an existing person, or a new one), from now on."""
+    _require_prints()
     name = " ".join(name.split())
     if not name:
         raise TranscribeError("empty name")
@@ -246,18 +254,12 @@ def rename_person(person_id: str, name: str) -> dict:
 
 
 def delete_person(person_id: str) -> dict:
-    """Forget this person: their samples, the embeddings of the voices named
-    after them, and the name in the transcripts."""
+    """Forget this name: the person and their samples. The voices keep their
+    embeddings (voices/clusters), go back to "Persona N" and can be named
+    again."""
     people = diarize.load_people()
     if person_id not in people:
         raise TranscribeError(f"no person {person_id}")
-    by_session: dict[str, list[str]] = {}
-    for key in diarize.person_samples(person_id):
-        session_id, label = key.split("/", 1)
-        by_session.setdefault(session_id, []).append(label)
-    for session_id, labels in by_session.items():
-        emb = diarize.cluster_embeddings(session_id)
-        diarize.save_npz(diarize.CLUSTERS / f"{session_id}.npz", {k: v for k, v in emb.items() if k not in labels})
     (diarize.PEOPLE_DIR / f"{person_id}.npz").unlink(missing_ok=True)
     name = people.pop(person_id)["name"]
     _save_people(people)

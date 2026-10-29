@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import '../features.dart';
 import '../services/ble_service.dart';
 import '../settings.dart';
 import '../upload/uploader.dart';
@@ -11,8 +12,15 @@ class SettingsPage extends StatefulWidget {
   final BleService ble;
   final Settings settings;
   final Uploader uploader;
+  final Features features;
 
-  const SettingsPage({super.key, required this.ble, required this.settings, required this.uploader});
+  const SettingsPage({
+    super.key,
+    required this.ble,
+    required this.settings,
+    required this.uploader,
+    required this.features,
+  });
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -69,6 +77,30 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() => _urlError = null);
     _snack('Salvato');
     widget.uploader.trigger();
+    widget.features.sync();
+  }
+
+  Widget _featureList(BuildContext context) {
+    final f = widget.features;
+    final sync = f.lastSyncError != null
+        ? 'Sincronizzazione con il Mac non riuscita: ${f.lastSyncError}'
+        : f.lastSyncAt == null
+        ? 'Non ancora sincronizzate con il Mac'
+        : 'Sincronizzate con il Mac alle ${TimeOfDay.fromDateTime(f.lastSyncAt!).format(context)}';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(sync, style: Theme.of(context).textTheme.bodySmall),
+        for (final MapEntry(key: key, value: (device, label)) in featureInfo.entries)
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(label),
+            subtitle: Text(device == 'iphone' ? 'su questo iPhone' : 'sul Mac'),
+            value: f.on(key),
+            onChanged: (v) => f.set(key, v),
+          ),
+      ],
+    );
   }
 
   void _snack(String msg) {
@@ -104,11 +136,7 @@ class _SettingsPageState extends State<SettingsPage> {
             controller: _url,
             keyboardType: TextInputType.url,
             autocorrect: false,
-            decoration: InputDecoration(
-              labelText: 'URL',
-              hintText: 'https://mac.tailnet.ts.net',
-              errorText: _urlError,
-            ),
+            decoration: InputDecoration(labelText: 'URL', hintText: 'https://mac.tailnet.ts.net', errorText: _urlError),
           ),
           TextField(
             controller: _token,
@@ -124,6 +152,9 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           const SizedBox(height: 16),
           FilledButton(onPressed: _save, child: const Text('Salva')),
+          const SizedBox(height: 24),
+          Text('Funzioni', style: Theme.of(context).textTheme.titleMedium),
+          ListenableBuilder(listenable: widget.features, builder: (context, _) => _featureList(context)),
         ],
       ),
     );

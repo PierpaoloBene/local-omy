@@ -109,6 +109,11 @@ struct PeopleTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if model.features.first(where: { $0.key == "voice_prints" })?.on == false {
+                Label("Impronte vocali disattivate (Setup, Funzioni): le voci nuove non vengono salvate né riconosciute, e non si possono dare nomi.",
+                      systemImage: "info.circle")
+                    .foregroundStyle(.secondary)
+            }
             HStack {
                 if let busy = people.busy {
                     ProgressView().controlSize(.small)
@@ -174,7 +179,7 @@ private struct KnownPeople: View {
                         Spacer()
                         Menu {
                             Button("Rinomina") { newName = p.name; editing = p.id }
-                            Button("Elimina impronta vocale…", role: .destructive) { deleting = p }
+                            Button("Elimina…", role: .destructive) { deleting = p }
                         } label: { Image(systemName: "ellipsis.circle") }
                             .menuStyle(.borderlessButton).fixedSize()
                     }
@@ -185,14 +190,14 @@ private struct KnownPeople: View {
             }
         }
         .confirmationDialog(
-            "Eliminare l'impronta vocale di \(deleting?.name ?? "")?",
+            "Eliminare \(deleting?.name ?? "")?",
             isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
         ) {
             Button("Elimina", role: .destructive) {
                 if let p = deleting { people.delete(p.id, day: day) }
             }
         } message: {
-            Text("Vengono cancellati i campioni della sua voce. Nelle trascrizioni torna \"Persona N\" e non verrà più riconosciuta.")
+            Text("Viene cancellato il nome con i suoi campioni. Le sue voci restano, tornano \"Persona N\" nelle trascrizioni e puoi dar loro di nuovo un nome.")
         }
     }
 

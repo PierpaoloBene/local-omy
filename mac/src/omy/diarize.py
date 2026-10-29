@@ -29,7 +29,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from omy.audio import StreamDecoder
-from omy.config import ARCHIVE, CONFIG_DIR, load_config
+from omy.config import ARCHIVE, CONFIG_DIR, feature_on, load_config
 from omy.sessions import Session
 from omy.transcribe import CACHE_DIR, TRANSCRIPTS, TranscribeError, _iso, _write_atomic
 from omy_receiver.segment import parse
@@ -244,8 +244,12 @@ def diarize_session(session: Session) -> dict:
         c = context.classify([(at(s), at(e)) for s, e, k in result["turns"] if k == label], ctx)
         if c:
             contexts[label] = c
-    save_npz(CLUSTERS / f"{session.id}.npz", result["embeddings"])
-    clusters = name_clusters(result, load_profile(), contexts, person_profiles())
+    # With voice prints off, nothing of the other voices is kept and nobody
+    # but you is recognized: your profile is the only one you consented to.
+    prints = feature_on("voice_prints")
+    if prints:
+        save_npz(CLUSTERS / f"{session.id}.npz", result["embeddings"])
+    clusters = name_clusters(result, load_profile(), contexts, person_profiles() if prints else {})
     doc = {
         "version": VERSION,
         "session": session.id,

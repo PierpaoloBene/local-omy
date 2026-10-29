@@ -10,6 +10,8 @@ import sys
 from datetime import date, datetime
 
 from omy import battery, evaluate, iphone, macsetup, people, places, status, transcribe
+from omy.config import ARCHIVE, feature_on
+from omy_receiver import features
 
 
 def periodic() -> dict:
@@ -26,6 +28,9 @@ def periodic() -> dict:
         if days_left is not None and days_left < iphone.URGENT_BELOW_DAYS:
             iphone.notify(f"Rinnovo dell'app iPhone non riuscito, scade tra {days_left:.1f} giorni: {e}")
         result["iphone"] = {"renewed": False, "error": str(e)}
+    if not feature_on("auto_transcribe"):
+        result["transcribe"] = {"skipped": "auto_transcribe off"}
+        return result
     try:
         result["transcribe"] = transcribe.transcribe(transcribe.pending_days())
         if result["transcribe"]["failed"]:
@@ -106,6 +111,13 @@ def main() -> int:
     bat = sub.add_parser("battery", help="pendant battery: level, drain, how long a charge lasts")
     bat.add_argument("--days", type=int, default=battery.DAYS)
 
+    fe = sub.add_parser("features", help="turn features on and off (synced with the iPhone)") \
+        .add_subparsers(dest="action", required=True)
+    fe.add_parser("list", help="every feature, on or off, and where it applies")
+    fes = fe.add_parser("set", help="turn one on or off")
+    fes.add_argument("key", choices=list(features.FEATURES))
+    fes.add_argument("state", choices=["on", "off"])
+
     sub.add_parser("periodic", help="hourly job run by the LaunchAgent")
 
     args = p.parse_args()
@@ -164,6 +176,13 @@ def main() -> int:
                 "add": lambda: places.add(args.name, args.lat, args.lon, args.radius),
                 "remove": lambda: places.remove(args.name),
             }[args.action]()
+        elif args.cmd == "features":
+            if args.action == "set":
+                features.set_feature(ARCHIVE, args.key, args.state == "on")
+            result = {"features": [
+                {"key": k, "device": dev, "label": label, **features.load(ARCHIVE)[k]}
+                for k, (dev, label) in features.FEATURES.items()
+            ]}
         elif args.cmd == "battery":
             result = battery.battery(args.days)
         elif args.cmd == "people":

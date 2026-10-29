@@ -35,6 +35,7 @@ final class AudioActivity: @unchecked Sendable {
     }
 
     private func sample() {
+        guard Features.isOn("mac_audio", archive: dir.deletingLastPathComponent()) else { return }
         let apps = Self.activeApps()
         guard !apps.isEmpty else { return }
         let now = Date()

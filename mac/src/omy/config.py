@@ -60,3 +60,10 @@ def load_state() -> dict:
 
 def save_state(state: dict) -> None:
     _write_private(STATE_FILE, json.dumps(state, indent=2) + "\n")
+
+
+def feature_on(key: str) -> bool:
+    """A feature turned on or off in the app (Mac or iPhone, synced):
+    omy_receiver/features.py."""
+    from omy_receiver import features
+    return features.enabled(ARCHIVE, key)

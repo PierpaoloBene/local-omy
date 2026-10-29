@@ -158,6 +158,7 @@ enum Level { case ok, warning, error, unknown }
 final class AppModel {
     var status: Status?
     var checks: [Check] = []
+    var features: [Feature] = []
     var refreshError: String?
     /// When status was last read successfully.
     var refreshedAt: Date?
@@ -196,7 +197,8 @@ final class AppModel {
         do {
             async let s = Omy.decode(Status.self, ["status"])
             async let c = Omy.decode(Checks.self, ["setup", "check"])
-            (status, checks) = try await (s, c.checks)
+            async let f = Features.list()
+            (status, checks, features) = try await (s, c.checks, f)
             refreshError = nil
             refreshedAt = Date()
         } catch {
@@ -219,6 +221,17 @@ final class AppModel {
 
     func perform(_ name: String, _ args: [String]) {
         task.start(name, args) { [weak self] in await self?.refresh() }
+    }
+
+    func setFeature(_ key: String, _ on: Bool) {
+        AppLog.write("feature \(key) \(on ? "on" : "off")")
+        Task {
+            do {
+                features = try await Features.set(key, on)
+            } catch {
+                lastError = "Funzioni: \(error.localizedDescription)"
+            }
+        }
     }
 
     /// Copies the receiver token to the clipboard; it is never displayed.

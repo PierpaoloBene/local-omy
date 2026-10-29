@@ -220,6 +220,7 @@ struct SetupTab: View {
     let model: AppModel
 
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 16) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
                 ForEach(model.checks) { c in
@@ -250,6 +251,9 @@ struct SetupTab: View {
                 Text("Il token non viene mai mostrato: va negli appunti.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Divider()
+            FeaturesSection(model: model)
+            Divider()
             Toggle("Apri local-omy al login", isOn: Binding(
                 get: { model.loginItem }, set: { model.setLoginItem($0) }))
             if let err = model.lastError {
@@ -258,6 +262,8 @@ struct SetupTab: View {
 
             OperationLog(op: model.task)
             Spacer()
+        }
+        .padding(.trailing, 12)
         }
     }
 }

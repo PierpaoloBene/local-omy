@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'features.dart';
 import 'recording/recorder.dart';
 import 'recording/segment_store.dart';
 import 'services/ble_service.dart';
@@ -12,11 +13,14 @@ Future<void> main() async {
   await BleService.init();
   final settings = await Settings.load();
   final ble = BleService();
+  final features = await Features.load(settings);
   final store = await SegmentStore.open()
+    ..feature = features.on
     ..battery = () => ble.battery;
   final recorder = Recorder(ble, store)..start();
   final uploader = Uploader(store, settings)..start();
   recorder.onSegmentClosed = uploader.trigger;
+  features.start();
 
   final deviceId = settings.deviceId;
   if (deviceId != null) ble.connect(deviceId);
@@ -26,7 +30,7 @@ Future<void> main() async {
       title: 'local-omy',
       theme: ThemeData(colorSchemeSeed: Colors.teal),
       darkTheme: ThemeData(colorSchemeSeed: Colors.teal, brightness: Brightness.dark),
-      home: HomePage(ble: ble, recorder: recorder, uploader: uploader, settings: settings),
+      home: HomePage(ble: ble, recorder: recorder, uploader: uploader, settings: settings, features: features),
     ),
   );
 }

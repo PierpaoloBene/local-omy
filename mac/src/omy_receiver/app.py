@@ -39,6 +39,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.requests import ClientDisconnect
 
+from . import features
 from .segment import SegmentError, parse_header
 
 SEGMENT_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
@@ -307,6 +308,29 @@ def create_app(config: Config) -> FastAPI:
             for p in (tmp_bin, tmp_json):
                 if p is not None:
                     p.unlink(missing_ok=True)
+
+    # The features on/off, synced with the iPhone (features.py): the phone
+    # sends its values, gets back the merged ones.
+    @app.get("/v1/settings")
+    async def get_settings(request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        return {"features": features.load(config.archive)}
+
+    @app.put("/v1/settings")
+    async def put_settings(request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        body = b""
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > features.MAX_BODY:
+                return _error(413, "body too large")
+        try:
+            merged = await asyncio.to_thread(features.merge, config.archive, json.loads(body))
+        except ValueError as e:
+            return _error(400, str(e))
+        return {"features": merged}
 
     return app
 

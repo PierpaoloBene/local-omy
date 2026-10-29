@@ -39,7 +39,7 @@ open mac/build/local-omy.app
 - **Trascrizioni:** giorni trascritti e "Trascrivi ora". Durante una trascrizione,
   anche lanciata dal job orario o dal terminale, compare la barra di avanzamento.
 - **Persone:** a sinistra le persone riconosciute (tu e quelle a cui hai dato un nome),
-  con il menu per rinominarle o eliminarne l'impronta vocale. A destra le voci di ogni
+  con il menu per rinominarle o eliminarle. A destra le voci di ogni
   sessione del giorno scelto: ▶︎ fa sentire qualche secondo, e scrivendo un nome (o
   scegliendolo da "Chi è") la voce prende quel nome. Vedi "Dare un nome alle voci".
 
@@ -271,9 +271,9 @@ uv run omy people delete <id>
   impronte salvate, senza rifare pyannote, e i loro markdown riscritti. Le sessioni nuove
   la riconoscono da sole. Più voci della stessa persona nomini, meglio la riconosce.
 - Dare a una voce il tuo nome (`Io`) la fissa a te, ma non cambia la tua impronta.
-- **Eliminare** una persona cancella i suoi campioni e le impronte delle voci che le avevi
-  attribuito. Nelle trascrizioni quelle voci tornano `Persona N` e non viene più
-  riconosciuta.
+- **Eliminare** una persona cancella il nome e i suoi campioni (che sono copie). Le impronte
+  delle voci restano in `voices/clusters`: nelle trascrizioni tornano `Persona N` e puoi
+  dar loro di nuovo un nome, anche lo stesso.
 
 Dove stanno, tutto con permessi 600 e niente fuori dal Mac:
 - `voices/clusters/<sessione>.npz`: l'impronta di ogni voce di ogni sessione, anche senza
@@ -281,7 +281,8 @@ Dove stanno, tutto con permessi 600 e niente fuori dal Mac:
 - `voices/people.json` e `voices/people/<id>.npz`: nomi e campioni.
 
 Sono impronte vocali di **altre persone**, cioè dati biometrici raccolti senza il loro
-consenso: tienine conto prima di condividere l'archivio, ed elimina chi non vuoi riconoscere.
+consenso: tienine conto prima di condividere l'archivio. Per non salvarne di nuove, spegni
+"Impronte vocali" nelle Funzioni.
 
 ## Dove (luoghi)
 
@@ -365,6 +366,32 @@ Diarizzazione: il 95% delle tue parole viene attribuito a te, e il 92% di quelle
 attribuite a te è davvero tuo. La misura è ottimista, perché gli spezzoni sono gli stessi
 da cui viene ricavata l'impronta vocale.
 
+## Funzioni da accendere e spegnere
+
+Nella scheda **Setup** dell'app Mac (sezione Funzioni) e nelle **Impostazioni** dell'app
+iPhone ci sono gli stessi interruttori, sincronizzati. Da terminale:
+`uv run omy features list`, `uv run omy features set location off`.
+
+| Funzione | Dove agisce | Spenta |
+|---|---|---|
+| `location` | iPhone | niente posizione nei segmenti; il Mac non mostra più i luoghi nel markdown |
+| `calls` | iPhone | le chiamate CallKit non vengono più registrate |
+| `battery` | iPhone | niente livello della batteria nei segmenti |
+| `mac_audio` | Mac | l'app Mac non registra più quali app usano microfono e altoparlanti |
+| `diarization` | Mac | le sessioni nuove non passano da pyannote: niente "chi parla" |
+| `voice_prints` | Mac | le voci delle sessioni nuove non vengono salvate e nessuno, tranne te, viene riconosciuto; non si possono dare nomi |
+| `auto_transcribe` | Mac | il job orario non trascrive (resta "Trascrivi ora") |
+
+Spegnere non cancella niente di quello che è già stato raccolto.
+
+**Sincronizzazione.** I valori stanno in `~/OmiArchive/settings.json` (mode 600). Ogni
+valore porta con sé l'ora dell'ultima modifica, e vince la più recente. L'iPhone si
+sincronizza con `PUT /v1/settings`: manda i suoi valori e riceve quelli uniti. Lo fa
+all'avvio, quando torna in primo piano, dopo ogni modifica e ogni 5 minuti, quindi una
+modifica fatta sul Mac arriva all'iPhone entro 5 minuti. Sul telefono i valori sono nelle
+preferenze dell'app, e quelli che servono al codice nativo (posizione, chiamate) anche in
+`Documents/features.json`.
+
 ## Configurazione (variabili d'ambiente)
 
 | Variabile | Default | |
@@ -389,6 +416,9 @@ Controlli eseguiti, in quest'ordine, prima di leggere il corpo:
   i tipi giusti. Gli unici campi opzionali sono `calls`, `location` (coordinate nei limiti,
   `source` tra `visit` e `move`, nessun altro campo) e `battery` (intero 0–100). `id` e `sha256` devono coincidere con la richiesta, e `start` deve
   coincidere con l'istante scritto nell'id.
+- **Impostazioni:** `GET` e `PUT /v1/settings`, con lo stesso token. Il corpo del `PUT` è al
+  massimo 4 KB. Accetta solo `{"features": {chiave: {"on": bool, "at": ISO UTC}}}`, ignora
+  le chiavi sconosciute e non scrive mai altro che `settings.json`.
 - **Dimensione del corpo:** `Content-Length` viene controllato subito, e i byte vengono
   contati anche durante lo streaming (risposta 413).
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../features.dart';
 import '../recording/recorder.dart';
 import '../services/ble_service.dart';
 import '../settings.dart';
@@ -11,6 +12,7 @@ class HomePage extends StatelessWidget {
   final Recorder recorder;
   final Uploader uploader;
   final Settings settings;
+  final Features features;
 
   const HomePage({
     super.key,
@@ -18,6 +20,7 @@ class HomePage extends StatelessWidget {
     required this.recorder,
     required this.uploader,
     required this.settings,
+    required this.features,
   });
 
   @override
@@ -30,7 +33,7 @@ class HomePage extends StatelessWidget {
             icon: const Icon(Icons.settings),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => SettingsPage(ble: ble, settings: settings, uploader: uploader),
+                builder: (_) => SettingsPage(ble: ble, settings: settings, uploader: uploader, features: features),
               ),
             ),
           ),

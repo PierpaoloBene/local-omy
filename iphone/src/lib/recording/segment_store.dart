@@ -43,6 +43,9 @@ class SegmentStore {
   /// Pendant battery level (%), if connected: set by main.dart.
   int? Function() battery = () => null;
 
+  /// Whether a feature is on (features.dart): calls, location, battery.
+  bool Function(String) feature = (_) => true;
+
   static Future<SegmentStore> open() async {
     final docs = await getApplicationDocumentsDirectory();
     final dir = Directory('${docs.path}/segments');
@@ -128,10 +131,10 @@ class SegmentStore {
       deviceId: deviceId,
       data: data,
       seg: seg,
-      calls: _calls(),
-      locations: _readList('locations.json'),
+      calls: feature('calls') ? _calls() : const [],
+      locations: feature('location') ? _readList('locations.json') : const [],
       // A .part recovered at launch was closed long ago: its level is unknown.
-      battery: recovering ? null : battery(),
+      battery: recovering || !feature('battery') ? null : battery(),
     );
     final tmp = File('${dir.path}/$id.json.tmp');
     final raf = tmp.openSync(mode: FileMode.write);
