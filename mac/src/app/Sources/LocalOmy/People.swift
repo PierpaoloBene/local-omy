@@ -26,8 +26,23 @@ struct DayVoices: Decodable {
         let pinned: Bool
         let seconds: Double
         let kind: String?
+        let app: String?
+        let source: String?
         let sample: String
         var id: String { label }
+
+        /// "room", "meeting" or "media": set by hand, or what the Mac found.
+        var type: String { source ?? (kind == "media" ? "media" : kind == "call" ? "meeting" : "room") }
+        /// Still to label: not a TV, and nobody yet.
+        var todo: Bool { person == nil && type != "media" }
+        var typeLabel: String {
+            switch type {
+            case "media": return app == nil || app == "TV" ? "TV o video" : "Media · \(app!)"
+            case "meeting":
+                return app == "iPhone" ? "Chiamata" : app == nil || app == "Riunione" ? "Riunione online" : "Riunione · \(app!)"
+            default: return "Di persona"
+            }
+        }
     }
     struct Session: Decodable, Identifiable {
         let session: String
@@ -72,6 +87,11 @@ final class PeopleModel {
 
     func rename(_ session: String, _ label: String, to name: String, day: String?) {
         change("Rinomina", ["speakers", "rename", session, label, name], day: day)
+    }
+
+    /// Where these voices come from: room, meeting, media, or auto.
+    func setKind(_ session: String, _ labels: [String], _ source: String, day: String?) {
+        change("Tipo", ["speakers", "kind", session, source] + labels, day: day)
     }
 
     func renamePerson(_ id: String, to name: String, day: String?) {
@@ -210,6 +230,7 @@ private struct KnownPeople: View {
 private struct DayVoicesList: View {
     let people: PeopleModel
     let day: String?
+    @State private var todoOnly = true
 
     var body: some View {
         if let v = people.voices, v.day == day {
@@ -217,13 +238,40 @@ private struct DayVoicesList: View {
                 Text("Nessuna voce in questo giorno (non ancora diarizzato?)").foregroundStyle(.secondary)
                 Spacer()
             } else {
+                let todo = v.sessions.reduce(0) { $0 + $1.voices.filter(\.todo).count }
+                Picker("", selection: $todoOnly) {
+                    Text("Da etichettare (\(todo))").tag(true)
+                    Text("Tutte").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
                 List {
-                    ForEach(v.sessions) { s in
-                        Section("Sessione delle \(s.start.map(localTime) ?? "?")") {
-                            ForEach(s.voices) { voice in
+                    ForEach(v.sessions.filter { !todoOnly || $0.voices.contains(where: \.todo) }) { s in
+                        Section {
+                            ForEach(s.voices.filter { !todoOnly || $0.todo }) { voice in
                                 VoiceRow(people: people, session: s.session, voice: voice, day: day)
                             }
+                        } header: {
+                            HStack {
+                                Text("Sessione delle \(s.start.map(localTime) ?? "?")")
+                                Spacer()
+                                let unnamed = s.voices.filter { $0.person == nil }.map(\.label)
+                                if !unnamed.isEmpty {
+                                    Menu("Le voci senza nome…") {
+                                        Button("Sono TV o video") { people.setKind(s.session, unnamed, "media", day: day) }
+                                        Button("Sono in una riunione online") { people.setKind(s.session, unnamed, "meeting", day: day) }
+                                        Button("Sono di persona") { people.setKind(s.session, unnamed, "room", day: day) }
+                                        Divider()
+                                        Button("Come le ha riconosciute il Mac") { people.setKind(s.session, unnamed, "auto", day: day) }
+                                    }
+                                    .menuStyle(.borderlessButton).fixedSize()
+                                }
+                            }
                         }
+                    }
+                    if todoOnly && todo == 0 {
+                        Text("Tutte le voci di questo giorno hanno un nome o un tipo.").foregroundStyle(.secondary)
                     }
                 }
             }
@@ -251,12 +299,24 @@ private struct VoiceRow: View {
                     TextField("Nome", text: $name)
                         .onSubmit(submit)
                         .frame(maxWidth: 200)
+                    .disabled(voice.type == "media")
                     Menu("Chi è") {
                         if let me = people.people?.me { Button(me.name) { name = me.name; submit() } }
                         ForEach(people.people?.people ?? []) { p in Button(p.name) { name = p.name; submit() } }
                     }
                     .fixedSize()
-                    Text("\(Int(voice.seconds)) s" + (voice.pinned ? " · nominata a mano" : voice.person != nil ? " · riconosciuta" : ""))
+                    .disabled(voice.type == "media")
+                    Picker("Tipo", selection: Binding(get: { voice.type }, set: { t in
+                        if t != voice.type { people.setKind(session, [voice.label], t, day: day) }
+                    })) {
+                        Label("Di persona", systemImage: "person.fill").tag("room")
+                        Label("Riunione online", systemImage: "video.fill").tag("meeting")
+                        Label("TV o video", systemImage: "tv.fill").tag("media")
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("Da dove viene la voce. TV o video: nessun nome, nessuna impronta vocale.")
+                    Text("\(voice.typeLabel) · \(Int(voice.seconds)) s" + (voice.pinned ? " · nominata a mano" : voice.person != nil ? " · riconosciuta" : ""))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if !voice.sample.isEmpty {

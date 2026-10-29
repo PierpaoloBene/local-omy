@@ -3,7 +3,8 @@ named with your own list of places, offline.
 
 The iPhone puts in each segment sidecar its best fix ("location": {"lat",
 "lon", "acc", "source", "at"}): an iOS visit (accurate to tens of meters) or
-a significant location change (hundreds of meters). Nothing is geocoded.
+a significant location change (hundreds of meters). omy geocodes nothing: the
+apps show the address and the map from Apple, in memory only.
 
 ~/OmiArchive/places.json, mode 600, written by `omy places add` (or by hand):
   {"places": [{"name": "Casa", "lat": 45.4642, "lon": 9.19, "radius": 150}]}

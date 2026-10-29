@@ -55,6 +55,7 @@ MAX_QUEUE = 1_000_000
 OMY_TIMEOUT = 600
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 VOICE_LABEL = re.compile(r"SPEAKER_[0-9]{2,3}")
+VOICE_SOURCES = {"room", "meeting", "media", "auto"}
 PERSON_ID = re.compile(r"[0-9a-f]{12}")
 MAX_NAME = 80
 MAX_QUERY = 100
@@ -483,6 +484,21 @@ def create_app(config: Config) -> FastAPI:
         if not SEGMENT_ID.fullmatch(session) or not VOICE_LABEL.fullmatch(label):
             return _error(400, "invalid voice")
         return await change(request, lambda b: ["speakers", "rename", session, label, _name(b["name"])])
+
+    # Where voices come from (omy speakers kind): {"source", "labels": [...]}.
+    @app.post("/v1/voices/{session}/kind")
+    async def voice_kind(session: str, request: Request):
+        if not SEGMENT_ID.fullmatch(session):
+            return _error(400, "invalid voice")
+
+        def args(b: dict) -> list[str]:
+            labels, source = b["labels"], b["source"]
+            if (source not in VOICE_SOURCES or not isinstance(labels, list) or not 0 < len(labels) <= 50
+                    or not all(isinstance(x, str) and VOICE_LABEL.fullmatch(x) for x in labels)):
+                raise ValueError("invalid voices")
+            return ["speakers", "kind", session, source, *labels]
+
+        return await change(request, args)
 
     # A few seconds of a voice, to recognize it: the WAV goes to the phone in
     # the response only (the phone plays it from memory); voice prints never

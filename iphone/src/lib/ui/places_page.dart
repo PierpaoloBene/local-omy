@@ -3,13 +3,14 @@ import 'package:flutter/cupertino.dart';
 import '../api/mac_api.dart';
 import '../api/models.dart';
 import '../features.dart';
+import '../services/maps.dart';
 import 'app_shell.dart';
 import 'common.dart';
 
 const _radii = [50, 100, 150, 300, 500, 1000];
 
-/// "Luoghi": names for where you record, from the phone's positions. No map:
-/// coordinates are never sent to a map service.
+/// "Luoghi": names for where you record, from the phone's positions, on
+/// Apple's maps (services/maps.dart) to recognize them.
 class PlacesPage extends StatefulWidget {
   final MacApi api;
   final Features features;
@@ -142,14 +143,13 @@ class _PlacesPageState extends State<PlacesPage> {
                         ? [const IosRow(title: 'Nessuno', subtitle: 'Dai un nome a uno dei punti qui sotto.')]
                         : [for (final place in p.places) _placeRow(context, place)],
                   ),
-                  const SizedBox(height: 12),
-                  Section(
-                    header: 'Dove hai registrato, senza un nome',
-                    footer: 'I punti dove hai passato più tempo. Le posizioni arrivano con i segmenti.',
-                    children: p.unnamed.isEmpty
-                        ? [const IosRow(title: 'Nessun punto senza nome')]
-                        : [for (final s in p.unnamed) _spotRow(context, s)],
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(32, 20, 32, 8),
+                    child: Text('DOVE HAI REGISTRATO, SENZA UN NOME', style: Ios.footnote(context)),
                   ),
+                  if (p.unnamed.isEmpty) const Empty('Nessun punto senza nome. Le posizioni arrivano con i segmenti.'),
+                  for (final s in p.unnamed)
+                    Padding(padding: const EdgeInsets.only(bottom: 16), child: _spotCard(context, s)),
                 ],
               ),
             ],
@@ -157,34 +157,81 @@ class _PlacesPageState extends State<PlacesPage> {
   }
 
   Widget _placeRow(BuildContext context, NamedPlace p) => IosRow(
-    leading: const IconSquare(CupertinoIcons.location_solid, CupertinoColors.systemBlue),
+    leading: SizedBox(
+      width: 52,
+      height: 52,
+      child: MapPicture(lat: p.lat, lon: p.lon, radius: p.radius, height: 52, name: p.name),
+    ),
     title: p.name,
-    subtitle:
-        'Raggio ${p.radius} m · ${duration(p.minutes)}${p.lastSeen == null ? '' : ' · ultima ${shortDay(p.lastSeen!)}'}',
+    titleStyle: Ios.headline(context),
+    below: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        AddressText(lat: p.lat, lon: p.lon, style: Ios.footnote(context)),
+        Text(
+          'Raggio ${p.radius} m · ${duration(p.minutes)}${p.lastSeen == null ? '' : ' · ultima ${shortDay(p.lastSeen!)}'}',
+          style: Ios.caption(context),
+        ),
+      ],
+    ),
     trailing: Icon(CupertinoIcons.ellipsis_circle, color: resolve(context, tint)),
     onTap: _busy ? null : () => _actions(p),
   );
 
-  Widget _spotRow(BuildContext context, Spot s) => IosRow(
-    leading: const IconSquare(CupertinoIcons.location, CupertinoColors.systemGrey),
-    title: '${duration(s.minutes)} · ${s.days == 1 ? '1 giorno' : '${s.days} giorni'}',
-    subtitle: _details(s),
-    below: s.sample.isEmpty
-        ? null
-        : Padding(
-            padding: const EdgeInsets.only(top: 3),
-            child: Text(
-              '«${s.sample}»',
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-              style: Ios.footnote(context).copyWith(fontStyle: FontStyle.italic),
-            ),
+  Widget _spotCard(BuildContext context, Spot s) => InsetCard(
+    padding: EdgeInsets.zero,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        MapPicture(
+          lat: s.lat,
+          lon: s.lon,
+          radius: 150,
+          height: 150,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 14),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    AddressText(
+                      lat: s.lat,
+                      lon: s.lon,
+                      style: Ios.headline(context),
+                      fallback: 'Indirizzo non trovato',
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${duration(s.minutes)} in ${s.days == 1 ? '1 giorno' : '${s.days} giorni'} · ${_details(s)}',
+                      style: Ios.footnote(context),
+                    ),
+                    if (s.sample.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        '«${s.sample}»',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Ios.footnote(context).copyWith(fontStyle: FontStyle.italic),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              CupertinoButton(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(44, 32),
+                onPressed: _busy ? null : () => _name(s),
+                child: const Text('Nomina'),
+              ),
+            ],
           ),
-    trailing: CupertinoButton(
-      padding: EdgeInsets.zero,
-      minimumSize: const Size(44, 44),
-      onPressed: _busy ? null : () => _name(s),
-      child: const Text('Nomina'),
+        ),
+      ],
     ),
   );
 }
@@ -222,8 +269,18 @@ class _PlaceSheetState extends State<_PlaceSheet> {
     onAction: () => Navigator.pop(context, (_c.text.trim(), _radius)),
     children: [
       Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+        child: MapPicture(lat: widget.spot.lat, lon: widget.spot.lon, radius: _radius, height: 200),
+      ),
+      Padding(
         padding: const EdgeInsets.fromLTRB(32, 0, 32, 12),
-        child: Text(_details(widget.spot), style: Ios.footnote(context)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AddressText(lat: widget.spot.lat, lon: widget.spot.lon, style: Ios.headline(context)),
+            Text(_details(widget.spot), style: Ios.footnote(context)),
+          ],
+        ),
       ),
       CupertinoFormSection.insetGrouped(
         children: [

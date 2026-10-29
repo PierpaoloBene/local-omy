@@ -47,6 +47,10 @@ class MacApi {
   Future<void> nameVoice(String session, String label, String name) =>
       _send('PUT', '/v1/voices/$session/$label', {'name': name});
 
+  /// Where these voices come from: room, meeting, media, or auto.
+  Future<void> setVoiceKind(String session, List<String> labels, String source) =>
+      _send('POST', '/v1/voices/$session/kind', {'source': source, 'labels': labels});
+
   /// Plays a few seconds of the voice; returns how many.
   Future<double> playVoice(String session, String label) async {
     final res = await _request('GET', '/v1/voices/$session/$label/sample', timeout: _read);

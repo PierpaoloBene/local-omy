@@ -77,7 +77,8 @@ def relabel() -> list[str]:
         }
         contexts = {k: (c["context"]["kind"], c["context"]["app"]) for k, c in clusters.items() if c["context"]}
         pins = {k: c["person"] for k, c in clusters.items() if c.get("pinned")}
-        new = diarize.name_clusters(result, profile, contexts, people, pins)
+        sources = {k: c["source"] for k, c in clusters.items() if c.get("source")}
+        new = diarize.name_clusters(result, profile, contexts, people, pins, sources)
         if new == clusters:
             continue
         doc["clusters"] = new
@@ -114,9 +115,10 @@ def list_day(day: date) -> dict:
             if c["seconds"] < MIN_SECONDS and not c.get("person"):
                 continue
             text = " ".join(said.get(label, []))
+            ctx = diarize.via(c["context"], c.get("source")) or {}
             voices.append({
                 "label": label, "name": c["name"], "person": c.get("person"), "pinned": c.get("pinned", False),
-                "seconds": c["seconds"], "kind": (c["context"] or {}).get("kind"),
+                "seconds": c["seconds"], "kind": ctx.get("kind"), "app": ctx.get("app"), "source": c.get("source"),
                 "sample": text[:240] + ("…" if len(text) > 240 else ""),
             })
         if voices:
@@ -205,8 +207,37 @@ def rename(session_id: str, label: str, name: str) -> dict:
         if k != label and c.get("pinned") and c.get("person") == pin:
             c["pinned"] = False
     clusters[label].update(person=pin, pinned=True)
+    # A voice with a name is somebody, not a TV.
+    if clusters[label].get("source") == "media":
+        del clusters[label]["source"]
     _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
     return {"person": pin, "name": name, "days": relabel()}
+
+
+def set_source(session_id: str, labels: list[str], source: str) -> dict:
+    """Where these voices come from (diarize.SOURCES), or "auto" for what the
+    Mac and the iPhone found. A "media" voice is nobody: its name and its
+    sample in a person's voice print go."""
+    if source not in (*diarize.SOURCES, "auto"):
+        raise TranscribeError(f"invalid source {source!r}")
+    path, doc = _doc(session_id)
+    clusters = doc["clusters"]
+    missing = [label for label in labels if label not in clusters]
+    if missing or not labels:
+        raise TranscribeError(f"no voice {', '.join(missing)} in session {session_id}")
+    people = diarize.load_people()
+    for label in labels:
+        c = clusters[label]
+        if source == "auto":
+            c.pop("source", None)
+        else:
+            c["source"] = source
+        if source == "media":
+            _remove_sample(people, f"{session_id}/{label}")
+            c.update(person=None, pinned=False)
+    _save_people(people)
+    _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
+    return {"source": source, "labels": labels, "days": relabel()}
 
 
 def list_people() -> dict:

@@ -229,14 +229,30 @@ class _IosRowState extends State<IosRow> {
 /// An inset-grouped section with iOS header and footer.
 class Section extends StatelessWidget {
   final String? header;
+  final Widget? headerTrailing;
   final String? footer;
   final List<Widget> children;
   final bool indentDividers;
-  const Section({super.key, this.header, this.footer, required this.children, this.indentDividers = true});
+  const Section({
+    super.key,
+    this.header,
+    this.headerTrailing,
+    this.footer,
+    required this.children,
+    this.indentDividers = true,
+  });
 
   @override
   Widget build(BuildContext context) => CupertinoListSection.insetGrouped(
-    header: header == null ? null : Text(header!.toUpperCase()),
+    header: header == null
+        ? null
+        : Row(
+            children: [
+              Expanded(child: Text(header!.toUpperCase())),
+              if (headerTrailing != null)
+                DefaultTextStyle.merge(style: const TextStyle(fontSize: 13), child: headerTrailing!),
+            ],
+          ),
     footer: footer == null ? null : Text(footer!, style: Ios.footnote(context)),
     margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
     dividerMargin: indentDividers ? 14 : 0,

@@ -172,9 +172,30 @@ def cluster_embeddings(session_id: str) -> dict:
         return {k: z[k] for k in z.files}
 
 
+# Where a voice comes from, set by hand (omy speakers kind): it overrides the
+# context found on the Mac and the iPhone (omy.context). "media" voices (a TV
+# in the room, a video) are nobody: never recognized, never named.
+SOURCES = ("room", "meeting", "media")
+MEETING_APP = "Riunione"
+MEDIA_APP = "TV"
+
+
+def via(context: dict | None, source: str | None) -> dict | None:
+    """The context of a voice ({"kind": "call"|"media", "app"}), after its
+    source set by hand."""
+    if source == "room":
+        return None
+    if source == "meeting":
+        return context if context and context["kind"] == "call" else {"kind": "call", "app": MEETING_APP}
+    if source == "media":
+        return {"kind": "media", "app": MEDIA_APP}
+    return context
+
+
 def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | None = None,
                   people: dict[str, tuple[str, object]] | None = None,
-                  pins: dict[str, str] | None = None) -> dict[str, dict]:
+                  pins: dict[str, str] | None = None,
+                  sources: dict[str, str] | None = None) -> dict[str, dict]:
     """label -> {"name", "person", "pinned", "similarity", "seconds", "context"}.
 
     The best match above ME_THRESHOLD is you. pins (label -> person id or
@@ -183,10 +204,11 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
     PERSON_THRESHOLD, at most one per session. The rest are numbered by first
     appearance. contexts (label -> (kind, app), from omy.context) marks call
     participants, "Persona 2 (Teams)", "Marco (iPhone)", and media,
-    "Media (Chrome)"."""
-    contexts, people, pins = contexts or {}, people or {}, pins or {}
-    pins = {k: v for k, v in pins.items() if v == "me" or v in people}
-    emb = result["embeddings"]
+    "Media (Chrome)". sources (label -> SOURCES) are set by hand: "media"
+    voices are "TV" and nobody."""
+    contexts, people, pins, sources = contexts or {}, people or {}, pins or {}, sources or {}
+    pins = {k: v for k, v in pins.items() if (v == "me" or v in people) and sources.get(k) != "media"}
+    emb = {k: v for k, v in result["embeddings"].items() if sources.get(k) != "media"}
     sims = {k: float(v @ profile) for k, v in emb.items()} if profile is not None else {}
     who = dict(pins)
     if "me" not in who.values():
@@ -203,21 +225,23 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
     for _, _, label in sorted(result["turns"]):
         if label in names:
             continue
-        kind, app = contexts.get(label, (None, None))
+        ctx = via(dict(zip(("kind", "app"), contexts[label])) if label in contexts else None, sources.get(label))
+        kind, app = (ctx["kind"], ctx["app"]) if ctx else (None, None)
         call = f" ({app})" if kind == "call" else ""
         if who.get(label) == "me":
             names[label] = my_name()
         elif label in who:
             names[label] = people[who[label]][0] + call
         elif kind == "media":
-            names[label] = f"Media ({app})"
+            names[label] = MEDIA_APP if app == MEDIA_APP else f"Media ({app})"
         else:
             n += 1
             names[label] = f"Persona {n}{call}"
     return {k: {"name": names.get(k, k), "person": who.get(k), "pinned": k in pins,
                 "similarity": round(sims[k], 3) if k in sims else None,
                 "seconds": round(result["seconds"].get(k, 0), 1),
-                "context": dict(zip(("kind", "app"), contexts[k])) if k in contexts else None}
+                "context": dict(zip(("kind", "app"), contexts[k])) if k in contexts else None,
+                **({"source": sources[k]} if k in sources else {})}
             for k in result["seconds"]}
 
 

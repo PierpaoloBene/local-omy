@@ -89,6 +89,10 @@ def main() -> int:
         x.add_argument("session")
         x.add_argument("label", help="the voice's label, as in speakers list")
     spr.add_argument("name")
+    spk = sp.add_parser("kind", help="where these voices come from: in the room, an online meeting, a TV or video")
+    spk.add_argument("session")
+    spk.add_argument("source", choices=["room", "meeting", "media", "auto"])
+    spk.add_argument("labels", nargs="+", help="the voices' labels, as in speakers list")
     pe = sub.add_parser("people", help="the people you named").add_subparsers(dest="action", required=True)
     pe.add_parser("list", help="you and the named people")
     per = pe.add_parser("rename", help="new name (same as another person: merged)")
@@ -166,6 +170,7 @@ def main() -> int:
                 "list": lambda: people.list_day(args.day),
                 "play": lambda: people.play(args.session, args.label),
                 "rename": lambda: people.rename(args.session, args.label, args.name),
+                "kind": lambda: people.set_source(args.session, args.labels, args.source),
             }[args.action]()
         elif args.cmd == "places":
             result = {

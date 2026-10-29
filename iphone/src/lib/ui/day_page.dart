@@ -176,7 +176,11 @@ class Bubble extends StatelessWidget {
         ],
         if (p.via != null) ...[
           Icon(
-            p.via!.kind == 'call' ? CupertinoIcons.phone_fill : CupertinoIcons.play_rectangle_fill,
+            p.via!.kind == 'call'
+                ? (p.via!.app == 'iPhone' ? CupertinoIcons.phone_fill : CupertinoIcons.videocam_fill)
+                : p.via!.app == 'TV'
+                ? CupertinoIcons.tv_fill
+                : CupertinoIcons.play_rectangle_fill,
             size: 11,
             color: Ios.caption(context).color,
           ),

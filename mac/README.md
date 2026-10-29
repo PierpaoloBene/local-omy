@@ -266,6 +266,7 @@ Dalla scheda **Persone** dell'app, o da terminale:
 uv run omy speakers list --day 2026-10-29              # voci di ogni sessione, con cosa hanno detto
 uv run omy speakers play <sessione> SPEAKER_01         # qualche secondo in cache/voice-sample.wav
 uv run omy speakers rename <sessione> SPEAKER_01 Marco
+uv run omy speakers kind <sessione> media SPEAKER_02 SPEAKER_03   # room | meeting | media | auto
 uv run omy people list                                 # tu e le persone con un nome
 uv run omy people rename <id> "Marco Rossi"            # stesso nome di un'altra persona: le unisce
 uv run omy people delete <id>
@@ -276,6 +277,20 @@ uv run omy people delete <id>
   impronte salvate, senza rifare pyannote, e i loro markdown riscritti. Le sessioni nuove
   la riconoscono da sole. Più voci della stessa persona nomini, meglio la riconosce.
 - Dare a una voce il tuo nome (`Io`) la fissa a te, ma non cambia la tua impronta.
+- **Il tipo** dice da dove viene una voce, mentre il nome dice chi è:
+  - `room`: di persona, qualcuno nella stanza;
+  - `meeting`: una riunione online o una chiamata. Nel nome compare l'app (`Marco (Teams)`),
+    o `Riunione` se il Mac non l'ha vista;
+  - `media`: una TV, un video, una radio. È nessuno: non viene riconosciuta come persona e non
+    ha nome. Se era nominata, il suo campione esce dall'impronta della persona. Nelle
+    trascrizioni diventa `TV`, con `via` `{"kind": "media", "app": "TV"}`;
+  - `auto`: torna a quello che hanno visto il Mac (le app che usano microfono e altoparlanti)
+    e l'iPhone (le chiamate).
+
+  Il tipo scelto a mano sta nel documento della sessione (`"source"`) e sopravvive ai
+  rinomina, come i nomi fissati. Nelle app, "Da etichettare" mostra le voci che non hanno
+  ancora né un nome né il tipo TV. "Le voci senza nome…" dà lo stesso tipo a tutte le voci
+  senza nome di una sessione, per esempio quando era accesa la TV.
 - **Eliminare** una persona cancella il nome e i suoi campioni (che sono copie). Le impronte
   delle voci restano in `voices/clusters`: nelle trascrizioni tornano `Persona N` e puoi
   dar loro di nuovo un nome, anche lo stesso.
@@ -312,8 +327,7 @@ senza luogo. Senza Posizione esatta, la posizione è approssimata a qualche chil
 - Se la posizione non va bene, nelle impostazioni dell'app, sotto Posizione, compare un
   avviso con il pulsante per aprire Impostazioni.
 
-Le coordinate non vengono mai trasformate in indirizzi da un servizio esterno. Il nome lo dà
-il Mac, con la tua lista in `~/OmiArchive/places.json` (mode 600):
+Il nome lo dà il Mac, con la tua lista in `~/OmiArchive/places.json` (mode 600):
 
 ```bash
 uv run omy places list                          # luoghi con nome, e dove hai registrato senza un nome
@@ -324,15 +338,20 @@ uv run omy places remove Casa
 
 Nell'app per Mac, il tab **Luoghi** fa lo stesso. A sinistra ci sono i luoghi con nome, che
 puoi rinominare, eliminare o di cui puoi cambiare il raggio. A destra ci sono i punti dove hai
-registrato senza un nome, con un campo per darglielo. Per riconoscere un punto senza una
-mappa, ogni riga mostra:
+registrato senza un nome, con un campo per darglielo. Sopra c'è la mappa (Apple Maps) del
+punto scelto, con il cerchio del raggio. L'app iPhone mostra lo stesso, con un'immagine della
+mappa su ogni punto, e toccandola si apre Mappe. Per riconoscere un punto, ogni riga mostra:
+- l'indirizzo;
 - quanto ci hai registrato e in quanti giorni;
 - la fascia oraria;
 - la distanza dal luogo con nome più vicino;
 - la frase più lunga detta lì l'ultimo giorno.
 
-Di proposito non c'è una mappa: le tile di Apple Maps rivelerebbero la zona ad Apple. Un
-luogo ha un solo centro, quindi non si può dare a un punto il nome di un luogo che esiste
+Mappa e indirizzo vengono da Apple (MapKit e il reverse geocoding di `CLGeocoder`). Le
+coordinate dei punti vanno quindi ad Apple, ma solo ad Apple, che le conosce già: la
+posizione dell'iPhone la calcolano i servizi di localizzazione di Apple. Le richieste non sono
+legate all'Apple ID. Immagini e indirizzi restano in memoria finché l'app è aperta, e non
+finiscono né nell'archivio né nelle trascrizioni. Un luogo ha un solo centro, quindi non si può dare a un punto il nome di un luogo che esiste
 già. Se un punto è "ancora casa", conviene allargare il raggio di Casa.
 
 `places list` riporta i punti senza nome dove hai registrato di più, con le coordinate da
@@ -458,9 +477,10 @@ L'app iPhone ha quattro schede:
   Un giorno si apre paragrafo per paragrafo. La ricerca trova parole o persone in tutti i
   giorni e porta al paragrafo.
 - **Persone:** tu, le persone con un nome (rinomina, unisci, elimina) e le voci di un giorno.
-  Le voci si possono ascoltare e nominare.
-- **Luoghi:** come la scheda del Mac. Si rinomina, si cambia il raggio, si elimina, e si dà
-  un nome ai punti senza nome.
+  Le voci si possono ascoltare. Per ognuna scegli il tipo (di persona, online, TV o video) e
+  il nome; il tipo si può anche dare a tutte le voci senza nome di una sessione.
+- **Luoghi:** come la scheda del Mac, con mappa e indirizzo. Si rinomina, si cambia il
+  raggio, si elimina, e si dà un nome ai punti senza nome.
 
 Il telefono parla con il ricevitore, con lo stesso URL e lo stesso token degli upload. Il
 ricevitore esegue gli stessi comandi `omy` dell'app per Mac, come sottoprocessi:
@@ -473,6 +493,7 @@ ricevitore esegue gli stessi comandi `omy` dell'app per Mac, come sottoprocessi:
 | `POST /v1/transcribe` | `omy transcribe --pending`, in background (log in `local-omy-periodic.log`) |
 | `GET /v1/people`, `PUT`/`DELETE /v1/people/ID` | `omy people list`, `rename`, `delete` |
 | `GET /v1/voices/DAY`, `PUT /v1/voices/SESSION/LABEL` | `omy speakers list`, `rename` |
+| `POST /v1/voices/SESSION/kind` `{"source", "labels"}` | `omy speakers kind` |
 | `GET /v1/voices/SESSION/LABEL/sample` | `omy speakers play`: il WAV (al massimo 8 s) |
 | `GET`/`POST /v1/places`, `PUT`/`DELETE /v1/places/NAME` | `omy places list`, `add`, `rename`, `remove` |
 
@@ -481,8 +502,8 @@ Le modifiche passano una alla volta e riscrivono i giorni coinvolti, come dal Ma
 Sul telefono non resta niente. Trascrizioni, nomi e luoghi restano in memoria finché la
 pagina è aperta. Il campione di voce arriva nella risposta e viene suonato dalla memoria
 (`AVAudioPlayer`, senza file). Sul Mac il WAV viene cancellato appena mandato. Le impronte
-vocali non escono mai dal Mac. Le coordinate restano tra Mac e iPhone: non c'è mappa, e
-niente viene geocodificato.
+vocali non escono mai dal Mac. Le coordinate dei luoghi vanno solo ad Apple, per la mappa e
+l'indirizzo ([sopra](#dove-luoghi)).
 
 ## Configurazione (variabili d'ambiente)
 

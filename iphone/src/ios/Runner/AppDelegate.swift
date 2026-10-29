@@ -2,6 +2,7 @@ import AVFoundation
 import CallKit
 import CoreLocation
 import Flutter
+import MapKit
 import UIKit
 
 @main
@@ -9,6 +10,7 @@ import UIKit
   private let callLog = CallLog()
   private let locationLog = LocationLog()
   private let playback = Playback()
+  private let maps = Maps()
 
   override func application(
     _ application: UIApplication,
@@ -38,6 +40,29 @@ import UIKit
           result(FlutterMethodNotImplemented)
         }
       }
+      // Map pictures and addresses of places (maps.dart), from Apple.
+      let mapChannel = FlutterMethodChannel(name: "local_omy/maps", binaryMessenger: registrar.messenger())
+      mapChannel.setMethodCallHandler { [weak self] call, result in
+        guard let self, let a = call.arguments as? [String: Any],
+              let lat = a["lat"] as? Double, let lon = a["lon"] as? Double else {
+          result(FlutterError(code: "args", message: "lat and lon expected", details: nil))
+          return
+        }
+        switch call.method {
+        case "snapshot":
+          self.maps.snapshot(
+            lat: lat, lon: lon, radius: a["radius"] as? Double ?? 150,
+            size: CGSize(width: a["width"] as? Double ?? 300, height: a["height"] as? Double ?? 150),
+            dark: a["dark"] as? Bool ?? false, result: result)
+        case "address":
+          self.maps.address(lat: lat, lon: lon, result: result)
+        case "open":
+          self.maps.open(lat: lat, lon: lon, name: a["name"] as? String)
+          result(nil)
+        default:
+          result(FlutterMethodNotImplemented)
+        }
+      }
       // A voice sample from the Mac (mac_api.dart), played from memory.
       let audio = FlutterMethodChannel(name: "local_omy/audio", binaryMessenger: registrar.messenger())
       audio.setMethodCallHandler { [weak self] call, result in
@@ -60,6 +85,76 @@ import UIKit
         }
       }
     }
+  }
+}
+
+/// Places on Apple's maps: a picture of the spot with its radius, the
+/// address, the Maps app. Coordinates go to Apple only, which already
+/// locates the phone; nothing is kept.
+final class Maps {
+  private let geocoder = CLGeocoder()
+  private var pending: [(CLLocation, FlutterResult)] = []
+
+  func snapshot(lat: Double, lon: Double, radius: Double, size: CGSize, dark: Bool, result: @escaping FlutterResult) {
+    let center = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    let options = MKMapSnapshotter.Options()
+    let meters = max(radius * 5, 400)
+    options.region = MKCoordinateRegion(
+      center: center, latitudinalMeters: meters, longitudinalMeters: meters * size.width / max(size.height, 1))
+    options.size = size
+    options.traitCollection = UITraitCollection(traitsFrom: [
+      UITraitCollection(displayScale: UIScreen.main.scale),
+      UITraitCollection(userInterfaceStyle: dark ? .dark : .light),
+    ])
+    MKMapSnapshotter(options: options).start { snap, error in
+      guard let snap else {
+        result(FlutterError(code: "snapshot", message: error?.localizedDescription, details: nil))
+        return
+      }
+      let format = UIGraphicsImageRendererFormat()
+      format.scale = snap.image.scale
+      let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+        snap.image.draw(at: .zero)
+        let p = snap.point(for: center)
+        let north = snap.point(for: CLLocationCoordinate2D(latitude: lat + radius / 111_320, longitude: lon))
+        let circle = UIBezierPath(
+          arcCenter: p, radius: abs(p.y - north.y), startAngle: 0, endAngle: 2 * .pi, clockwise: true)
+        UIColor.systemIndigo.withAlphaComponent(0.15).setFill()
+        circle.fill()
+        UIColor.systemIndigo.withAlphaComponent(0.8).setStroke()
+        circle.lineWidth = 1.5
+        circle.stroke()
+        UIColor.white.setFill()
+        UIBezierPath(ovalIn: CGRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16)).fill()
+        UIColor.systemIndigo.setFill()
+        UIBezierPath(ovalIn: CGRect(x: p.x - 5.5, y: p.y - 5.5, width: 11, height: 11)).fill()
+      }
+      result(image.pngData().map { FlutterStandardTypedData(bytes: $0) })
+    }
+  }
+
+  /// "Via Roma 12, Milano", or nil. One request at a time: Apple throttles.
+  func address(lat: Double, lon: Double, result: @escaping FlutterResult) {
+    pending.append((CLLocation(latitude: lat, longitude: lon), result))
+    if pending.count == 1 { next() }
+  }
+
+  private func next() {
+    guard let (location, result) = pending.first else { return }
+    geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "it_IT")) { [weak self] marks, _ in
+      let m = marks?.first
+      let street = [m?.thoroughfare, m?.subThoroughfare].compactMap { $0 }.joined(separator: " ")
+      let parts = [street.isEmpty ? m?.name : street, m?.locality].compactMap { $0 }.filter { !$0.isEmpty }
+      result(parts.isEmpty ? nil : parts.joined(separator: ", "))
+      self?.pending.removeFirst()
+      self?.next()
+    }
+  }
+
+  func open(lat: Double, lon: Double, name: String?) {
+    let item = MKMapItem(placemark: MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon)))
+    item.name = name
+    item.openInMaps(launchOptions: nil)
   }
 }
 

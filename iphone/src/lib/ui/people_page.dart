@@ -29,6 +29,7 @@ class _PeoplePageState extends State<PeoplePage> {
   bool _busy = false;
   String? _playing;
   Timer? _playTimer;
+  bool _todoOnly = true;
 
   @override
   void initState() {
@@ -101,20 +102,47 @@ class _PeoplePageState extends State<PeoplePage> {
     }
   }
 
-  Future<void> _nameVoice(VoiceSession s, Voice v) async {
+  Future<void> _labelVoice(VoiceSession s, Voice v) async {
     final people = _people;
-    final name = await showCupertinoSheet<String>(
+    final r = await showCupertinoSheet<(String, String)>(
       context: context,
-      scrollableBuilder: (context, controller) => _NameSheet(
+      scrollableBuilder: (context, controller) => _VoiceSheet(
         controller: controller,
-        sample: v.sample,
-        initial: v.person == null ? '' : v.name,
+        voice: v,
+        prints: widget.features.on('voice_prints'),
         me: people?.me.name,
         known: [...?people?.people.map((p) => p.name)],
       ),
     );
-    if (name == null || name.isEmpty || name == v.name && v.pinned) return;
-    await _change(() => widget.api.nameVoice(s.session, v.label, name));
+    if (r == null) return;
+    final (type, name) = r;
+    final rename = type != 'media' && name.isNotEmpty && !(name == v.name && v.pinned);
+    if (type == v.type && !rename) return;
+    await _change(() async {
+      if (type != v.type) await widget.api.setVoiceKind(s.session, [v.label], type);
+      if (rename) await widget.api.nameVoice(s.session, v.label, name);
+    });
+  }
+
+  /// The voices without a name of a session, all at once: a TV on, a meeting.
+  Future<void> _labelSession(VoiceSession s) async {
+    final unnamed = [
+      for (final v in s.voices)
+        if (v.person == null) v.label,
+    ];
+    if (unnamed.isEmpty) return;
+    final type = await chooseAction(
+      context,
+      title: unnamed.length == 1 ? 'La voce senza nome' : 'Le ${unnamed.length} voci senza nome',
+      message: 'Di questa sessione, tutte insieme.',
+      actions: [
+        ('media', 'Sono TV o video', false),
+        ('meeting', 'Sono in una riunione online', false),
+        ('room', 'Sono di persona', false),
+        ('auto', 'Come le ha riconosciute il Mac', false),
+      ],
+    );
+    if (type != null) await _change(() => widget.api.setVoiceKind(s.session, unnamed, type));
   }
 
   Future<void> _personActions(Person p) async {
@@ -271,11 +299,36 @@ class _PeoplePageState extends State<PeoplePage> {
     if (_day == null) return [const Empty('Ancora nessuna trascrizione.')];
     if (v == null) return [const Padding(padding: EdgeInsets.all(24), child: CupertinoActivityIndicator())];
     if (v.sessions.isEmpty) return [const Empty('Nessuna voce separata in questo giorno.')];
-    return [
+    final todo = v.sessions.fold(0, (n, s) => n + s.voices.where((x) => x.todo).length);
+    final shown = [
       for (final s in v.sessions)
+        if (!_todoOnly || s.voices.any((x) => x.todo)) s,
+    ];
+    return [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: CupertinoSlidingSegmentedControl<bool>(
+          groupValue: _todoOnly,
+          onValueChanged: (x) => setState(() => _todoOnly = x ?? _todoOnly),
+          children: {true: Text('Da etichettare · $todo'), false: const Text('Tutte')},
+        ),
+      ),
+      if (shown.isEmpty) const Empty('Tutte le voci di questo giorno hanno un nome o un tipo.'),
+      for (final s in shown)
         Section(
           header: s.start == null ? 'Sessione' : 'Sessione delle ${_localTime(s.start!)}',
-          children: [for (final voice in s.voices) _voiceRow(context, s, voice)],
+          headerTrailing: s.voices.any((x) => x.person == null)
+              ? CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(0, 28),
+                  onPressed: _busy ? null : () => _labelSession(s),
+                  child: const Text('Tutte…'),
+                )
+              : null,
+          children: [
+            for (final voice in s.voices)
+              if (!_todoOnly || voice.todo) _voiceRow(context, s, voice),
+          ],
         ),
     ];
   }
@@ -287,6 +340,7 @@ class _PeoplePageState extends State<PeoplePage> {
     return IosRow(
       leading: GestureDetector(
         onTap: () => _play(s, v),
+        behavior: HitTestBehavior.opaque,
         child: Container(
           width: 36,
           height: 36,
@@ -305,13 +359,7 @@ class _PeoplePageState extends State<PeoplePage> {
       titleStyle: Ios.headline(
         context,
       ).copyWith(color: known ? personColor(context, v.name, me: v.person == 'me') : null),
-      subtitle:
-          '${v.seconds < 60 ? '${v.seconds.round()} s' : duration(v.seconds / 60)}'
-          '${v.kind == 'call'
-              ? ' · chiamata'
-              : v.kind == 'media'
-              ? ' · media'
-              : ''}',
+      subtitle: '${voiceTypeLabel(v)} · ${v.seconds < 60 ? '${v.seconds.round()} s' : duration(v.seconds / 60)}',
       below: v.sample.isEmpty
           ? null
           : Padding(
@@ -326,14 +374,8 @@ class _PeoplePageState extends State<PeoplePage> {
       trailing: CupertinoButton(
         padding: EdgeInsets.zero,
         minimumSize: const Size(44, 44),
-        onPressed: _busy || !widget.features.on('voice_prints') ? null : () => _nameVoice(s, v),
-        child: Text(
-          v.pinned
-              ? 'Cambia'
-              : known
-              ? 'Conferma'
-              : 'Nomina',
-        ),
+        onPressed: _busy ? null : () => _labelVoice(s, v),
+        child: Text(v.todo ? 'Etichetta' : 'Cambia'),
       ),
     );
   }
@@ -344,27 +386,46 @@ class _PeoplePageState extends State<PeoplePage> {
   }
 }
 
-/// A name for a voice, typed or picked: you first, then the known people.
-class _NameSheet extends StatefulWidget {
+IconData voiceTypeIcon(Voice v) => switch (v.type) {
+  'media' => CupertinoIcons.tv_fill,
+  'meeting' => v.app == 'iPhone' ? CupertinoIcons.phone_fill : CupertinoIcons.videocam_fill,
+  _ => CupertinoIcons.person_fill,
+};
+
+String voiceTypeLabel(Voice v) => switch (v.type) {
+  'media' => v.app == null || v.app == 'TV' ? 'TV o video' : 'Media · ${v.app}',
+  'meeting' =>
+    v.app == 'iPhone'
+        ? 'Chiamata'
+        : v.app == null || v.app == 'Riunione'
+        ? 'Riunione online'
+        : 'Riunione · ${v.app}',
+  _ => 'Di persona',
+};
+
+/// Where a voice comes from and, unless a TV, who it is: you first, then
+/// the known people. Returns (type, name).
+class _VoiceSheet extends StatefulWidget {
   final ScrollController controller;
-  final String sample;
-  final String initial;
+  final Voice voice;
+  final bool prints;
   final String? me;
   final List<String> known;
-  const _NameSheet({
+  const _VoiceSheet({
     required this.controller,
-    required this.sample,
-    required this.initial,
+    required this.voice,
+    required this.prints,
     required this.me,
     required this.known,
   });
 
   @override
-  State<_NameSheet> createState() => _NameSheetState();
+  State<_VoiceSheet> createState() => _VoiceSheetState();
 }
 
-class _NameSheetState extends State<_NameSheet> {
-  late final _c = TextEditingController(text: widget.initial);
+class _VoiceSheetState extends State<_VoiceSheet> {
+  late final _c = TextEditingController(text: widget.voice.person == null ? '' : widget.voice.name);
+  late String _type = widget.voice.type;
 
   @override
   void dispose() {
@@ -372,52 +433,102 @@ class _NameSheetState extends State<_NameSheet> {
     super.dispose();
   }
 
+  void _done([String? name]) => Navigator.pop(context, (_type, (name ?? _c.text).trim()));
+
   @override
   Widget build(BuildContext context) {
+    final v = widget.voice;
     final q = _c.text.trim().toLowerCase();
     final names = [?widget.me, ...widget.known].where((s) => q.isEmpty || s.toLowerCase().contains(q)).take(20);
+    final named = _type != 'media' && widget.prints;
     return SheetPage(
       controller: widget.controller,
       title: 'Chi è?',
       action: 'Salva',
-      onAction: () => Navigator.pop(context, _c.text.trim()),
+      onAction: _done,
       children: [
-        if (widget.sample.isNotEmpty)
+        if (v.sample.isNotEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(32, 0, 32, 16),
             child: Text(
-              '«${widget.sample}»',
+              '«${v.sample}»',
               maxLines: 5,
               overflow: TextOverflow.ellipsis,
               style: Ios.subhead(context).copyWith(fontStyle: FontStyle.italic),
             ),
           ),
-        CupertinoFormSection.insetGrouped(
-          children: [
-            CupertinoTextFormFieldRow(
-              controller: _c,
-              autofocus: true,
-              placeholder: 'Nome',
-              textCapitalization: TextCapitalization.words,
-              onChanged: (_) => setState(() {}),
-              onFieldSubmitted: (v) => Navigator.pop(context, v.trim()),
-            ),
-          ],
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: CupertinoSlidingSegmentedControl<String>(
+            groupValue: _type,
+            onValueChanged: (t) => setState(() => _type = t ?? _type),
+            children: const {
+              'room': _Segment(CupertinoIcons.person_fill, 'Di persona'),
+              'meeting': _Segment(CupertinoIcons.videocam_fill, 'Online'),
+              'media': _Segment(CupertinoIcons.tv_fill, 'TV / video'),
+            },
+          ),
         ),
-        if (names.isNotEmpty)
-          Section(
-            header: 'Scegli',
+        Padding(
+          padding: const EdgeInsets.fromLTRB(32, 4, 32, 12),
+          child: Text(switch (_type) {
+            'media' =>
+              'Una voce da uno schermo o da un altoparlante: nessun nome, nessuna impronta vocale. '
+                  'Nelle trascrizioni diventa «TV».',
+            'meeting' =>
+              v.kind == 'call' && v.app != null && v.app != 'Riunione'
+                  ? 'Riconosciuta dal Mac: ${v.app}. Puoi dirle chi è.'
+                  : 'Qualcuno in una chiamata o una riunione online (Teams, Zoom, Meet).',
+            _ => 'Qualcuno nella stanza con te.',
+          }, style: Ios.footnote(context)),
+        ),
+        if (named) ...[
+          CupertinoFormSection.insetGrouped(
             children: [
-              for (final n in names)
-                IosRow(
-                  leading: PersonAvatar(name: n, me: n == widget.me, size: 30),
-                  title: n,
-                  titleStyle: Ios.body(context),
-                  onTap: () => Navigator.pop(context, n),
-                ),
+              CupertinoTextFormFieldRow(
+                controller: _c,
+                placeholder: 'Nome (facoltativo)',
+                textCapitalization: TextCapitalization.words,
+                onChanged: (_) => setState(() {}),
+                onFieldSubmitted: _done,
+              ),
             ],
           ),
+          if (names.isNotEmpty)
+            Section(
+              header: 'Scegli',
+              children: [
+                for (final n in names)
+                  IosRow(
+                    leading: PersonAvatar(name: n, me: n == widget.me, size: 30),
+                    title: n,
+                    titleStyle: Ios.body(context),
+                    onTap: () => _done(n),
+                  ),
+              ],
+            ),
+        ] else if (_type != 'media')
+          const Empty('Impronte vocali disattivate: si può scegliere il tipo, ma non dare un nome.'),
       ],
     );
   }
+}
+
+class _Segment extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _Segment(this.icon, this.text);
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 6),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 18),
+        const SizedBox(height: 2),
+        Text(text, style: const TextStyle(fontSize: 12)),
+      ],
+    ),
+  );
 }

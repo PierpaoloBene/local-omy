@@ -1,3 +1,4 @@
+import MapKit
 import Observation
 import SwiftUI
 
@@ -28,6 +29,85 @@ struct PlaceList: Decodable {
     }
     let places: [Place]
     let unnamed: [Spot]
+}
+
+/// Addresses of places, from Apple (the phone's positions already come from
+/// Apple's location services). In memory only; one request at a time, as
+/// Apple throttles them.
+@MainActor
+@Observable
+final class Addresses {
+    static let shared = Addresses()
+    private var cache: [String: String] = [:]
+    @ObservationIgnored private var queue: [(Double, Double)] = []
+    @ObservationIgnored private var running = false
+    @ObservationIgnored private let geocoder = CLGeocoder()
+
+    /// nil while it loads, "" if Apple has none.
+    func of(_ lat: Double, _ lon: Double) -> String? {
+        if let a = cache["\(lat),\(lon)"] { return a }
+        if !queue.contains(where: { $0 == (lat, lon) }) {
+            queue.append((lat, lon))
+            Task { self.next() }
+        }
+        return nil
+    }
+
+    private func next() {
+        guard !running, let (lat, lon) = queue.first else { return }
+        running = true
+        geocoder.reverseGeocodeLocation(CLLocation(latitude: lat, longitude: lon),
+                                        preferredLocale: Locale(identifier: "it_IT")) { marks, _ in
+            let m = marks?.first
+            let street = [m?.thoroughfare, m?.subThoroughfare].compactMap { $0 }.joined(separator: " ")
+            let text = [street.isEmpty ? m?.name : street, m?.locality].compactMap { $0 }.filter { !$0.isEmpty }
+                .joined(separator: ", ")
+            Task { @MainActor in
+                self.cache["\(lat),\(lon)"] = text
+                self.queue.removeFirst()
+                self.running = false
+                self.next()
+            }
+        }
+    }
+}
+
+/// What the map shows: a named place or a spot.
+struct MapFocus: Hashable {
+    let lat: Double
+    let lon: Double
+    let radius: Int
+    let title: String
+}
+
+private struct PlaceMap: View {
+    let focus: MapFocus
+
+    var body: some View {
+        let c = CLLocationCoordinate2D(latitude: focus.lat, longitude: focus.lon)
+        let meters = Double(max(focus.radius * 5, 400))
+        Map(initialPosition: .region(MKCoordinateRegion(center: c, latitudinalMeters: meters, longitudinalMeters: meters * 2))) {
+            MapCircle(center: c, radius: CLLocationDistance(focus.radius))
+                .foregroundStyle(.indigo.opacity(0.15))
+                .stroke(.indigo, lineWidth: 1.5)
+            Marker(focus.title, coordinate: c).tint(.indigo)
+        }
+        .id(focus)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct AddressLine: View {
+    let lat: Double
+    let lon: Double
+
+    var body: some View {
+        let a = Addresses.shared.of(lat, lon)
+        Text(a == nil ? "Cerco l'indirizzo…" : a!.isEmpty ? "Indirizzo non trovato" : a!)
+            .font(.callout)
+            .foregroundStyle(a?.isEmpty == false ? .primary : .secondary)
+            .lineLimit(1)
+    }
 }
 
 /// The "Luoghi" tab: names for where you record, from the phone's positions.
@@ -80,6 +160,7 @@ final class PlacesModel {
 struct PlacesTab: View {
     let model: AppModel
     @State private var places = PlacesModel()
+    @State private var focus: MapFocus?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -98,19 +179,37 @@ struct PlacesTab: View {
                 }
             }
             HSplitView {
-                NamedPlaces(places: places)
-                    .frame(minWidth: 230, idealWidth: 260, maxWidth: 320)
-                UnnamedSpots(places: places)
-                    .padding(.leading, 8)
+                NamedPlaces(places: places, focus: $focus)
+                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
+                VStack(alignment: .leading, spacing: 8) {
+                    if let focus {
+                        PlaceMap(focus: focus).frame(minHeight: 220, idealHeight: 280)
+                        HStack {
+                            Text(focus.title).bold()
+                            AddressLine(lat: focus.lat, lon: focus.lon)
+                        }
+                    }
+                    UnnamedSpots(places: places, focus: $focus)
+                }
+                .padding(.leading, 8)
             }
         }
         .disabled(places.busy != nil)
-        .task { await places.load() }
+        .task {
+            await places.load()
+            // Start from the spot to name first.
+            if focus == nil, let s = places.list?.unnamed.first {
+                focus = MapFocus(lat: s.lat, lon: s.lon, radius: 150, title: "Senza nome")
+            } else if focus == nil, let p = places.list?.places.first {
+                focus = MapFocus(lat: p.lat, lon: p.lon, radius: p.radius, title: p.name)
+            }
+        }
     }
 }
 
 private struct NamedPlaces: View {
     let places: PlacesModel
+    @Binding var focus: MapFocus?
     @State private var deleting: PlaceList.Place?
     @State private var editing: String?
     @State private var newName = ""
@@ -131,9 +230,12 @@ private struct NamedPlaces: View {
                         } else {
                             VStack(alignment: .leading) {
                                 Text(p.name)
+                                AddressLine(lat: p.lat, lon: p.lon)
                                 Text("raggio \(p.radius) m · \(duration(p.minutes))" + (p.lastSeen.map { ", ultima \(longDay($0))" } ?? ""))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
+                            .contentShape(Rectangle())
+                            .onTapGesture { focus = MapFocus(lat: p.lat, lon: p.lon, radius: p.radius, title: p.name) }
                         }
                         Spacer()
                         Menu {
@@ -169,6 +271,7 @@ private struct NamedPlaces: View {
 /// Where you recorded without a name, most time first.
 private struct UnnamedSpots: View {
     let places: PlacesModel
+    @Binding var focus: MapFocus?
 
     var body: some View {
         if let list = places.list {
@@ -179,7 +282,7 @@ private struct UnnamedSpots: View {
             } else {
                 List {
                     Section("Dove hai registrato, senza un nome") {
-                        ForEach(list.unnamed) { SpotRow(places: places, spot: $0) }
+                        ForEach(list.unnamed) { SpotRow(places: places, spot: $0, focus: $focus) }
                     }
                 }
             }
@@ -193,11 +296,22 @@ private struct UnnamedSpots: View {
 private struct SpotRow: View {
     let places: PlacesModel
     let spot: PlaceList.Spot
+    @Binding var focus: MapFocus?
     @State private var name = ""
     @State private var radius = 150
 
+    private var shown: Bool { focus?.lat == spot.lat && focus?.lon == spot.lon }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Button {
+                    focus = MapFocus(lat: spot.lat, lon: spot.lon, radius: radius, title: name.isEmpty ? "Senza nome" : name)
+                } label: { Image(systemName: shown ? "map.fill" : "map") }
+                    .buttonStyle(.borderless)
+                    .help("Mostra sulla mappa")
+                AddressLine(lat: spot.lat, lon: spot.lon)
+            }
             HStack {
                 TextField("Nome", text: $name)
                     .onSubmit(submit)
@@ -206,6 +320,9 @@ private struct SpotRow: View {
                     ForEach([50, 100, 150, 300, 500], id: \.self) { Text("\($0) m").tag($0) }
                 }
                 .fixedSize()
+                .onChange(of: radius) {
+                    if shown { focus = MapFocus(lat: spot.lat, lon: spot.lon, radius: radius, title: focus?.title ?? "") }
+                }
             }
             Text(details).font(.caption).foregroundStyle(.secondary)
             if !spot.sample.isEmpty {

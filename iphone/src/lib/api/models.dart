@@ -144,7 +144,7 @@ class People {
 
 class Voice {
   final String label, name, sample;
-  final String? person, kind;
+  final String? person, kind, app, source;
   final bool pinned;
   final double seconds;
   Voice.fromJson(Json j)
@@ -153,8 +153,22 @@ class Voice {
       sample = j['sample'],
       person = j['person'],
       kind = j['kind'],
+      app = j['app'],
+      source = j['source'],
       pinned = j['pinned'],
       seconds = (j['seconds'] as num).toDouble();
+
+  /// 'room', 'meeting' or 'media': set by hand, or what the Mac found.
+  String get type =>
+      source ??
+      (kind == 'media'
+          ? 'media'
+          : kind == 'call'
+          ? 'meeting'
+          : 'room');
+
+  /// Still to label: not a TV, and nobody yet.
+  bool get todo => person == null && type != 'media';
 }
 
 class VoiceSession {
