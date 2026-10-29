@@ -83,6 +83,25 @@ struct TranscribeProgress: Decodable {
     }
 }
 
+/// ~/Library/Logs/local-omy-app.log: every operation's log, timestamped.
+enum AppLog {
+    static let path = "\(Omy.home)/Library/Logs/local-omy-app.log"
+    private static let queue = DispatchQueue(label: "local-omy.applog")
+
+    static func write(_ line: String) {
+        let text = "\(Date().formatted(.iso8601)) \(line)\n"
+        queue.async {
+            if !FileManager.default.fileExists(atPath: path) {
+                FileManager.default.createFile(atPath: path, contents: nil)
+            }
+            guard let h = FileHandle(forWritingAtPath: path) else { return }
+            h.seekToEndOfFile()
+            h.write(Data(text.utf8))
+            try? h.close()
+        }
+    }
+}
+
 /// One long omy command at a time per lane, with its streamed log.
 @MainActor
 @Observable
@@ -97,13 +116,17 @@ final class Job {
         running = name
         log = []
         lastError = nil
+        AppLog.write("[\(name)] start: omy \(args.joined(separator: " "))")
         Task {
             do {
                 _ = try await Omy.run(args) { line in
+                    AppLog.write("[\(name)] \(line)")
                     Task { @MainActor in self.append(line) }
                 }
+                AppLog.write("[\(name)] done")
             } catch {
                 lastError = error.localizedDescription
+                AppLog.write("[\(name)] failed: \(error.localizedDescription)")
             }
             running = nil
             await onDone()
@@ -127,6 +150,8 @@ final class AppModel {
     var status: Status?
     var checks: [Check] = []
     var refreshError: String?
+    /// When status was last read successfully.
+    var refreshedAt: Date?
     /// Setup fixes and iPhone installs: one at a time.
     let task = Job()
     /// Transcription, independent of the above: it can take an hour.
@@ -161,7 +186,9 @@ final class AppModel {
             async let c = Omy.decode(Checks.self, ["setup", "check"])
             (status, checks) = try await (s, c.checks)
             refreshError = nil
+            refreshedAt = Date()
         } catch {
+            if refreshError == nil { AppLog.write("refresh failed: \(error.localizedDescription)") }
             refreshError = error.localizedDescription
         }
         readProgress()

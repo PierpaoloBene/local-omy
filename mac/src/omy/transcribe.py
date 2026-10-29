@@ -309,6 +309,10 @@ def render_day(day: date) -> Path | None:
     return path
 
 
+def _minutes(segments: list) -> float:
+    return sum((s.end - s.start).total_seconds() for s in segments) / 60
+
+
 def remaining(session: Session, prior: dict | None) -> list:
     """The segments of session still to transcribe."""
     return session.segments[len(prior["segments"]) if prior else 0:]

@@ -4,16 +4,29 @@ struct MainWindow: View {
     let model: AppModel
 
     var body: some View {
-        TabView {
-            StatusTab(model: model).tabItem { Label("Stato", systemImage: "gauge") }
-            SetupTab(model: model).tabItem { Label("Setup", systemImage: "checklist") }
-            IPhoneTab(model: model).tabItem { Label("iPhone", systemImage: "iphone") }
-            TranscriptsTab(model: model).tabItem { Label("Trascrizioni", systemImage: "text.quote") }
+        VStack(alignment: .leading, spacing: 8) {
+            if let err = model.refreshError {
+                Label("Stato non aggiornato" + (model.refreshedAt.map { " dalle \($0.formatted(date: .omitted, time: .shortened))" } ?? "")
+                      + ": \(err)", systemImage: "exclamationmark.octagon")
+                    .foregroundStyle(.red)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
+            tabs
         }
         .padding()
         .toolbar {
             Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
                 .help("Aggiorna")
+        }
+    }
+
+    private var tabs: some View {
+        TabView {
+            StatusTab(model: model).tabItem { Label("Stato", systemImage: "gauge") }
+            SetupTab(model: model).tabItem { Label("Setup", systemImage: "checklist") }
+            IPhoneTab(model: model).tabItem { Label("iPhone", systemImage: "iphone") }
+            TranscriptsTab(model: model).tabItem { Label("Trascrizioni", systemImage: "text.quote") }
         }
     }
 }
@@ -118,9 +131,6 @@ struct StatusTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if let err = model.refreshError {
-                Label(err, systemImage: "xmark.octagon").foregroundStyle(.red)
-            }
             if let s = model.status {
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                     Row(title: "Ricevitore", value: s.receiver.running ? "attivo (pid \(s.receiver.pid ?? 0))" : "fermo",
