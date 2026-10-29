@@ -143,7 +143,8 @@ def normalize_wav(src: Path, dst: Path) -> None:
     padded = np.pad(x, (0, n * hop - len(x)))
     rms = np.sqrt(np.mean(padded.reshape(n, hop) ** 2, axis=1) + 1e-10)
     gain = np.log(np.clip(10 ** (-20 / 20) / rms, 1, 10 ** (MAX_GAIN_DB / 20)))
-    gain = np.convolve(gain, np.ones(10) / 10, mode="same")
+    # Edge-padded so the result has n values even for audio under 1 s.
+    gain = np.convolve(np.pad(gain, (5, 4), mode="edge"), np.ones(10) / 10, mode="valid")
     g = np.exp(np.interp(np.arange(len(x)), np.arange(n) * hop + hop // 2, gain))
     _write(dst, params, (np.clip(x * g, -1, 1) * 32767).astype(np.int16))
 
