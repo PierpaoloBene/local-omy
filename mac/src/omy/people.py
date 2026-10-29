@@ -3,6 +3,7 @@
   omy speakers list --day D            the voices of each session of a day
   omy speakers play SESSION LABEL      a few seconds of one of them, as a WAV
   omy speakers rename SESSION LABEL N  that voice is N, from now on
+  omy speakers unknown SESSION LABEL…  somebody you don't know: stop asking
   omy people list | rename ID N | delete ID
 
 Naming a voice copies its embedding (from voices/clusters) into the person's
@@ -17,6 +18,9 @@ again.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -24,7 +28,7 @@ from pathlib import Path
 from omy import diarize
 from omy.audio import StreamDecoder, _read, _write
 from omy.config import feature_on
-from omy.sessions import sessions_for_day
+from omy.sessions import LOCAL_TZ, sessions_for_day
 from omy.transcribe import CACHE_DIR, TRANSCRIPTS, TranscribeError, _clean, _iso, _write_atomic, render_day
 from omy_receiver.segment import SAMPLE_RATE, parse
 
@@ -32,7 +36,10 @@ from omy_receiver.segment import SAMPLE_RATE, parse
 # short clusters out of coughs and overlaps.
 MIN_SECONDS = 3
 SAMPLE_MAX = timedelta(seconds=8)
-SAMPLE_WAV = CACHE_DIR / "voice-sample.wav"
+# One file per play (the Mac app and the receiver may play at once); the
+# player deletes it, leftovers go after a minute.
+SAMPLE_PREFIX = "voice-sample-"
+SAMPLE_KEEP = 60
 
 
 def _t(iso: str) -> datetime:
@@ -78,7 +85,8 @@ def relabel() -> list[str]:
         contexts = {k: (c["context"]["kind"], c["context"]["app"]) for k, c in clusters.items() if c["context"]}
         pins = {k: c["person"] for k, c in clusters.items() if c.get("pinned")}
         sources = {k: c["source"] for k, c in clusters.items() if c.get("source")}
-        new = diarize.name_clusters(result, profile, contexts, people, pins, sources)
+        unknown = {k for k, c in clusters.items() if c.get("unknown")}
+        new = diarize.name_clusters(result, profile, contexts, people, pins, sources, unknown)
         if new == clusters:
             continue
         doc["clusters"] = new
@@ -119,6 +127,7 @@ def list_day(day: date) -> dict:
             voices.append({
                 "label": label, "name": c["name"], "person": c.get("person"), "pinned": c.get("pinned", False),
                 "seconds": c["seconds"], "kind": ctx.get("kind"), "app": ctx.get("app"), "source": c.get("source"),
+                "unknown": c.get("unknown", False),
                 "sample": text[:240] + ("…" if len(text) > 240 else ""),
             })
         if voices:
@@ -130,20 +139,32 @@ def list_day(day: date) -> dict:
 TODO_DAYS = 14
 
 
-def unlabeled(days: int = TODO_DAYS) -> dict:
-    """The sessions of the last recorded days with voices still to label
-    (nobody, and not a video), newest first, with all their voices."""
+def todo(voice: dict) -> bool:
+    """Still to label: nobody yet, not a video, not marked unknown."""
+    return voice["person"] is None and voice["kind"] != "media" and not voice["unknown"]
+
+
+def unlabeled(days: int = TODO_DAYS, hours: int | None = None) -> dict:
+    """The sessions of the last recorded days (or, with hours, that started
+    in the last hours) with voices still to label, newest first, with all
+    their voices."""
     from omy.sessions import recorded_days
+    since = datetime.now(timezone.utc) - timedelta(hours=hours) if hours else None
     out = []
     for day in sorted(recorded_days(), reverse=True)[:days]:
+        if since and day < since.astimezone(LOCAL_TZ).date():
+            break
         for s in reversed(list_day(day)["sessions"]):
-            if any(v["person"] is None and v["kind"] != "media" for v in s["voices"]):
+            if since and (s["start"] is None or _t(s["start"]) < since):
+                continue
+            if any(todo(v) for v in s["voices"]):
                 out.append({"day": day.isoformat(), **s})
     return {"sessions": out}
 
 
 def play(session_id: str, label: str) -> dict:
-    """The longest turn of this voice (at most SAMPLE_MAX) into SAMPLE_WAV."""
+    """The longest turn of this voice (at most SAMPLE_MAX) into a WAV of its
+    own in the cache; whoever plays it deletes it."""
     path, doc = _doc(session_id)
     turns = [(_t(x["start"]), _t(x["end"])) for x in doc["turns"] if x["label"] == label]
     if not turns:
@@ -170,8 +191,13 @@ def play(session_id: str, label: str) -> dict:
         tmp.unlink(missing_ok=True)
     a = int((start - first.start).total_seconds() * SAMPLE_RATE)
     b = int((end - first.start).total_seconds() * SAMPLE_RATE)
-    _write(SAMPLE_WAV, params, pcm[max(a, 0):b])
-    return {"path": str(SAMPLE_WAV), "seconds": round((end - start).total_seconds(), 1)}
+    for old in CACHE_DIR.glob(f"{SAMPLE_PREFIX}*.wav"):
+        if time.time() - old.stat().st_mtime > SAMPLE_KEEP:
+            old.unlink(missing_ok=True)
+    fd, name = tempfile.mkstemp(dir=CACHE_DIR, prefix=SAMPLE_PREFIX, suffix=".wav")
+    os.close(fd)
+    _write(Path(name), params, pcm[max(a, 0):b])
+    return {"path": name, "seconds": round((end - start).total_seconds(), 1)}
 
 
 def _remove_sample(people: dict, key: str) -> None:
@@ -188,7 +214,7 @@ def _remove_sample(people: dict, key: str) -> None:
 
 def _require_prints() -> None:
     if not feature_on("voice_prints"):
-        raise TranscribeError("voice prints are turned off (Setup, Funzioni)")
+        raise TranscribeError("voice prints are turned off (Impostazioni, Funzioni)")
 
 
 def rename(session_id: str, label: str, name: str) -> dict:
@@ -222,6 +248,7 @@ def rename(session_id: str, label: str, name: str) -> dict:
         if k != label and c.get("pinned") and c.get("person") == pin:
             c["pinned"] = False
     clusters[label].update(person=pin, pinned=True)
+    clusters[label].pop("unknown", None)
     # A voice with a name is somebody, not a video.
     if clusters[label].get("source") == "media":
         del clusters[label]["source"]
@@ -250,9 +277,35 @@ def set_source(session_id: str, labels: list[str], source: str) -> dict:
         if source == "media":
             _remove_sample(people, f"{session_id}/{label}")
             c.update(person=None, pinned=False)
+            c.pop("unknown", None)
     _save_people(people)
     _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
     return {"source": source, "labels": labels, "days": relabel()}
+
+
+def set_unknown(session_id: str, labels: list[str], unknown: bool = True) -> dict:
+    """These voices are somebody you don't know (diarize.UNKNOWN_NAME): out
+    of the voices to label, out of anyone's voice print, never recognized as
+    anyone. With unknown False they are just unnamed again."""
+    path, doc = _doc(session_id)
+    clusters = doc["clusters"]
+    missing = [label for label in labels if label not in clusters]
+    if missing or not labels:
+        raise TranscribeError(f"no voice {', '.join(missing)} in session {session_id}")
+    people = diarize.load_people()
+    for label in labels:
+        c = clusters[label]
+        if not unknown:
+            c.pop("unknown", None)
+            continue
+        _remove_sample(people, f"{session_id}/{label}")
+        c.update(person=None, pinned=False, unknown=True)
+        # Somebody, so not a video.
+        if c.get("source") == "media":
+            del c["source"]
+    _save_people(people)
+    _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
+    return {"unknown": unknown, "labels": labels, "days": relabel()}
 
 
 def set_person_source(person_id: str, source: str) -> dict:
@@ -307,8 +360,9 @@ def list_people() -> dict:
     out = [{"id": pid, "name": p["name"], "samples": len(diarize.person_samples(pid)), **row(stats[pid])}
            for pid, p in people.items()]
     out.sort(key=lambda r: (r["last_seen"] or "", r["minutes"]), reverse=True)
+    from omy import review
     return {"me": {"name": diarize.my_name(), "enrolled": diarize.PROFILE.is_file(), **row(stats["me"])},
-            "people": out}
+            "people": out, "index": review.people_index()}
 
 
 def rename_person(person_id: str, name: str) -> dict:

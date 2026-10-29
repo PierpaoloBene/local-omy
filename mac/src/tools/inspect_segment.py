@@ -13,14 +13,14 @@ import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from omy.audio import decode_to_wav
+from omy_receiver.localtime import local_tz
 from omy_receiver.segment import (
     FRAME_MS, Record, Segment, SegmentError, analyze, index_step, parse, plausible_missing,
 )
 
-LOCAL_TZ = ZoneInfo("Europe/Rome")
+LOCAL_TZ = local_tz()
 # Below this, the gap between two segments is a rotation, not a disconnection.
 ROTATION_GAP = timedelta(seconds=2)
 
@@ -45,7 +45,7 @@ def report_segment(path: Path, seg: Segment) -> None:
     expected = rep.records + rep.missing
     print(f"{path.name}")
     print(f"  codec           {seg.codec}")
-    print(f"  start           {start.isoformat()} ({local(start)} Europe/Rome)")
+    print(f"  start           {start.isoformat()} ({local(start)} local time)")
     print(f"  duration        {fmt_dur(dur)}")
     print(f"  notifications   {rep.records}")
     if seg.records:
@@ -83,7 +83,7 @@ def report_day(archive: Path, day: str) -> int:
         print(f"no readable segments in {day_dir}", file=sys.stderr)
         return 1
 
-    print(f"Day {day} (Europe/Rome) — {len(items)} segments in {day_dir}\n")
+    print(f"Day {day} (local time) — {len(items)} segments in {day_dir}\n")
     print(f"{'start':>8} {'end':>8} {'dur':>8} {'notif':>7} {'miss':>6} {'disc':>4}  segment")
     tot_records = tot_missing = tot_disc = tot_broken = 0
     recorded = timedelta()
@@ -144,7 +144,7 @@ def main() -> int:
     p.add_argument("--wav", type=Path, help="output WAV (default: next to the .bin)")
     p.add_argument("--no-wav", action="store_true", help="report only, do not decode")
     p.add_argument("--no-fill", action="store_true", help="do not conceal missing packets in the WAV")
-    p.add_argument("--day", help="report for a whole day, YYYY-MM-DD (Europe/Rome)")
+    p.add_argument("--day", help="report for a whole day, YYYY-MM-DD (local time)")
     p.add_argument("--archive", type=Path, default=Path("~/OmiArchive").expanduser())
     args = p.parse_args()
 

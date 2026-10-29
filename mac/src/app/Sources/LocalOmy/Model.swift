@@ -82,9 +82,9 @@ struct TranscribeProgress: Decodable {
     var fraction: Double { minutesTotal > 0 ? min(minutesDone / minutesTotal, 1) : 0 }
 
     var text: String {
-        var t = "sessione \(min(sessionsDone + 1, sessionsTotal))/\(sessionsTotal)"
+        var t = tr("sessione", "session") + " \(min(sessionsDone + 1, sessionsTotal))/\(sessionsTotal)"
         if let day { t += " · \(day)" }
-        return t + " · \(Int(minutesDone))/\(Int(minutesTotal)) min di audio"
+        return t + " · \(Int(minutesDone))/\(Int(minutesTotal)) " + tr("min di audio", "min of audio")
     }
 
     /// The file, if the process that wrote it is still alive.
@@ -221,7 +221,7 @@ final class AppModel {
 
     func transcribeNow() {
         guard !transcribing else { return }
-        transcription.start("Trascrizione", ["transcribe", "--pending"]) { [weak self] in await self?.refresh() }
+        transcription.start(tr("Trascrizione", "Transcription"), ["transcribe", "--pending"]) { [weak self] in await self?.refresh() }
     }
 
     func perform(_ name: String, _ args: [String]) {
@@ -234,7 +234,7 @@ final class AppModel {
             do {
                 features = try await Features.set(key, on)
             } catch {
-                lastError = "Funzioni: \(error.localizedDescription)"
+                lastError = tr("Funzioni", "Features") + ": \(error.localizedDescription)"
             }
         }
     }
@@ -260,7 +260,7 @@ final class AppModel {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
-            lastError = "Avvio al login: \(error.localizedDescription)"
+            lastError = tr("Avvio al login", "Open at login") + ": \(error.localizedDescription)"
         }
         loginItem = SMAppService.mainApp.status == .enabled
     }

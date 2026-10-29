@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import '../api/mac_api.dart';
 import '../api/models.dart';
 import 'common.dart';
+import '../l10n.dart';
 
 /// Conversations like Messages threads, one per page: you on the right,
 /// the others on the left. Swipe right for the one before, left for the one
@@ -137,9 +138,8 @@ class _Thread extends StatefulWidget {
 }
 
 class _ThreadState extends State<_Thread> with AutomaticKeepAliveClientMixin {
-  final _focusKey = GlobalKey();
+  final _center = UniqueKey();
   final _scroll = ScrollController();
-  bool _scrolled = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -157,49 +157,63 @@ class _ThreadState extends State<_Thread> with AutomaticKeepAliveClientMixin {
       future: widget.day,
       builder: (context, snap) {
         if (snap.hasError) {
-          return Center(child: Text('Il Mac non ha risposto: torna indietro e riprova.', style: Ios.subhead(context)));
+          return Center(
+            child: Text(
+              tr('Il Mac non ha risposto: torna indietro e riprova.', 'The Mac did not answer: go back and try again.'),
+              style: Ios.subhead(context),
+            ),
+          );
         }
         if (!snap.hasData) return const Center(child: CupertinoActivityIndicator());
         final paragraphs = [
           for (final p in snap.data!.paragraphs)
             if (p.session == widget.conversation.session) p,
         ];
-        if (widget.focus != null && !_scrolled) {
-          _scrolled = true;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            final c = _focusKey.currentContext;
-            if (c != null) Scrollable.ensureVisible(c, alignment: 0.35, duration: const Duration(milliseconds: 350));
-          });
-        }
+        final (bubbles, focused) = _bubbles(paragraphs);
+        final items = [
+          const SizedBox(height: 12),
+          _Who(conversation: widget.conversation),
+          ...bubbles,
+          const SizedBox(height: 24),
+          _Neighbours(
+            earlier: widget.earlier,
+            later: widget.later,
+            onEarlier: widget.onEarlier,
+            onLater: widget.onLater,
+          ),
+          SizedBox(height: MediaQuery.paddingOf(context).bottom + 24),
+        ];
+        // Built lazily, a long meeting too. The focused paragraph (from a
+        // search) is the center: the list opens there, the rest grows up
+        // and down from it.
+        final at = focused == null ? 0 : focused + 2;
         return CupertinoScrollbar(
           controller: _scroll,
           thumbVisibility: true,
           thickness: 6,
           thicknessWhileDragging: 10,
-          child: SingleChildScrollView(
+          child: CustomScrollView(
             controller: _scroll,
-            padding: EdgeInsets.only(top: 12, bottom: MediaQuery.paddingOf(context).bottom + 24),
-            child: Column(
-              children: [
-                _Who(conversation: widget.conversation),
-                ..._bubbles(paragraphs),
-                const SizedBox(height: 24),
-                _Neighbours(
-                  earlier: widget.earlier,
-                  later: widget.later,
-                  onEarlier: widget.onEarlier,
-                  onLater: widget.onLater,
-                ),
-              ],
-            ),
+            center: _center,
+            anchor: focused == null ? 0 : 0.3,
+            slivers: [
+              SliverList(delegate: SliverChildBuilderDelegate((context, i) => items[at - 1 - i], childCount: at)),
+              SliverList(
+                key: _center,
+                delegate: SliverChildBuilderDelegate((context, i) => items[at + i], childCount: items.length - at),
+              ),
+            ],
           ),
         );
       },
     );
   }
 
-  List<Widget> _bubbles(List<Paragraph> paragraphs) {
+  /// The bubbles, with a line where the place changes; and the index of
+  /// the focused one.
+  (List<Widget>, int?) _bubbles(List<Paragraph> paragraphs) {
     final out = <Widget>[];
+    int? focusedAt;
     String? place, speaker;
     for (final p in paragraphs) {
       final label = p.place?.label;
@@ -209,9 +223,9 @@ class _ThreadState extends State<_Thread> with AutomaticKeepAliveClientMixin {
       }
       place = label ?? place;
       final focused = p.id == widget.focus;
+      if (focused) focusedAt = out.length;
       out.add(
         Bubble(
-          key: focused ? _focusKey : null,
           paragraph: p,
           highlight: widget.highlight,
           focused: focused,
@@ -220,8 +234,16 @@ class _ThreadState extends State<_Thread> with AutomaticKeepAliveClientMixin {
       );
       speaker = p.speaker;
     }
-    if (out.isEmpty) out.add(const Empty('Nessun paragrafo: forse la conversazione è stata trascritta di nuovo.'));
-    return out;
+    if (out.isEmpty)
+      out.add(
+        Empty(
+          tr(
+            'Nessun paragrafo: forse la conversazione è stata trascritta di nuovo.',
+            'No paragraphs: maybe the conversation was transcribed again.',
+          ),
+        ),
+      );
+    return (out, focusedAt);
   }
 }
 
@@ -286,7 +308,7 @@ class _Neighbours extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       if (before) const Icon(CupertinoIcons.chevron_back, size: 16),
-                      Text(before ? 'Prima' : 'Dopo'),
+                      Text(before ? tr('Prima', 'Earlier') : tr('Dopo', 'Later')),
                       if (!before) const Icon(CupertinoIcons.chevron_forward, size: 16),
                     ],
                   ),
@@ -373,7 +395,7 @@ class Bubble extends StatelessWidget {
         if (!me) ...[
           Flexible(
             child: Text(
-              p.speaker ?? 'Voce sconosciuta',
+              p.speaker ?? tr('Voce sconosciuta', 'Unknown voice'),
               overflow: TextOverflow.ellipsis,
               style: Ios.caption(context).copyWith(color: personColor(context, p.speaker), fontWeight: FontWeight.w600),
             ),
@@ -424,6 +446,8 @@ TextSpan highlighted(BuildContext context, String s, String? q) {
   if (q == null || q.trim().isEmpty) return TextSpan(text: s);
   final needle = q.trim().toLowerCase();
   final lower = s.toLowerCase();
+  // A few letters change length in lower case: their offsets wouldn't match.
+  if (lower.length != s.length) return TextSpan(text: s);
   final mark = TextStyle(
     backgroundColor: resolve(context, CupertinoColors.systemYellow).withValues(alpha: 0.85),
     color: const Color(0xFF000000),
@@ -471,7 +495,7 @@ class DaySummaryCard extends StatelessWidget {
                       [
                         if (s.from != null) '${s.from}–${s.to}',
                         duration(s.minutes),
-                        '${s.sessions} ${s.sessions == 1 ? 'sessione' : 'sessioni'}',
+                        counted(s.sessions, 'sessione', 'sessioni', 'session', 'sessions'),
                       ].join(' · '),
                       style: Ios.subhead(context).copyWith(color: secondary),
                     ),
@@ -523,7 +547,10 @@ class DaySummaryCard extends StatelessWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      [...speakers.map((sp) => sp.name), if (hidden > 0) 'altri $hidden'].join(', '),
+                      [
+                        ...speakers.map((sp) => sp.name),
+                        if (hidden > 0) tr('altri $hidden', '$hidden more'),
+                      ].join(', '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Ios.footnote(context),
@@ -542,7 +569,10 @@ class DaySummaryCard extends StatelessWidget {
                   child: Text(
                     [
                       ...s.places,
-                      if (s.unnamedPlaces) s.places.isEmpty ? 'luoghi senza nome' : 'altri senza nome',
+                      if (s.unnamedPlaces)
+                        s.places.isEmpty
+                            ? tr('luoghi senza nome', 'unnamed places')
+                            : tr('altri senza nome', 'others without a name'),
                     ].join(' · '),
                     style: Ios.footnote(context),
                   ),

@@ -1,0 +1,4 @@
+/* What iOS shows when it asks for permissions, in Italian (the English is in Info.plist). */
+"NSLocationWhenInUseUsageDescription" = "local-omy salva dove è stata fatta ogni registrazione. La posizione va solo al tuo Mac.";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "local-omy salva dove è stata fatta ogni registrazione, anche in background, con le visite e i cambi di posizione di iOS per risparmiare batteria. La posizione va solo al tuo Mac.";
+"NSBluetoothAlwaysUsageDescription" = "local-omy usa il Bluetooth per ricevere l'audio dal ciondolo Omi.";

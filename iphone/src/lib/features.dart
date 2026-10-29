@@ -18,36 +18,63 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'settings.dart';
+import 'l10n.dart';
 
 /// Same keys, names and descriptions as omy_receiver/features.py on the Mac.
-const featureInfo = <String, (String device, String name, String description)>{
+final featureInfo = <String, (String device, String name, String description)>{
   'location': (
     'iphone',
-    'Posizione',
-    'Salva dove è stata fatta ogni registrazione, con le visite e i cambi di posizione di iOS, senza tenere acceso il GPS.',
+    tr('Posizione', 'Location'),
+    tr(
+      'Salva dove è stata fatta ogni registrazione, con le visite e i cambi di posizione di iOS, senza tenere acceso il GPS.',
+      'Saves where each recording was made, from iOS visits and location changes, without keeping the GPS on.',
+    ),
   ),
   'calls': (
     'iphone',
-    'Chiamate',
-    'Segna quando sei al telefono, su FaceTime o WhatsApp: solo inizio e fine, non chi chiama.',
+    tr('Chiamate', 'Calls'),
+    tr(
+      'Segna quando sei al telefono, su FaceTime o WhatsApp: solo inizio e fine, non chi chiama.',
+      'Marks when you are on the phone, FaceTime or WhatsApp: only start and end, not who is calling.',
+    ),
   ),
   'battery': (
     'iphone',
-    'Batteria del ciondolo',
-    'Salva il livello della batteria a ogni segmento, per stimare quanto dura una carica.',
+    tr('Batteria del ciondolo', 'Pendant battery'),
+    tr(
+      'Salva il livello della batteria a ogni segmento, per stimare quanto dura una carica.',
+      'Saves the battery level with each segment, to estimate how long a charge lasts.',
+    ),
   ),
   'mac_audio': (
     'mac',
-    'Chiamate e media sul Mac',
-    'Segna quali app usano microfono e altoparlanti, per distinguere una chiamata da un video o dalla musica.',
+    tr('Chiamate e media sul Mac', 'Calls and media on the Mac'),
+    tr(
+      'Segna quali app usano microfono e altoparlanti, per distinguere una chiamata da un video o dalla musica.',
+      'Marks which apps use the microphone and speakers, to tell a call from a video or music.',
+    ),
   ),
-  'diarization': ('mac', 'Chi parla', 'Separa le voci di ogni sessione e riconosce la tua.'),
+  'diarization': (
+    'mac',
+    tr('Chi parla', 'Who speaks'),
+    tr(
+      'Separa le voci di ogni sessione e riconosce la tua.',
+      'Separates the voices of each session and recognizes yours.',
+    ),
+  ),
   'voice_prints': (
     'mac',
-    'Impronte vocali',
-    'Salva l\'impronta delle altre voci, per dar loro un nome e riconoscerle nelle sessioni successive.',
+    tr('Impronte vocali', 'Voice prints'),
+    tr(
+      'Salva l\'impronta delle altre voci, per dar loro un nome e riconoscerle nelle sessioni successive.',
+      'Saves a print of the other voices, to name them and recognize them in later sessions.',
+    ),
   ),
-  'auto_transcribe': ('mac', 'Trascrizione automatica', 'Trascrive ogni ora le sessioni concluse.'),
+  'auto_transcribe': (
+    'mac',
+    tr('Trascrizione automatica', 'Automatic transcription'),
+    tr('Trascrive ogni ora le sessioni concluse.', 'Transcribes the finished sessions every hour.'),
+  ),
 };
 
 class Features extends ChangeNotifier with WidgetsBindingObserver {

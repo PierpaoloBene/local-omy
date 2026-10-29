@@ -19,8 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from omy.config import (
-    ARCHIVE, BUNDLE_ID, IPHONE_BUILD, IPHONE_SRC, load_config, load_state, save_config, save_state,
+    ARCHIVE, IPHONE_BUILD, IPHONE_SRC, iphone_bundle_id, load_config, load_state, save_config, save_state,
 )
+from omy_receiver.l10n import tr
 
 PROFILES_DIR = Path("~/Library/Developer/Xcode/UserData/Provisioning Profiles").expanduser()
 APP = IPHONE_BUILD / "local-omy.app"
@@ -143,7 +144,7 @@ def profile_expiry(app: Path) -> datetime:
 def _drop_cached_profiles(team: str) -> None:
     """Remove Xcode's cached profiles for this app so that the build fetches a
     new one instead of reusing a profile that expires soon."""
-    app_id = f"{team}.{BUNDLE_ID}"
+    app_id = f"{team}.{iphone_bundle_id(team)}"
     for path, prof in _profiles():
         if prof.get("Entitlements", {}).get("application-identifier") == app_id:
             log(f"removing cached profile {path.name}")
@@ -157,12 +158,14 @@ def build(team: str, udid: str | None) -> Path:
     run(["flutter", "build", "ios", "--release", "--config-only"], "flutter build", cwd=IPHONE_SRC)
     destination = ["-destination", f"id={udid}", "-allowProvisioningDeviceRegistration"] if udid \
         else ["-destination", "generic/platform=iOS"]
-    # The team is passed on the command line, never written to the project.
+    # The team and the bundle id are passed on the command line, never written to the project.
+    # The bundle id as LOCAL_OMY_BUNDLE_ID, read by the Runner target only: PRODUCT_BUNDLE_IDENTIFIER
+    # on the command line would go to the plugin frameworks too, and iOS refuses duplicates.
     run([
         "xcodebuild", "-workspace", "ios/Runner.xcworkspace", "-scheme", "Runner",
         "-configuration", "Release", *destination,
         "-derivedDataPath", str(DERIVED), "-allowProvisioningUpdates", "-quiet",
-        f"DEVELOPMENT_TEAM={team}", "CODE_SIGN_STYLE=Automatic",
+        f"DEVELOPMENT_TEAM={team}", "CODE_SIGN_STYLE=Automatic", f"LOCAL_OMY_BUNDLE_ID={iphone_bundle_id(team)}",
         "build",
     ], "xcodebuild", cwd=IPHONE_SRC)
     built = DERIVED / "Build" / "Products" / "Release-iphoneos" / "Runner.app"
@@ -188,7 +191,8 @@ def install(app: Path | None = None) -> dict:
         "expires": expires.isoformat(timespec="seconds"),
     })
     save_state(state)
-    notify("App aggiornata sull'iPhone: riaprila per riprendere la registrazione.")
+    notify(tr("App aggiornata sull'iPhone: riaprila per riprendere la registrazione.",
+              "App updated on the iPhone: reopen it to resume recording."))
     return {"installed": True, "expires": state["expires"]}
 
 

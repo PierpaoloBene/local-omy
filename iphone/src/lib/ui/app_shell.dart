@@ -10,9 +10,24 @@ import 'home_page.dart';
 import 'people_page.dart';
 import 'places_page.dart';
 import 'transcripts_page.dart';
+import '../l10n.dart';
 
 /// Fires when its tab is selected again, so the page reloads from the Mac.
 class TabShown extends ChangeNotifier {
+  void fire() => notifyListeners();
+
+  /// Fires when the tab is tapped while already selected, on its first
+  /// page: back to the top, as on iOS.
+  final retap = TabRetap();
+
+  @override
+  void dispose() {
+    retap.dispose();
+    super.dispose();
+  }
+}
+
+class TabRetap extends ChangeNotifier {
   void fire() => notifyListeners();
 }
 
@@ -42,6 +57,7 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   final _controller = CupertinoTabController();
   final _shown = List.generate(4, (_) => TabShown());
+  final _navigators = List.generate(4, (_) => GlobalKey<NavigatorState>());
   int _last = 0;
 
   @override
@@ -62,31 +78,52 @@ class _AppShellState extends State<AppShell> {
     super.dispose();
   }
 
+  /// Tapped the selected tab: back to its first page, or there to the top.
+  int _tapped = 0;
+  void _retap(int i) {
+    final again = i == _tapped;
+    _tapped = i;
+    if (!again) return;
+    final nav = _navigators[i].currentState;
+    if (nav != null && nav.canPop()) {
+      nav.popUntil((r) => r.isFirst);
+    } else {
+      _shown[i].retap.fire();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return CupertinoTabScaffold(
       controller: _controller,
       tabBar: CupertinoTabBar(
-        items: const [
-          BottomNavigationBarItem(icon: Icon(CupertinoIcons.dot_radiowaves_left_right), label: 'Oggi'),
+        // Called after the controller: the same tab again is a retap.
+        onTap: _retap,
+        items: [
+          BottomNavigationBarItem(
+            icon: Icon(CupertinoIcons.waveform_circle),
+            activeIcon: Icon(CupertinoIcons.waveform_circle_fill),
+            label: tr('Oggi', 'Today'),
+          ),
           BottomNavigationBarItem(
             icon: Icon(CupertinoIcons.chat_bubble_2),
             activeIcon: Icon(CupertinoIcons.chat_bubble_2_fill),
-            label: 'Conversazioni',
+            label: tr('Conversazioni', 'Conversations'),
           ),
           BottomNavigationBarItem(
             icon: Icon(CupertinoIcons.person_2),
             activeIcon: Icon(CupertinoIcons.person_2_fill),
-            label: 'Persone',
+            label: tr('Persone', 'People'),
           ),
           BottomNavigationBarItem(
             icon: Icon(CupertinoIcons.map_pin),
             activeIcon: Icon(CupertinoIcons.map_pin_ellipse),
-            label: 'Luoghi',
+            label: tr('Luoghi', 'Places'),
           ),
         ],
       ),
       tabBuilder: (context, i) => CupertinoTabView(
+        navigatorKey: _navigators[i],
         builder: (context) => switch (i) {
           0 => HomePage(
             ble: widget.ble,

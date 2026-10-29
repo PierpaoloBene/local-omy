@@ -14,11 +14,10 @@ import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
-
 from omy.config import ARCHIVE
+from omy_receiver.localtime import local_tz
 
-LOCAL_TZ = ZoneInfo("Europe/Rome")
+LOCAL_TZ = local_tz()
 # Below this, the gap between two segments is a rotation, not a disconnection.
 ROTATION_GAP = timedelta(seconds=2)
 # A session with no new segment for this long is considered finished.

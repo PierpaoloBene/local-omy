@@ -7,6 +7,7 @@ Se il Mac non è raggiungibile i file restano sull'iPhone e partono appena torna
 Sul telefono niente decodifica né trascrizione. Sul Mac la trascrizione è locale (whisper.cpp).
 Dall'iPhone si rivedono trascrizioni, persone e luoghi, chiedendoli al Mac. Sul telefono non
 resta nulla ([mac/README.md](mac/README.md#rivedere-dalliphone)).
+Le app sono in italiano e in inglese, secondo la lingua del dispositivo.
 
 Fork di [kbdevs/omibutfree](https://github.com/kbdevs/omibutfree) (licenza MIT),
 ridotto all'osso. Grazie a kbdevs per il lavoro di base sul BLE.
@@ -200,6 +201,8 @@ Gli upload partono solo mentre l'app è sveglia:
 ## Build e installazione
 
 Requisiti: Flutter ≥ 3.47, Xcode (con il tuo Apple ID in Impostazioni → Account), CocoaPods.
+Da un clone nuovo, il lato Mac si prepara con `mac/setup.sh`
+([mac/README.md](mac/README.md#installazione-da-zero)); poi `omy iphone install` installa l'app.
 
 Per installare e rinnovare l'app sull'iPhone usa `omy iphone install` (vedi
 [mac/README.md](mac/README.md)). Solo per compilare:
@@ -210,8 +213,9 @@ flutter pub get
 flutter build ipa --no-codesign   # oppure: flutter build ios --no-codesign
 ```
 
-Il bundle id è `com.example.local-omy`. Nel progetto non c'è un team di sviluppo
-impostato: `omy` lo passa a `xcodebuild` da riga di comando. Non ci sono entitlement (quelli iCloud dell'originale non
+Nel progetto il bundle id è `com.example.local-omy` e non c'è un team di sviluppo
+impostato: `omy` passa a `xcodebuild` da riga di comando il tuo team e il tuo bundle id
+(`bundle_id` in `~/.config/local-omy/config.toml`, vedi [mac/README.md](mac/README.md#installazione-da-zero)). Non ci sono entitlement (quelli iCloud dell'originale non
 funzionano con un account gratuito).
 
 **Non tenere il repo in iCloud Drive.** I metadati estesi che iCloud aggiunge ai file
@@ -221,4 +225,4 @@ firma di `Flutter.framework`. L'originale aveva uno script `fix_build.sh` che la
 
 ## Licenza
 
-MIT, come l'originale.
+MIT, come l'originale: [LICENSE](LICENSE).

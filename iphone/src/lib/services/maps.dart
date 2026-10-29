@@ -7,6 +7,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 
 import '../ui/common.dart';
+import '../l10n.dart';
 
 abstract final class Maps {
   static const _channel = MethodChannel('local_omy/maps');
@@ -33,13 +34,19 @@ abstract final class Maps {
     });
   }
 
-  static Future<String?> address(double lat, double lon) => _addresses.putIfAbsent('$lat,$lon', () async {
-    try {
-      return await _channel.invokeMethod<String>('address', {'lat': lat, 'lon': lon});
-    } on Exception {
-      return null;
-    }
-  });
+  /// null: Apple has no address there (kept). A failure (offline) is not
+  /// kept either.
+  static Future<String?> address(double lat, double lon) {
+    final key = '$lat,$lon';
+    return _addresses.putIfAbsent(key, () async {
+      try {
+        return await _channel.invokeMethod<String>('address', {'lat': lat, 'lon': lon});
+      } on Exception {
+        _addresses.remove(key);
+        return null;
+      }
+    });
+  }
 
   static Future<void> open(double lat, double lon, String? name) =>
       _channel.invokeMethod('open', {'lat': lat, 'lon': lon, 'name': name});
@@ -103,7 +110,10 @@ class AddressText extends StatelessWidget {
   Widget build(BuildContext context) => FutureBuilder(
     future: Maps.address(lat, lon),
     builder: (context, snap) => Text(
-      snap.data ?? (snap.connectionState == ConnectionState.done ? fallback : 'Cerco l\'indirizzo…'),
+      snap.data ??
+          (snap.connectionState == ConnectionState.done
+              ? fallback
+              : tr('Cerco l\'indirizzo…', 'Looking up the address…')),
       style: style,
       maxLines: 2,
       overflow: TextOverflow.ellipsis,

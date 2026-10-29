@@ -22,8 +22,6 @@ REPO = Path(__file__).resolve().parents[3]
 IPHONE_SRC = REPO / "iphone" / "src"
 IPHONE_BUILD = REPO / "iphone" / "build"
 
-BUNDLE_ID = "com.example.local-omy"
-
 
 def _write_private(path: Path, text: str) -> None:
     CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -60,6 +58,18 @@ def load_state() -> dict:
 
 def save_state(state: dict) -> None:
     _write_private(STATE_FILE, json.dumps(state, indent=2) + "\n")
+
+
+def label_prefix() -> str:
+    """Of the LaunchAgents and the Mac app: bundle_id in config.toml, else
+    local-omy. Set once: a new prefix installs new agents next to the old."""
+    return load_config().get("bundle_id", "local-omy")
+
+
+def iphone_bundle_id(team: str) -> str:
+    """bundle_id in config.toml, else one of this Apple team (a bundle id is
+    unique across all of Apple: a fork can't reuse someone else's)."""
+    return load_config().get("bundle_id") or f"com.{team.lower()}.local-omy"
 
 
 def feature_on(key: str) -> bool:

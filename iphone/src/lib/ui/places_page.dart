@@ -6,6 +6,7 @@ import '../features.dart';
 import '../services/maps.dart';
 import 'app_shell.dart';
 import 'common.dart';
+import '../l10n.dart';
 
 const _radii = [50, 100, 150, 300, 500, 1000];
 
@@ -65,7 +66,14 @@ class _PlacesPageState extends State<PlacesPage> {
     if (r == null || r.$1.isEmpty || !mounted) return;
     // A place has one center: the same name would move it here.
     if (_taken(r.$1)) {
-      showMessage(context, 'Scegli un altro nome, o allarga il raggio di ${r.$1}.', title: '${r.$1} esiste già');
+      showMessage(
+        context,
+        tr(
+          'Scegli un altro nome, o allarga il raggio di ${r.$1}.',
+          'Choose another name, or widen the radius of ${r.$1}.',
+        ),
+        title: tr('${r.$1} esiste già', '${r.$1} already exists'),
+      );
       return;
     }
     await _change(() => widget.api.addPlace(r.$1, s.lat, s.lon, r.$2));
@@ -75,8 +83,12 @@ class _PlacesPageState extends State<PlacesPage> {
     final a = await chooseAction(
       context,
       title: p.name,
-      message: 'Raggio ${p.radius} m',
-      actions: [('rename', 'Rinomina', false), ('radius', 'Cambia raggio', false), ('remove', 'Elimina', true)],
+      message: tr('Raggio ${p.radius} m', 'Radius ${p.radius} m'),
+      actions: [
+        ('rename', tr('Rinomina', 'Rename'), false),
+        ('radius', tr('Cambia raggio', 'Change radius'), false),
+        ('remove', tr('Elimina', 'Delete'), true),
+      ],
     );
     if (!mounted) return;
     switch (a) {
@@ -90,10 +102,14 @@ class _PlacesPageState extends State<PlacesPage> {
   }
 
   Future<void> _rename(NamedPlace p) async {
-    final n = await askName(context, title: 'Rinomina', initial: p.name);
+    final n = await askName(context, title: tr('Rinomina', 'Rename'), initial: p.name);
     if (n == null || n.isEmpty || n == p.name || !mounted) return;
     if (_taken(n, except: p.name)) {
-      showMessage(context, 'Scegli un altro nome.', title: '$n esiste già');
+      showMessage(
+        context,
+        tr('Scegli un altro nome.', 'Choose another name.'),
+        title: tr('$n esiste già', '$n already exists'),
+      );
       return;
     }
     await _change(() => widget.api.renamePlace(p.name, n));
@@ -102,7 +118,7 @@ class _PlacesPageState extends State<PlacesPage> {
   Future<void> _radius(NamedPlace p) async {
     final r = await chooseAction(
       context,
-      title: 'Raggio di ${p.name}',
+      title: tr('Raggio di ${p.name}', 'Radius of ${p.name}'),
       actions: [for (final r in _radii) (r, r == p.radius ? '$r m ✓' : '$r m', false)],
     );
     // Same name and center: the Mac replaces it.
@@ -112,8 +128,11 @@ class _PlacesPageState extends State<PlacesPage> {
   Future<void> _remove(NamedPlace p) async {
     if (await confirm(
       context,
-      title: 'Eliminare ${p.name}?',
-      message: 'Si cancella solo il nome: le posizioni restano, e nelle trascrizioni tornano coordinate.',
+      title: tr('Eliminare ${p.name}?', 'Delete ${p.name}?'),
+      message: tr(
+        'Si cancella solo il nome: le posizioni restano, e nelle trascrizioni tornano coordinate.',
+        'Only the name is deleted: the positions stay, and the transcripts show coordinates again.',
+      ),
     )) {
       await _change(() => widget.api.removePlace(p.name));
     }
@@ -123,7 +142,8 @@ class _PlacesPageState extends State<PlacesPage> {
   Widget build(BuildContext context) {
     final p = _places;
     return TabScaffold(
-      title: 'Luoghi',
+      title: tr('Luoghi', 'Places'),
+      scrollToTop: widget.shown.retap,
       onRefresh: _load,
       busy: _busy,
       slivers: p == null
@@ -131,23 +151,40 @@ class _PlacesPageState extends State<PlacesPage> {
           : [
               SliverList.list(
                 children: [
+                  if (_error != null) Stale(_error!),
                   if (!widget.features.on('location'))
-                    const Notice(
+                    Notice(
                       icon: CupertinoIcons.info_circle_fill,
-                      text:
-                          'Posizione disattivata: le registrazioni nuove non hanno il luogo (Impostazioni, Funzioni).',
+                      text: tr(
+                        'Posizione disattivata: le registrazioni nuove non hanno il luogo (Impostazioni, Funzioni).',
+                        'Location is off: new recordings have no place (Settings, Features).',
+                      ),
                     ),
                   Section(
-                    header: 'Con un nome',
+                    header: tr('Con un nome', 'Named'),
                     children: p.places.isEmpty
-                        ? [const IosRow(title: 'Nessuno', subtitle: 'Dai un nome a uno dei punti qui sotto.')]
+                        ? [
+                            IosRow(
+                              title: tr('Nessuno', 'None'),
+                              subtitle: tr('Dai un nome a uno dei punti qui sotto.', 'Name one of the spots below.'),
+                            ),
+                          ]
                         : [for (final place in p.places) _placeRow(context, place)],
                   ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(32, 20, 32, 8),
-                    child: Text('DOVE HAI REGISTRATO, SENZA UN NOME', style: Ios.footnote(context)),
+                    child: Text(
+                      tr('DOVE HAI REGISTRATO, SENZA UN NOME', 'WHERE YOU RECORDED, WITHOUT A NAME'),
+                      style: Ios.footnote(context),
+                    ),
                   ),
-                  if (p.unnamed.isEmpty) const Empty('Nessun punto senza nome. Le posizioni arrivano con i segmenti.'),
+                  if (p.unnamed.isEmpty)
+                    Empty(
+                      tr(
+                        'Nessun punto senza nome. Le posizioni arrivano con i segmenti.',
+                        'No unnamed spots. Positions arrive with the segments.',
+                      ),
+                    ),
                   for (final s in p.unnamed)
                     Padding(padding: const EdgeInsets.only(bottom: 16), child: _spotCard(context, s)),
                 ],
@@ -169,7 +206,7 @@ class _PlacesPageState extends State<PlacesPage> {
       children: [
         AddressText(lat: p.lat, lon: p.lon, style: Ios.footnote(context)),
         Text(
-          'Raggio ${p.radius} m · ${duration(p.minutes)}${p.lastSeen == null ? '' : ' · ultima ${shortDay(p.lastSeen!)}'}',
+          '${tr('Raggio', 'Radius')} ${p.radius} m · ${duration(p.minutes)}${p.lastSeen == null ? '' : ' · ${tr('ultima', 'last')} ${shortDay(p.lastSeen!)}'}',
           style: Ios.caption(context),
         ),
       ],
@@ -203,11 +240,11 @@ class _PlacesPageState extends State<PlacesPage> {
                       lat: s.lat,
                       lon: s.lon,
                       style: Ios.headline(context),
-                      fallback: 'Indirizzo non trovato',
+                      fallback: tr('Indirizzo non trovato', 'Address not found'),
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${duration(s.minutes)} in ${s.days == 1 ? '1 giorno' : '${s.days} giorni'} · ${_details(s)}',
+                      '${duration(s.minutes)} in ${counted(s.days, 'giorno', 'giorni', 'day', 'days')} · ${_details(s)}',
                       style: Ios.footnote(context),
                     ),
                     if (s.sample.isNotEmpty) ...[
@@ -226,7 +263,7 @@ class _PlacesPageState extends State<PlacesPage> {
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 minimumSize: const Size(44, 32),
                 onPressed: _busy ? null : () => _name(s),
-                child: const Text('Nomina'),
+                child: Text(tr('Nomina', 'Name it')),
               ),
             ],
           ),
@@ -237,9 +274,12 @@ class _PlacesPageState extends State<PlacesPage> {
 }
 
 String _details(Spot s) => [
-  s.from == s.to ? 'alle ${s.from}' : 'tra le ${s.from} e le ${s.to}',
-  if (s.lastSeen != null) 'ultima ${shortDay(s.lastSeen!)}',
-  if (s.nearest != null) 'a ${meters(s.nearest!.meters)} da ${s.nearest!.name}',
+  s.from == s.to
+      ? tr('alle ${s.from}', 'at ${s.from}')
+      : tr('tra le ${s.from} e le ${s.to}', 'between ${s.from} and ${s.to}'),
+  if (s.lastSeen != null) '${tr('ultima', 'last')} ${shortDay(s.lastSeen!)}',
+  if (s.nearest != null)
+    tr('a ${meters(s.nearest!.meters)} da ${s.nearest!.name}', '${meters(s.nearest!.meters)} from ${s.nearest!.name}'),
 ].join(' · ');
 
 class _PlaceSheet extends StatefulWidget {
@@ -264,8 +304,8 @@ class _PlaceSheetState extends State<_PlaceSheet> {
   @override
   Widget build(BuildContext context) => SheetPage(
     controller: widget.controller,
-    title: 'Nuovo luogo',
-    action: 'Salva',
+    title: tr('Nuovo luogo', 'New place'),
+    action: tr('Salva', 'Save'),
     onAction: () => Navigator.pop(context, (_c.text.trim(), _radius)),
     children: [
       Padding(
@@ -287,7 +327,7 @@ class _PlaceSheetState extends State<_PlaceSheet> {
           CupertinoTextFormFieldRow(
             controller: _c,
             autofocus: true,
-            placeholder: 'Casa, Ufficio, Palestra…',
+            placeholder: tr('Casa, Ufficio, Palestra…', 'Home, Office, Gym…'),
             textCapitalization: TextCapitalization.sentences,
             onFieldSubmitted: (v) => Navigator.pop(context, (v.trim(), _radius)),
           ),
@@ -308,7 +348,10 @@ class _PlaceSheetState extends State<_PlaceSheet> {
       Padding(
         padding: const EdgeInsets.fromLTRB(32, 8, 32, 0),
         child: Text(
-          'Le registrazioni entro questa distanza dal punto prendono il nome del luogo.',
+          tr(
+            'Le registrazioni entro questa distanza dal punto prendono il nome del luogo.',
+            'Recordings within this distance of the spot take the name of the place.',
+          ),
           style: Ios.footnote(context),
         ),
       ),

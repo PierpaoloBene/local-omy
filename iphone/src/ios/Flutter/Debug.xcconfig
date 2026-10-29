@@ -1,3 +1,6 @@
 #include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"
 #include "Generated.xcconfig"
 BUILD_LIBRARY_FOR_DISTRIBUTION = NO
+// The app's bundle id; `omy iphone install` sets it from bundle_id in
+// ~/.config/local-omy/config.toml (only this target reads it).
+LOCAL_OMY_BUNDLE_ID = com.example.local-omy

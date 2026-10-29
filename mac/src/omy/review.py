@@ -8,6 +8,7 @@ import json
 from datetime import date, datetime
 
 from omy import transcribe
+from omy.sessions import LOCAL_TZ
 from omy.transcribe import TRANSCRIPTS
 
 SEARCH_LIMIT = 200
@@ -73,7 +74,10 @@ def pending() -> dict:
 
 
 def list_days() -> dict:
-    return {"days": [{"day": d, **_summary(_records(d))} for d in _days()], "pending": pending()}
+    """Every day with a summary; today is the archive's local day (the
+    phone may be in another time zone)."""
+    return {"days": [{"day": d, **_summary(_records(d))} for d in _days()], "pending": pending(),
+            "today": datetime.now(LOCAL_TZ).date().isoformat()}
 
 
 def day(d: date) -> dict:
@@ -135,38 +139,42 @@ def _conversation(day: str, records: list[dict]) -> dict:
 
 
 def conversations(person: str | None = None, kind: str | None = None, limit: int = CONVERSATIONS_LIMIT,
-                  day: date | None = None) -> dict:
+                  day: date | None = None, before: date | None = None) -> dict:
     """The sessions with this person, of this type and on this day, newest
-    first, and for every named person what kinds of conversation and where
-    they are."""
+    first: whole days, until at least limit conversations; then more is
+    true and next is the before of the following page. Only the days needed
+    are read."""
     if kind and kind not in TYPES:
         raise transcribe.TranscribeError(f"invalid type {kind!r}")
     if not 0 < limit <= CONVERSATIONS_MAX:
         raise transcribe.TranscribeError(f"limit must be 1-{CONVERSATIONS_MAX}")
+    days = [d for d in _days() if (day is None or d == day.isoformat())
+            and (before is None or d < before.isoformat())]
     out: list[dict] = []
-    people: dict[str, dict] = {}
-    more = False
-    for d in _days():
+    for i, d in enumerate(days):
+        if len(out) >= limit:
+            return {"conversations": out, "more": True, "next": days[i - 1]}
         for records in reversed(list(_sessions(_records(d)).values())):
-            for r in records:
-                if r["person"] and r["person"] != "me":
-                    p = people.setdefault(r["person"], {"types": set(), "places": {}, "sessions": set()})
-                    p["types"].add(_type(r))
-                    p["sessions"].add(r["session"])
-                    if r["place"] and r["place"]["name"]:
-                        p["places"][r["place"]["name"]] = p["places"].get(r["place"]["name"], 0) + 1
-            if _matches(records, person, kind) and (day is None or d == day.isoformat()):
-                if len(out) == limit:
-                    more = True
-                else:
-                    out.append(_conversation(d, records))
-    return {
-        "conversations": out,
-        "more": more,
-        "people": {pid: {"types": sorted(p["types"]), "conversations": len(p["sessions"]),
-                         "places": sorted(p["places"], key=lambda n: -p["places"][n])[:3]}
-                   for pid, p in people.items()},
-    }
+            if _matches(records, person, kind):
+                out.append(_conversation(d, records))
+    return {"conversations": out, "more": False, "next": None}
+
+
+def people_index() -> dict:
+    """For every named person, what kinds of conversation, how many, and
+    where (the three places seen most)."""
+    people: dict[str, dict] = {}
+    for d in _days():
+        for r in _records(d):
+            if r["person"] and r["person"] != "me":
+                p = people.setdefault(r["person"], {"types": set(), "places": {}, "sessions": set()})
+                p["types"].add(_type(r))
+                p["sessions"].add(r["session"])
+                if r["place"] and r["place"]["name"]:
+                    p["places"][r["place"]["name"]] = p["places"].get(r["place"]["name"], 0) + 1
+    return {pid: {"types": sorted(p["types"]), "conversations": len(p["sessions"]),
+                  "places": sorted(p["places"], key=lambda n: -p["places"][n])[:3]}
+            for pid, p in people.items()}
 
 
 def search(query: str, person: str | None = None, kind: str | None = None) -> dict:

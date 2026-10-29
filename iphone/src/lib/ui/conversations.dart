@@ -5,31 +5,26 @@ import '../api/models.dart';
 import 'common.dart';
 import 'chat.dart';
 import 'timeline.dart';
+import '../l10n.dart';
 
 /// The kinds of conversation, as omy transcripts conversations --type.
-const conversationTypes = <(String, String, IconData)>[
-  ('room', 'Di persona', CupertinoIcons.person_2_fill),
+final conversationTypes = <(String, String, IconData)>[
+  ('room', tr('Di persona', 'In person'), CupertinoIcons.person_2_fill),
   ('meeting', 'Online', CupertinoIcons.videocam_fill),
-  ('call', 'Chiamate', CupertinoIcons.phone_fill),
+  ('call', tr('Chiamate', 'Calls'), CupertinoIcons.phone_fill),
   ('media', 'Video', CupertinoIcons.play_rectangle_fill),
 ];
 
 IconData typeIcon(String type) =>
     conversationTypes.firstWhere((t) => t.$1 == type, orElse: () => conversationTypes.first).$3;
 
-/// A row of rounded buttons, one selected (null: the first, "Tutti").
+/// A row of rounded buttons, one selected (null: the first, [all], "Tutti").
 class FilterPills<T> extends StatelessWidget {
   final List<(T, String, IconData?)> values;
   final T? selected;
   final ValueChanged<T?> onChanged;
-  final String all;
-  const FilterPills({
-    super.key,
-    required this.values,
-    required this.selected,
-    required this.onChanged,
-    this.all = 'Tutti',
-  });
+  final String? all;
+  const FilterPills({super.key, required this.values, required this.selected, required this.onChanged, this.all});
 
   @override
   Widget build(BuildContext context) {
@@ -61,7 +56,12 @@ class FilterPills<T> extends StatelessWidget {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(children: [pill(null, all, null), for (final (v, label, icon) in values) pill(v, label, icon)]),
+      child: Row(
+        children: [
+          pill(null, all ?? tr('Tutti', 'All'), null),
+          for (final (v, label, icon) in values) pill(v, label, icon),
+        ],
+      ),
     );
   }
 }
@@ -133,7 +133,7 @@ class ConversationRow extends StatelessWidget {
                 const SizedBox(width: 4),
                 Expanded(
                   child: Text(
-                    (others.isEmpty ? ['Solo tu'] : others.map((p) => p.name)).join(', '),
+                    (others.isEmpty ? [tr('Solo tu', 'Just you')] : others.map((p) => p.name)).join(', '),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Ios.footnote(context),
@@ -156,6 +156,72 @@ class ConversationRow extends StatelessWidget {
   }
 }
 
+/// The conversations with a person and of a type, a page at a time (whole
+/// days, about a month): the first when opened, the next ones as the
+/// timeline nears its end. Kept in memory only.
+class ConversationFeed extends ChangeNotifier {
+  static const pageSize = 1000;
+
+  final MacApi api;
+  final String? person, type;
+  ConversationFeed(this.api, {this.person, this.type});
+
+  ConversationList? list;
+
+  /// The last failure; with [list] still there, it is out of date.
+  Object? error;
+  bool _loading = false;
+  bool _disposed = false;
+
+  bool get hasMore => list?.next != null;
+
+  /// The newest page again. The older pages already loaded stay: only the
+  /// recent days change (new conversations, names given).
+  Future<void> refresh() async {
+    try {
+      final first = await api.conversations(person: person, type: type, limit: pageSize);
+      final old = list, cut = first.next;
+      list = old == null || cut == null
+          ? first
+          : ConversationList([
+              ...first.conversations,
+              for (final c in old.conversations)
+                if (c.day.compareTo(cut) < 0) c,
+            ], old.conversations.any((c) => c.day.compareTo(cut) < 0) ? old.next : cut);
+      error = null;
+    } on MacError catch (e) {
+      error = e;
+    }
+    _changed();
+  }
+
+  /// The next page, if any and not already on its way.
+  Future<void> more() async {
+    final next = list?.next;
+    if (next == null || _loading) return;
+    _loading = true;
+    try {
+      list = list! + await api.conversations(person: person, type: type, before: next, limit: pageSize);
+      error = null;
+    } on MacError catch (e) {
+      error = e;
+    } finally {
+      _loading = false;
+    }
+    _changed();
+  }
+
+  void _changed() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+}
+
 /// Every conversation with a person or of a type, as a timeline.
 class ConversationsPage extends StatefulWidget {
   final MacApi api;
@@ -175,34 +241,28 @@ class ConversationsPage extends StatefulWidget {
 }
 
 class _ConversationsPageState extends State<ConversationsPage> {
-  ConversationList? _list;
-  Object? _error;
+  late final _feed = ConversationFeed(widget.api, person: widget.person, type: widget.type)..refresh();
 
   @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    setState(() => _error = null);
-    try {
-      final l = await widget.api.conversations(person: widget.person, type: widget.type, limit: 5000);
-      if (mounted) setState(() => _list = l);
-    } on MacError catch (e) {
-      if (mounted) setState(() => _error = e);
-    }
+  void dispose() {
+    _feed.dispose();
+    super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => Timeline(
-    api: widget.api,
-    title: widget.title,
-    previousPageTitle: widget.previousPageTitle,
-    onRefresh: _load,
-    conversations: _list?.conversations,
-    error: _error,
-    onRetry: _load,
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: _feed,
+    builder: (context, _) => Timeline(
+      api: widget.api,
+      title: widget.title,
+      previousPageTitle: widget.previousPageTitle,
+      onRefresh: _feed.refresh,
+      conversations: _feed.list?.conversations,
+      hasMore: _feed.hasMore,
+      onMore: _feed.more,
+      error: _feed.error,
+      onRetry: _feed.refresh,
+    ),
   );
 }
 
@@ -229,13 +289,16 @@ class ConversationSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final all = list.conversations;
     final shown = limit == null ? all : all.take(limit!).toList();
+    final more = list.next != null;
     return Section(
-      header: header ?? '${all.length}${list.more ? '+' : ''} ${all.length == 1 ? 'conversazione' : 'conversazioni'}',
-      footer: limit == null && list.more ? 'Le 100 più recenti.' : null,
+      header:
+          header ??
+          '${counted(all.length, 'conversazione', 'conversazioni', 'conversation', 'conversations')}${more ? '+' : ''}',
       children: [
-        if (all.isEmpty) const IosRow(title: 'Nessuna conversazione'),
+        if (all.isEmpty) IosRow(title: tr('Nessuna conversazione', 'No conversations')),
         for (final c in shown) ConversationRow(api: api, c: c, list: all, previousPageTitle: previousPageTitle),
-        if (onMore != null && (all.length > shown.length || list.more)) IosRow(title: 'Mostra tutte', onTap: onMore),
+        if (onMore != null && (all.length > shown.length || more))
+          IosRow(title: tr('Mostra tutte', 'Show all'), onTap: onMore),
       ],
     );
   }

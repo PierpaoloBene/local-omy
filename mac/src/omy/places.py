@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from omy.config import ARCHIVE
 from omy.sessions import LOCAL_TZ, recorded_days

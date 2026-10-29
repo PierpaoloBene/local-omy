@@ -5,7 +5,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.example.local-omy.periodic</string>
+	<string>__LABEL__</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>__UV__</string>

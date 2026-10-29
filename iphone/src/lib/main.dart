@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'api/mac_api.dart';
 import 'features.dart';
+import 'l10n.dart';
 import 'recording/recorder.dart';
 import 'recording/segment_store.dart';
 import 'services/ble_service.dart';
@@ -34,8 +35,9 @@ Future<void> main() async {
       title: 'local-omy',
       debugShowCheckedModeBanner: false,
       theme: const CupertinoThemeData(primaryColor: tint),
-      locale: const Locale('it'),
-      supportedLocales: const [Locale('it')],
+      // Italian or English, after the iPhone (l10n.dart).
+      locale: Locale(english ? 'en' : 'it'),
+      supportedLocales: const [Locale('it'), Locale('en')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
       home: AppShell(
         ble: ble,

@@ -6,6 +6,11 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>it</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>local-omy</string>
 	<key>CFBundleExecutable</key>
@@ -31,7 +36,7 @@
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>local-omy records where each recording was made, also in background, using visits and significant changes to save battery. The position goes only to your Mac.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>local-omy uses Bluetooth to receive audio from your Omi pendant.</string>
+	<string>local-omy uses Bluetooth to receive the audio from your Omi pendant.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -66,15 +71,6 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>UISupportedInterfaceOrientations~ipad</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 </dict>
 </plist>

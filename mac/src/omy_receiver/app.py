@@ -31,15 +31,16 @@ import stat
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.requests import ClientDisconnect
 
 from . import features
+from .localtime import local_tz
 from .segment import SegmentError, parse_header
 
 SEGMENT_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
@@ -47,13 +48,14 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 ISO_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z")
 MAX_META_HEADER = 4096
 MIN_TOKEN_LEN = 32
-LOCAL_TZ = ZoneInfo("Europe/Rome")
+LOCAL_TZ = local_tz()
 MAX_QUEUE = 1_000_000
 
 # The iPhone app reviews transcripts, people and places through the omy
 # commands the Mac app runs (python -m omy.cli --json …).
 OMY_TIMEOUT = 600
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+MAX_TODO_HOURS = 24 * 14
 VOICE_LABEL = re.compile(r"SPEAKER_[0-9]{2,3}")
 VOICE_SOURCES = {"room", "meeting", "media", "auto"}
 CONVERSATION_TYPES = {"room", "meeting", "call", "media"}
@@ -150,6 +152,14 @@ def _name(v) -> str:
             or any(ord(c) < 32 for c in v)):
         raise ValueError("invalid name")
     return v.strip()
+
+
+def _day(v) -> str:
+    """A YYYY-MM-DD that is a real date."""
+    if not isinstance(v, str) or not DAY.fullmatch(v):
+        raise ValueError("invalid day")
+    date.fromisoformat(v)
+    return v
 
 
 def _filters(person, kind) -> list[str]:
@@ -254,6 +264,8 @@ def _write_state(path: Path, state: dict) -> None:
 
 def create_app(config: Config) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    # The conversations of a month are ~0.5 MB of JSON, ~1/5 compressed.
+    app.add_middleware(GZipMiddleware, minimum_size=4096)
     audio_root = config.archive / "raw" / "audio"
     tmp_dir = config.archive / "tmp"
     for d in (config.archive, audio_root, tmp_dir):
@@ -385,6 +397,7 @@ def create_app(config: Config) -> FastAPI:
             out, err = await asyncio.wait_for(proc.communicate(), OMY_TIMEOUT)
         except TimeoutError:
             proc.kill()
+            await proc.wait()
             raise
         try:
             result = json.loads(out)
@@ -436,7 +449,9 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/v1/transcripts/{day}")
     async def transcript_day(day: str, request: Request):
-        if not DAY.fullmatch(day):
+        try:
+            _day(day)
+        except ValueError:
             return _error(400, "invalid day")
         return await run(request, "transcripts", "day", day)
 
@@ -456,16 +471,17 @@ def create_app(config: Config) -> FastAPI:
         return await run(request, "transcripts", "search", q, *filters)
 
     # The sessions with a person (?person=ID|me), of a type (?type=room|meeting|call|media),
-    # of a day (?day=YYYY-MM-DD); ?limit=N (default 100).
+    # of a day (?day=YYYY-MM-DD), before a day (?before=, the "next" of the previous
+    # page); ?limit=N (default 100), rounded up to whole days.
     @app.get("/v1/conversations")
     async def conversations(request: Request, person: str | None = None, type: str | None = None,
-                            day: str | None = None, limit: str | None = None):
+                            day: str | None = None, before: str | None = None, limit: str | None = None):
         try:
             filters = _filters(person, type)
             if day is not None:
-                if not DAY.fullmatch(day):
-                    raise ValueError
-                filters += ["--day", day]
+                filters += ["--day", _day(day)]
+            if before is not None:
+                filters += ["--before", _day(before)]
             if limit is not None:
                 if not limit.isdigit() or not 0 < int(limit) <= MAX_CONVERSATIONS:
                     raise ValueError
@@ -510,10 +526,13 @@ def create_app(config: Config) -> FastAPI:
             return _error(400, "invalid person")
         return await run(request, "people", "delete", person, change=True)
 
-    # The voices still to label, of the last recorded days.
+    # The voices still to label, of the last recorded days (?hours=N: of the
+    # sessions started in the last N hours).
     @app.get("/v1/unlabeled")
-    async def unlabeled(request: Request):
-        return await run(request, "speakers", "todo")
+    async def unlabeled(request: Request, hours: str | None = None):
+        if hours is not None and (not hours.isdigit() or not 0 < int(hours) <= MAX_TODO_HOURS):
+            return _error(400, "invalid hours")
+        return await run(request, "speakers", "todo", *(["--hours", hours] if hours else []))
 
     # Where all the voices of a person come from (omy people kind): {"source"}.
     @app.post("/v1/people/{person}/kind")
@@ -530,7 +549,9 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/v1/voices/{day}")
     async def voices(day: str, request: Request):
-        if not DAY.fullmatch(day):
+        try:
+            _day(day)
+        except ValueError:
             return _error(400, "invalid day")
         return await run(request, "speakers", "list", "--day", day)
 
@@ -555,11 +576,28 @@ def create_app(config: Config) -> FastAPI:
 
         return await change(request, args)
 
+    # Somebody you don't know (omy speakers unknown): {"labels": [...], "unknown": true|false}.
+    @app.post("/v1/voices/{session}/unknown")
+    async def voice_unknown(session: str, request: Request):
+        if not SEGMENT_ID.fullmatch(session):
+            return _error(400, "invalid voice")
+
+        def args(b: dict) -> list[str]:
+            labels, unknown = b["labels"], b.get("unknown", True)
+            if (not isinstance(unknown, bool) or not isinstance(labels, list) or not 0 < len(labels) <= 50
+                    or not all(isinstance(x, str) and VOICE_LABEL.fullmatch(x) for x in labels)):
+                raise ValueError("invalid voices")
+            return ["speakers", "unknown", session, *labels, *([] if unknown else ["--off"])]
+
+        return await change(request, args)
+
     # A few seconds of a voice, to recognize it: the WAV goes to the phone in
     # the response only (the phone plays it from memory); voice prints never
     # leave the Mac.
     @app.get("/v1/voices/{session}/{label}/sample")
     async def voice_sample(session: str, label: str, request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
         if not SEGMENT_ID.fullmatch(session) or not VOICE_LABEL.fullmatch(label):
             return _error(400, "invalid voice")
         async with omy_lock:
@@ -585,7 +623,8 @@ def create_app(config: Config) -> FastAPI:
     async def place_add(request: Request):
         return await change(request, place_args)
 
-    @app.put("/v1/places/{name}")
+    # {name:path}: a name may contain "/" (sent as %2F).
+    @app.put("/v1/places/{name:path}")
     async def place_rename(name: str, request: Request):
         try:
             name = _name(name)
@@ -593,7 +632,7 @@ def create_app(config: Config) -> FastAPI:
             return _error(400, "invalid name")
         return await change(request, lambda b: ["places", "rename", name, _name(b["name"])])
 
-    @app.delete("/v1/places/{name}")
+    @app.delete("/v1/places/{name:path}")
     async def place_remove(name: str, request: Request):
         try:
             name = _name(name)

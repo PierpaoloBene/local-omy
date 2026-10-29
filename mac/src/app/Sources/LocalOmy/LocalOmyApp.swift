@@ -44,26 +44,28 @@ struct MenuContent: View {
 
     var body: some View {
         if let s = model.status {
-            Text(s.receiver.running ? "Ricevitore attivo" : "Ricevitore FERMO")
-            Text("Oggi: \(s.archive.todaySegments) segmenti, \(Int(s.archive.todayMinutes)) min")
+            Text(s.receiver.running ? tr("Ricevitore attivo", "Receiver running") : tr("Ricevitore FERMO", "Receiver STOPPED"))
+            Text(tr("Oggi: \(s.archive.todaySegments) segmenti, \(Int(s.archive.todayMinutes)) min",
+                     "Today: \(s.archive.todaySegments) segments, \(Int(s.archive.todayMinutes)) min"))
             if let days = s.iphone.daysLeft {
-                Text("App iPhone: scade tra \(String(format: "%.1f", days)) giorni")
+                Text(tr("App iPhone: scade tra \(String(format: "%.1f", days)) giorni",
+                         "iPhone app: expires in \(String(format: "%.1f", days)) days"))
             }
-            if s.iphone.needsReopen { Text("Riapri local-omy sull'iPhone") }
+            if s.iphone.needsReopen { Text(tr("Riapri local-omy sull'iPhone", "Reopen local-omy on the iPhone")) }
         } else if let err = model.refreshError {
-            Text("Errore: \(err)")
+            Text(tr("Errore: \(err)", "Error: \(err)"))
         }
-        if let running = model.task.running { Text("In corso: \(running)…") }
-        if let p = model.progress { Text("Trascrizione: \(p.text) (\(Int(p.fraction * 100))%)") }
+        if let running = model.task.running { Text(tr("In corso: \(running)…", "Running: \(running)…")) }
+        if let p = model.progress { Text(tr("Trascrizione: \(p.text) (\(Int(p.fraction * 100))%)", "Transcription: \(p.text) (\(Int(p.fraction * 100))%)")) }
         Divider()
-        Button("Apri local-omy") {
+        Button(tr("Apri local-omy", "Open local-omy")) {
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)
         }
-        Button("Aggiorna") { Task { await model.refresh() } }
-        Button("Trascrivi ora") { model.transcribeNow() }
+        Button(tr("Aggiorna", "Refresh")) { Task { await model.refresh() } }
+        Button(tr("Trascrivi ora", "Transcribe now")) { model.transcribeNow() }
             .disabled(model.transcribing)
         Divider()
-        Button("Esci") { NSApp.terminate(nil) }
+        Button(tr("Esci", "Quit")) { NSApp.terminate(nil) }
     }
 }

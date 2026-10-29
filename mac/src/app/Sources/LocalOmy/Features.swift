@@ -36,14 +36,15 @@ enum Features {
     }
 }
 
-/// The "Funzioni" section of the Setup tab.
+/// The "Funzioni" section of the Impostazioni tab.
 struct FeaturesSection: View {
     let model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Funzioni").font(.headline)
-            Text("Le stesse dell'app iPhone: una modifica arriva all'altro dispositivo alla prossima sincronizzazione (apertura dell'app, o entro 5 minuti).")
+            Text(tr("Funzioni", "Features")).font(.headline)
+            Text(tr("Le stesse dell'app iPhone: una modifica arriva all'altro dispositivo alla prossima sincronizzazione (apertura dell'app, o entro 5 minuti).",
+                     "The same as in the iPhone app: a change reaches the other device at the next sync (when the app opens, or within 5 minutes)."))
                 .font(.caption).foregroundStyle(.secondary)
             ForEach([("iphone", "iPhone"), ("mac", "Mac")], id: \.0) { device, title in
                 Text(title).font(.subheadline.bold()).padding(.top, 6)
@@ -56,7 +57,8 @@ struct FeaturesSection: View {
                     }
                 }
             }
-            Text("Spegnere una funzione interrompe la raccolta, ma non cancella quello che c'è già.")
+            Text(tr("Spegnere una funzione interrompe la raccolta, ma non cancella quello che c'è già.",
+                     "Turning a feature off stops collecting, but does not delete what is already there."))
                 .font(.caption).foregroundStyle(.secondary).padding(.top, 6)
         }
     }

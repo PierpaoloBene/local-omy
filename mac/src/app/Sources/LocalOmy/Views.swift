@@ -6,7 +6,7 @@ struct MainWindow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let err = model.refreshError {
-                Label("Stato non aggiornato" + (model.refreshedAt.map { " dalle \($0.formatted(date: .omitted, time: .shortened))" } ?? "")
+                Label(tr("Stato non aggiornato", "Status not up to date") + (model.refreshedAt.map { tr(" dalle ", " since ") + $0.formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(L10n.locale)) } ?? "")
                       + ": \(err)", systemImage: "exclamationmark.octagon")
                     .foregroundStyle(.red)
                     .lineLimit(3)
@@ -17,18 +17,18 @@ struct MainWindow: View {
         .padding()
         .toolbar {
             Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                .help("Aggiorna")
+                .help(tr("Aggiorna", "Refresh"))
         }
     }
 
     private var tabs: some View {
         TabView {
-            StatusTab(model: model).tabItem { Label("Stato", systemImage: "gauge") }
-            SetupTab(model: model).tabItem { Label("Setup", systemImage: "checklist") }
+            StatusTab(model: model).tabItem { Label(tr("Stato", "Status"), systemImage: "gauge") }
+            SetupTab(model: model).tabItem { Label(tr("Impostazioni", "Settings"), systemImage: "gearshape") }
             IPhoneTab(model: model).tabItem { Label("iPhone", systemImage: "iphone") }
-            TranscriptsTab(model: model).tabItem { Label("Trascrizioni", systemImage: "text.quote") }
-            PeopleTab(model: model).tabItem { Label("Persone", systemImage: "person.2") }
-            PlacesTab(model: model).tabItem { Label("Luoghi", systemImage: "mappin.and.ellipse") }
+            TranscriptsTab(model: model).tabItem { Label(tr("Conversazioni", "Conversations"), systemImage: "text.bubble") }
+            PeopleTab(model: model).tabItem { Label(tr("Persone", "People"), systemImage: "person.2") }
+            PlacesTab(model: model).tabItem { Label(tr("Luoghi", "Places"), systemImage: "mappin.and.ellipse") }
         }
     }
 }
@@ -91,38 +91,39 @@ struct TranscriptionProgress: View {
 
     var body: some View {
         ProgressView(value: progress.fraction) {
-            Text("Trascrizione in corso: \(progress.text)")
+            Text(tr("Trascrizione in corso: ", "Transcribing: ") + progress.text)
         }
     }
 }
 
 private func tail(_ path: String, lines: Int) -> String {
-    guard let data = FileManager.default.contents(atPath: path) else { return "(nessun log)" }
+    guard let data = FileManager.default.contents(atPath: path) else { return tr("(nessun log)", "(no log)") }
     return String(decoding: data.suffix(64 * 1024), as: UTF8.self)
         .split(separator: "\n", omittingEmptySubsequences: false).suffix(lines).joined(separator: "\n")
 }
 
 private let isoParser = ISO8601DateFormatter()
 
-/// "3 nov 2026, 10:48" in the local time zone, from an ISO 8601 timestamp.
+/// "3 nov 2026, 10:48" ("Nov 3, 2026, 10:48 AM") in the local time zone,
+/// from an ISO 8601 timestamp.
 func localDate(_ iso: String?) -> String {
     guard let iso, let d = isoParser.date(from: iso) else { return iso ?? "—" }
-    return d.formatted(.dateTime.day().month(.abbreviated).year().hour().minute())
+    return d.formatted(.dateTime.day().month(.abbreviated).year().hour().minute().locale(L10n.locale))
 }
 
-/// "giovedì 29 ottobre" from YYYY-MM-DD.
+/// "giovedì 29 ottobre" ("Thursday, October 29") from YYYY-MM-DD.
 func longDay(_ day: String) -> String {
     let f = DateFormatter()
     f.dateFormat = "yyyy-MM-dd"
     guard let d = f.date(from: day) else { return day }
-    return d.formatted(.dateTime.weekday(.wide).day().month(.wide))
+    return d.formatted(.dateTime.weekday(.wide).day().month(.wide).locale(L10n.locale))
 }
 
 private func ago(_ minutes: Double?) -> String {
     guard let m = minutes else { return "—" }
-    if m < 1 { return "meno di un minuto fa" }
-    if m < 120 { return "\(Int(m)) min fa" }
-    return String(format: "%.1f ore fa", m / 60)
+    if m < 1 { return tr("meno di un minuto fa", "less than a minute ago") }
+    if m < 120 { return tr("\(Int(m)) min fa", "\(Int(m)) min ago") }
+    return tr(String(format: "%.1f ore fa", m / 60), String(format: "%.1f hours ago", m / 60))
 }
 
 // MARK: - Stato
@@ -135,26 +136,27 @@ struct StatusTab: View {
         VStack(alignment: .leading, spacing: 16) {
             if let s = model.status {
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                    Row(title: "Ricevitore", value: s.receiver.running ? "attivo (pid \(s.receiver.pid ?? 0))" : "fermo",
+                    Row(title: tr("Ricevitore", "Receiver"), value: s.receiver.running ? tr("attivo", "running") + " (pid \(s.receiver.pid ?? 0))" : tr("fermo", "stopped"),
                         level: s.receiver.running ? .ok : .error)
-                    Row(title: "Tailscale", value: s.tailscale.url ?? "serve non attivo",
+                    Row(title: "Tailscale", value: s.tailscale.url ?? tr("serve non attivo", "serve not running"),
                         level: s.tailscale.serving ? .ok : .warning)
                     ForEach(s.tailscale.iphones, id: \.name) { p in
-                        Row(title: "  \(p.name)", value: p.online ? "online sul tailnet" : "offline",
+                        Row(title: "  \(p.name)", value: p.online ? tr("online sul tailnet", "online on the tailnet") : "offline",
                             level: p.online ? .ok : .warning)
                     }
-                    Row(title: "Ultimo segmento", value: ago(s.archive.minutesSinceLast),
+                    Row(title: tr("Ultimo segmento", "Last segment"), value: ago(s.archive.minutesSinceLast),
                         level: (s.archive.minutesSinceLast ?? 999) < 15 ? .ok : .unknown)
-                    Row(title: "Ultimo upload", value: uploadText(s.upload))
-                    Row(title: "Oggi", value: "\(s.archive.todaySegments) segmenti, \(s.archive.todaySessions) sessioni, \(Int(s.archive.todayMinutes)) min registrati")
-                    Row(title: "Trascrizione", value: transcriptionText(s.transcripts),
+                    Row(title: tr("Ultimo upload", "Last upload"), value: uploadText(s.upload))
+                    Row(title: tr("Oggi", "Today"), value: tr("\(s.archive.todaySegments) segmenti, \(s.archive.todaySessions) sessioni, \(Int(s.archive.todayMinutes)) min registrati",
+                                                   "\(s.archive.todaySegments) segments, \(s.archive.todaySessions) sessions, \(Int(s.archive.todayMinutes)) min recorded"))
+                    Row(title: tr("Trascrizione", "Transcription"), value: transcriptionText(s.transcripts),
                         level: model.progress != nil || s.transcripts.pendingSessions == 0 ? .ok : .unknown)
-                    Row(title: "App iPhone", value: iphoneText(s.iphone), level: iphoneLevel(s.iphone))
-                    Row(title: "Batteria ciondolo", value: batteryText(s.battery))
-                    Row(title: "Firmware ciondolo", value: s.firmware?.version.map { v in
-                        "\(v), visto alle \(localDate(s.firmware?.at))"
-                    } ?? "— (arriva con i prossimi segmenti)")
-                    Row(title: "Job orario", value: s.periodic.loaded ? "installato" : "non installato (vedi Setup)",
+                    Row(title: tr("App iPhone", "iPhone app"), value: iphoneText(s.iphone), level: iphoneLevel(s.iphone))
+                    Row(title: tr("Batteria ciondolo", "Pendant battery"), value: batteryText(s.battery))
+                    Row(title: tr("Firmware ciondolo", "Pendant firmware"), value: s.firmware?.version.map { v in
+                        tr("\(v), visto alle \(localDate(s.firmware?.at))", "\(v), seen at \(localDate(s.firmware?.at))")
+                    } ?? tr("— (arriva con i prossimi segmenti)", "— (comes with the next segments)"))
+                    Row(title: tr("Job orario", "Hourly job"), value: s.periodic.loaded ? tr("installato", "installed") : tr("non installato (vedi Impostazioni)", "not installed (see Settings)"),
                         level: s.periodic.loaded ? .ok : .warning)
                 }
             } else if model.refreshError == nil {
@@ -162,8 +164,8 @@ struct StatusTab: View {
             }
 
             Picker("Log", selection: $logName) {
-                Text("Ricevitore").tag("receiver")
-                Text("Job orario").tag("periodic")
+                Text(tr("Ricevitore", "Receiver")).tag("receiver")
+                Text(tr("Job orario", "Hourly job")).tag("periodic")
             }
             .pickerStyle(.segmented)
             .frame(width: 260)
@@ -182,33 +184,37 @@ struct StatusTab: View {
         var t = ago(u.minutesSince)
         switch u.queueRemaining {
         case nil: break
-        case 0?: t += ", coda dell'iPhone vuota"
-        case let n?: t += ", ne restavano \(n) in coda sull'iPhone"
+        case 0?: t += tr(", coda dell'iPhone vuota", ", iPhone queue empty")
+        case let n?: t += tr(", ne restavano \(n) in coda sull'iPhone", ", \(n) were still queued on the iPhone")
         }
         return t
     }
 
     private func transcriptionText(_ t: Status.Transcripts) -> String {
-        if let p = model.progress { return "in corso, \(p.text)" }
-        if t.pendingSessions == 0 { return "al passo" + (t.openSessions > 0 ? " (1 sessione in registrazione)" : "") }
-        return "\(t.pendingSessions) sessioni da trascrivere, \(Int(t.pendingMinutes)) min"
+        if let p = model.progress { return tr("in corso, ", "running, ") + p.text }
+        if t.pendingSessions == 0 {
+            return tr("al passo", "up to date") + (t.openSessions > 0 ? tr(" (1 sessione in registrazione)", " (1 session recording)") : "")
+        }
+        return tr("\(t.pendingSessions) sessioni da trascrivere, \(Int(t.pendingMinutes)) min",
+                  "\(t.pendingSessions) sessions to transcribe, \(Int(t.pendingMinutes)) min")
     }
 
     private func batteryText(_ b: Status.Battery?) -> String {
-        guard let b, let level = b.level else { return "— (arriva con i prossimi segmenti)" }
-        var t = "\(level)% alle \(localDate(b.at))"
+        guard let b, let level = b.level else { return tr("— (arriva con i prossimi segmenti)", "— (comes with the next segments)") }
+        var t = tr("\(level)% alle \(localDate(b.at))", "\(level)% at \(localDate(b.at))")
         if let full = b.fullChargeHours, let left = b.remainingHours, let rate = b.drainPerHour {
-            t += String(format: ", %.1f%%/ora: una carica dura ~%.0f ore, ne restano ~%.0f", rate, full, left)
+            t += String(format: tr(", %.1f%%/ora: una carica dura ~%.0f ore, ne restano ~%.0f",
+                                   ", %.1f%%/hour: a charge lasts ~%.0f hours, ~%.0f left"), rate, full, left)
         } else {
-            t += ", consumo ancora da misurare"
+            t += tr(", consumo ancora da misurare", ", drain not measured yet")
         }
         return t
     }
 
     private func iphoneText(_ i: Status.IPhone) -> String {
-        guard let days = i.daysLeft else { return "mai installata da qui" }
-        var t = String(format: "firma valida ancora %.1f giorni", days)
-        if i.needsReopen { t += " — riaprila sull'iPhone" }
+        guard let days = i.daysLeft else { return tr("mai installata da qui", "never installed from here") }
+        var t = String(format: tr("firma valida ancora %.1f giorni", "signature valid for %.1f more days"), days)
+        if i.needsReopen { t += tr(" — riaprila sull'iPhone", " — reopen it on the iPhone") }
         return t
     }
 
@@ -236,10 +242,10 @@ struct SetupTab: View {
                             Text(c.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
                         if !c.ok {
-                            Button("Sistema") { model.perform(c.label, ["setup", "fix", c.id]) }
+                            Button(tr("Sistema", "Fix")) { model.perform(c.label, ["setup", "fix", c.id]) }
                                 .disabled(model.task.running != nil)
                         } else if c.id == "receiver" || c.id == "periodic" {
-                            Button("Reinstalla") { model.perform(c.label, ["setup", "fix", c.id]) }
+                            Button(tr("Reinstalla", "Reinstall")) { model.perform(c.label, ["setup", "fix", c.id]) }
                                 .disabled(model.task.running != nil)
                         }
                     }
@@ -247,18 +253,18 @@ struct SetupTab: View {
             }
 
             Divider()
-            Text("Da inserire nell'app iPhone").font(.headline)
+            Text(tr("Da inserire nell'app iPhone", "To enter in the iPhone app")).font(.headline)
             HStack {
-                Button("Copia URL") { model.copy(model.status?.tailscale.url ?? "") }
+                Button(tr("Copia URL", "Copy URL")) { model.copy(model.status?.tailscale.url ?? "") }
                     .disabled(model.status?.tailscale.url == nil)
-                Button("Copia token") { model.copyToken() }
-                Text("Il token non viene mai mostrato: va negli appunti.")
+                Button(tr("Copia token", "Copy token")) { model.copyToken() }
+                Text(tr("Il token non viene mai mostrato: va negli appunti.", "The token is never shown: it goes to the clipboard."))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Divider()
             FeaturesSection(model: model)
             Divider()
-            Toggle("Apri local-omy al login", isOn: Binding(
+            Toggle(tr("Apri local-omy al login", "Open local-omy at login"), isOn: Binding(
                 get: { model.loginItem }, set: { model.setLoginItem($0) }))
             if let err = model.lastError {
                 Label(err, systemImage: "xmark.octagon").foregroundStyle(.red)
@@ -282,39 +288,41 @@ struct IPhoneTab: View {
         VStack(alignment: .leading, spacing: 16) {
             if let i = model.status?.iphone {
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                    Row(title: "iPhone", value: i.device.map { "\($0.name ?? "?") (\($0.transport ?? "?"))" } ?? "non trovato",
+                    Row(title: "iPhone", value: i.device.map { "\($0.name ?? "?") (\($0.transport ?? "?"))" } ?? tr("non trovato", "not found"),
                         level: i.device?.paired == true ? .ok : .warning)
                     Row(title: "Team", value: i.teamId ?? "—")
-                    Row(title: "Firma scade", value: i.expires.map { "\(localDate($0)) (tra \(String(format: "%.1f", i.daysLeft ?? 0)) giorni)" } ?? "—",
+                    Row(title: tr("Firma scade", "Signature expires"), value: i.expires.map { localDate($0) + String(format: tr(" (tra %.1f giorni)", " (in %.1f days)"), i.daysLeft ?? 0) } ?? "—",
                         level: (i.daysLeft ?? 0) < 1 ? .error : (i.daysLeft ?? 0) < 3 ? .warning : .ok)
-                    Row(title: "Installata", value: localDate(i.installedAt))
+                    Row(title: tr("Installata", "Installed"), value: localDate(i.installedAt))
                     if i.needsReopen {
-                        Row(title: "Attenzione", value: "riapri local-omy sull'iPhone: dall'installazione non è arrivato nessun segmento", level: .warning)
+                        Row(title: tr("Attenzione", "Warning"), value: tr("riapri local-omy sull'iPhone: dall'installazione non è arrivato nessun segmento",
+                                                                  "reopen local-omy on the iPhone: no segment has arrived since the install"), level: .warning)
                     }
                 }
             }
-            Text("Reinstallare chiude l'app sull'iPhone: va riaperta a mano. Telefono sbloccato e sulla stessa rete.")
+            Text(tr("Reinstallare chiude l'app sull'iPhone: va riaperta a mano. Telefono sbloccato e sulla stessa rete.",
+                     "Reinstalling closes the app on the iPhone: reopen it by hand. Phone unlocked and on the same network."))
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button("Compila e installa") { confirm = ("Installazione", ["iphone", "install"]) }
-                Button("Rinnova ora") { confirm = ("Rinnovo", ["iphone", "renew", "--force"]) }
-                Button("Reinstalla l'ultima build") { confirm = ("Installazione", ["iphone", "install", "--no-build"]) }
+                Button(tr("Compila e installa", "Build and install")) { confirm = (tr("Installazione", "Install"), ["iphone", "install"]) }
+                Button(tr("Rinnova ora", "Renew now")) { confirm = (tr("Rinnovo", "Renewal"), ["iphone", "renew", "--force"]) }
+                Button(tr("Reinstalla l'ultima build", "Reinstall the last build")) { confirm = (tr("Installazione", "Install"), ["iphone", "install", "--no-build"]) }
             }
             .disabled(model.task.running != nil)
             OperationLog(op: model.task)
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .confirmationDialog("L'app sull'iPhone verrà chiusa e andrà riaperta.",
+        .confirmationDialog(tr("L'app sull'iPhone verrà chiusa e andrà riaperta.", "The app on the iPhone will close and must be reopened."),
                             isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } })) {
-            Button("Procedi") {
+            Button(tr("Procedi", "Continue")) {
                 if let c = confirm { model.perform(c.name, c.args) }
             }
         }
     }
 }
 
-// MARK: - Trascrizioni
+// MARK: - Conversazioni
 
 // Mirror of `omy --json transcripts search`.
 struct SearchResults: Decodable {
@@ -341,15 +349,15 @@ struct TranscriptsTab: View {
     var body: some View {
         VStack(alignment: .leading) {
             HStack {
-                Button("Trascrivi ora") { model.transcribeNow() }
+                Button(tr("Trascrivi ora", "Transcribe now")) { model.transcribeNow() }
                     .disabled(model.transcribing)
-                Button("Apri nel Finder") {
+                Button(tr("Apri nel Finder", "Show in Finder")) {
                     if let p = model.status?.transcripts.path { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
                 }
                 Spacer()
                 HStack(spacing: 4) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Cerca nelle conversazioni", text: $query)
+                    TextField(tr("Cerca", "Search"), text: $query)
                         .textFieldStyle(.plain)
                         .onSubmit(search)
                     if searching { ProgressView().controlSize(.small) }
@@ -375,7 +383,7 @@ struct TranscriptsTab: View {
                             }
                         }
                         .overlay {
-                            if results.results.isEmpty { Text("Nessun risultato per «\(searched)»").foregroundStyle(.secondary) }
+                            if results.results.isEmpty { Text(tr("Nessun risultato per «\(searched)»", "No results for “\(searched)”")).foregroundStyle(.secondary) }
                         }
                     } else {
                         List(model.status?.transcripts.days ?? [], id: \.self, selection: $day) { d in
@@ -471,7 +479,7 @@ struct MarkdownDay: View {
                 }
             }
         } else {
-            Text("Scegli un giorno").foregroundStyle(.secondary)
+            Text(tr("Scegli un giorno", "Choose a day")).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }

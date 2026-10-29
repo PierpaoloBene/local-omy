@@ -2,7 +2,7 @@
 
 Riceve i segmenti dall'iPhone e li salva in
 `~/OmiArchive/raw/audio/AAAA-MM-GG/<id>.bin` + `<id>.json`. La data viene da `start`
-nel `.json`, convertito da UTC a Europe/Rome.
+nel `.json`, convertito da UTC al fuso orario dell'archivio ([Fuso orario](#fuso-orario)).
 
 Ascolta **solo su 127.0.0.1**: la rete lo raggiunge esclusivamente tramite
 `tailscale serve`, che termina l'HTTPS e inoltra le richieste in locale.
@@ -30,27 +30,79 @@ open mac/build/local-omy.app
   ricevuto, ultimo upload e quanti segmenti restavano in coda sull'iPhone, registrato
   oggi, trascrizione (in corso o quante sessioni mancano), scadenza dell'app iPhone,
   batteria del ciondolo, job orario, log.
-- **Setup:** la checklist di `omy setup check`. Ogni voce mancante ha il suo pulsante
+- **Impostazioni:** la checklist di `omy setup check`. Ogni voce mancante ha il suo pulsante
   "Sistema" (`omy setup fix <voce>`). Ci sono anche:
   - "Copia URL" e "Copia token": il token va negli appunti e non viene mai mostrato;
   - "Apri local-omy al login".
 - **iPhone:** scadenza della firma, "Compila e installa", "Rinnova ora", "Reinstalla
   l'ultima build". Ogni azione chiede conferma, perché chiude l'app sul telefono.
-- **Trascrizioni:** giorni trascritti e "Trascrivi ora". Durante una trascrizione,
+- **Conversazioni:** giorni trascritti e "Trascrivi ora". Durante una trascrizione,
   anche lanciata dal job orario o dal terminale, compare la barra di avanzamento. Il campo
-  "Cerca nelle conversazioni" mostra i paragrafi trovati al posto dei giorni. Toccandone uno
+  "Cerca" mostra i paragrafi trovati al posto dei giorni. Toccandone uno
   si apre il giorno su quel punto, con la parola evidenziata.
-- **Persone:** a sinistra le persone riconosciute (tu e quelle a cui hai dato un nome),
+- **Persone:** a sinistra le persone note (tu e quelle a cui hai dato un nome),
   con il menu Modifica (nome e tipo) ed Elimina. A destra le voci di ogni
   sessione del giorno scelto: ▶︎ fa sentire qualche secondo, e scrivendo un nome (o
-  scegliendolo da "Chi è") la voce prende quel nome. Vedi "Dare un nome alle voci".
+  scegliendolo da "Chi è") la voce prende quel nome; "Chi è" → Sconosciuto per chi non
+  conosci. Qui si etichettano anche i giorni passati, che l'iPhone non mostra più. Vedi
+  "Dare un nome alle voci".
 
-La trascrizione gira per conto suo: mentre lavora, Setup, iPhone e l'aggiornamento
-dello stato restano utilizzabili. Le azioni di Setup e iPhone, invece, vanno una alla volta.
+La trascrizione gira per conto suo: mentre lavora, Impostazioni, iPhone e l'aggiornamento
+dello stato restano utilizzabili. Le azioni di Impostazioni e iPhone, invece, vanno una alla volta.
 
 L'app trova `mac/src` partendo dalla propria posizione (`mac/build/../src`). Se la sposti,
 indica il percorso con:
-`defaults write com.example.local-omy.mac macSrcPath /percorso/mac/src`.
+`defaults write <bundle_id>.mac macSrcPath /percorso/mac/src` (`local-omy.mac` se non hai
+impostato `bundle_id`, vedi sotto).
+
+## Installazione da zero
+
+Serve un Mac con Apple Silicon, e:
+- Xcode (dall'App Store), aperto una volta, con il tuo Apple ID in Impostazioni → Account:
+  basta un account gratuito;
+- [Homebrew](https://brew.sh), [uv](https://docs.astral.sh/uv/) e Flutter
+  (`brew install --cask flutter`);
+- [Tailscale](https://tailscale.com/download) sul Mac e sull'iPhone, con lo stesso account;
+- per "chi parla", un token di [Hugging Face](https://huggingface.co/settings/tokens) e i
+  termini del modello `pyannote/speaker-diarization-community-1` accettati (vedi Chi parla).
+
+Poi, dalla radice del repo:
+
+```bash
+mac/setup.sh
+```
+
+Controlla cosa manca e sistema da solo quello che può: pacchetti Homebrew, token, i due
+LaunchAgent, `tailscale serve`, i modelli di trascrizione, l'app per Mac. Alla fine dice
+cosa resta da fare a mano (Hugging Face, iPhone). Si può rilanciare quando vuoi.
+
+In `~/.config/local-omy/config.toml` (mode 600) puoi fissare, prima della prima
+installazione:
+
+| Chiave | Default | |
+|---|---|---|
+| `bundle_id` | iPhone: `com.<team>.local-omy`; Mac e LaunchAgent: `local-omy` | il prefisso delle app e dei LaunchAgent (`<bundle_id>.receiver`, `<bundle_id>.mac`). Un bundle id è unico in tutta Apple: in un fork non puoi usare quello di un altro |
+| `timezone` | quello del Mac | vedi [Fuso orario](#fuso-orario) |
+| `my_name` | `Io` | il tuo nome nelle trascrizioni |
+| `language` | quella del Mac | `it` o `en`: la lingua dei nomi scritti nell'archivio (`Persona 1`/`Person 1`, `Sconosciuto`/`Unknown`, `Io`/`Me`, `Riunione`/`Meeting`). Fissala prima della prima trascrizione |
+
+Cambiare `bundle_id` dopo crea app e LaunchAgent nuovi accanto ai vecchi.
+
+### Lingua
+
+Le app per Mac e iPhone sono in italiano o in inglese, secondo la lingua del dispositivo
+(Impostazioni → Generali → Lingua e zona): italiano se viene prima dell'inglese, altrimenti
+inglese. L'app per Mac passa la sua a `omy` (`OMY_LANG`), che mostra nella stessa lingua la
+checklist, le funzioni e le notifiche. I nomi scritti nell'archivio seguono invece `language`
+(sopra): restano gli stessi chiunque lanci `omy`.
+
+### Fuso orario
+
+I giorni dell'archivio (cartelle, trascrizioni, "oggi") e gli orari nelle trascrizioni sono
+quelli di un fuso orario solo: `OMY_TZ` se impostata, altrimenti `timezone` in
+`config.toml` (per esempio `"Europe/Rome"`), altrimenti quello del Mac. L'iPhone usa i
+giorni del Mac anche quando sei in un altro fuso. Cambiandolo, cambia il confine tra i
+giorni solo per le registrazioni nuove.
 
 ## Installazione da terminale
 
@@ -74,7 +126,7 @@ un `PATH` che contiene Homebrew e uv. `fix` li reinstalla anche se sposti il rep
 - Dopo ogni upload accettato scrive `~/OmiArchive/receiver.json`: ora d'arrivo, id del
   segmento e segmenti ancora in coda sull'iPhone (header `X-Queue-Remaining`).
 - Log in `~/Library/Logs/local-omy-receiver.log`. Per riavviarlo:
-  `launchctl kickstart -k gui/$(id -u)/com.example.local-omy.receiver`.
+  `launchctl kickstart -k gui/$(id -u)/<bundle_id>.receiver` (`local-omy.receiver` di default).
 - `KeepAlive` lo rilancia se si chiude. Se la configurazione è sbagliata (token assente,
   o permessi diversi da 600) esce con errore nel log e launchd ritenta ogni ~10 s.
 
@@ -113,7 +165,8 @@ Aggiungi `--json` subito dopo `omy` per avere il risultato in JSON. I log vanno 
   `~/.config/local-omy/config.toml` (600). Il team **non** viene mai scritto nel progetto
   Xcode.
 
-L'app installata così ha il bundle id `com.example.local-omy` e **non** è la stessa
+L'app installata così ha il bundle id `bundle_id` di `config.toml` (se manca,
+`com.<team>.local-omy`) e **non** è la stessa
 dell'app installata da AltStore, che aggiunge un suffisso al bundle id:
 1. lascia che la vecchia app finisca di caricare i segmenti in coda;
 2. nella nuova app reinserisci URL e token;
@@ -131,7 +184,7 @@ dell'app installata da AltStore, che aggiunge un suffisso al bundle id:
   l'installazione.
 
 Installalo **dopo** il primo `omy iphone install`, con `omy setup fix periodic` o dalla
-scheda Setup. Log in `~/Library/Logs/local-omy-periodic.log`.
+scheda Impostazioni. Log in `~/Library/Logs/local-omy-periodic.log`.
 
 ## Trascrizione locale
 
@@ -269,6 +322,7 @@ uv run omy speakers list --day 2026-10-29              # voci di ogni sessione, 
 uv run omy speakers play <sessione> SPEAKER_01         # qualche secondo in cache/voice-sample.wav
 uv run omy speakers rename <sessione> SPEAKER_01 Marco
 uv run omy speakers kind <sessione> media SPEAKER_02 SPEAKER_03   # room | meeting | media | auto
+uv run omy speakers unknown <sessione> SPEAKER_04      # qualcuno che non conosci (--off per annullare)
 uv run omy people list                                 # tu e le persone con un nome
 uv run omy people rename <id> "Marco Rossi"            # stesso nome di un'altra persona: le unisce
 uv run omy people delete <id>
@@ -297,6 +351,12 @@ uv run omy people kind <id> media                      # tipo di tutte le sue vo
   una persona intera (Modifica, o `omy people kind ID TIPO`), su tutte le sue voci. Una
   persona nominata per errore da un video diventa Video: le sue voci diventano video, e il nome
   e l'impronta si cancellano.
+- **Sconosciuto** è per chi non conosci e non rivedrai, per esempio al tavolo accanto. Non è
+  una persona: non ha nome né impronta, non viene mai riconosciuto in altre voci, e ogni voce
+  sconosciuta resta distinta dalle altre (`Sconosciuto`, o `Sconosciuto 1`, `Sconosciuto 2`
+  quando in una sessione sono più d'una; `person` resta `null`). Esce da "Da etichettare".
+  Se poi scopri chi era, dagli un nome come a ogni voce. Sta nel documento della sessione
+  (`"unknown": true`).
 - **Eliminare** una persona cancella il nome e i suoi campioni (che sono copie). Le impronte
   delle voci restano in `voices/clusters`: nelle trascrizioni tornano `Persona N` e puoi
   dar loro di nuovo un nome, anche lo stesso.
@@ -401,7 +461,7 @@ da cui viene ricavata l'impronta vocale.
 
 ## Funzioni da accendere e spegnere
 
-Nella scheda **Setup** dell'app Mac (sezione Funzioni) e nelle **Impostazioni** dell'app
+Nella scheda **Impostazioni** dell'app Mac (sezione Funzioni) e nelle **Impostazioni** dell'app
 iPhone ci sono gli stessi interruttori, sincronizzati. Da terminale:
 `uv run omy features list`, `uv run omy features set location off`.
 
@@ -449,9 +509,9 @@ Ogni riga è completa: non serve incrociarla con altri file.
 | `v` | versione del formato. Cresce solo se un campo cambia significato o sparisce; un campo nuovo non la cambia |
 | `id` | `<sessione>/<ms dall'inizio della sessione>` |
 | `session` | la registrazione continua di cui fa parte. Paragrafi della stessa sessione sono la stessa conversazione o lo stesso contesto |
-| `start`, `end` | ora locale (Europe/Rome) con offset, al secondo |
-| `speaker` | nome da mostrare: il tuo (`my_name`, default "Io"), il nome dato alla voce, "Persona N", "Media". `null` se la sessione non è diarizzata |
-| `person` | `"me"` per te, l'id di una persona con nome (stabile anche se la rinomini), `null` per le voci senza nome. "Persona N" vale solo dentro la sua sessione |
+| `start`, `end` | ora locale (nel [fuso dell'archivio](#fuso-orario)) con offset, al secondo |
+| `speaker` | nome da mostrare: il tuo (`my_name`, default "Io"), il nome dato alla voce, "Persona N", "Sconosciuto" (o "Sconosciuto N"), "Media". `null` se la sessione non è diarizzata |
+| `person` | `"me"` per te, l'id di una persona con nome (stabile anche se la rinomini), `null` per le voci senza nome e per gli sconosciuti. "Persona N" e "Sconosciuto N" valgono solo dentro la loro sessione: due sconosciuti di sessioni diverse non sono la stessa persona |
 | `via` | `{"kind": "call"\|"media", "app"}` se la voce veniva da una chiamata (Teams, Zoom, iPhone…) o da un media sul Mac (YouTube nel browser, Spotify…), altrimenti `null`. Una TV nella stanza non lascia traccia |
 | `place` | posizione del telefono a inizio paragrafo, con `name` se cade in un luogo di `places.json` (altrimenti `null`); `null` se non c'è posizione o la funzione Posizione è spenta |
 | `language` | `it` o `en`, la lingua prevalente del paragrafo |
@@ -482,7 +542,9 @@ L'app iPhone ha quattro schede:
 - **Conversazioni:** una linea del tempo unica con tutte le conversazioni, cioè le sessioni,
   dalla più recente.
   - Il giorno resta fisso in alto mentre lo scorri, con il numero di conversazioni e la
-    durata. L'indice sul bordo destro, come le lettere in Contatti, salta a qualsiasi giorno.
+    durata. L'indice sul bordo destro, come le lettere in Contatti, salta a un giorno.
+  - Arriva un mese circa alla volta (compresso): i mesi prima si caricano da soli quando ti
+    avvicini alla fine. Il Mac legge solo i giorni che servono.
   - Una conversazione si apre come una chat. Si scorre a destra per quella prima e a sinistra
     per quella dopo, come in Foto.
   - La ricerca trova parole o persone in tutte le trascrizioni e apre la conversazione sul
@@ -493,9 +555,11 @@ L'app iPhone ha quattro schede:
   - **Persone:** tu e le persone con un nome, con un filtro per tipo di conversazione e le
     conversazioni recenti. Toccando una persona si vedono quanto e dove ci parli e la linea del
     tempo delle conversazioni con lei, e con Modifica se ne cambiano nome e tipo (di persona, online, video), o la si elimina.
-  - **Da etichettare:** tutte le voci degli ultimi 14 giorni ancora senza nome e non video, in
-    un'unica coda. Si possono ascoltare. Per ognuna scegli il tipo (di persona, online o
-    video) e il nome; il tipo si può anche dare a tutte le voci senza nome di una sessione.
+  - **Da etichettare:** le voci delle sessioni delle ultime 24 ore ancora senza nome, non
+    video e non sconosciute, in un'unica coda: si etichetta finché ricordi chi parlava. Quelle
+    più vecchie restano sul Mac (Persone, per giorno). Si possono ascoltare. Per ognuna scegli
+    il tipo (di persona, online o video) e il nome, o Sconosciuto; "Segna tutte…" fa lo stesso
+    per tutte le voci da etichettare di una sessione.
 - **Luoghi:** come la scheda del Mac, con mappa e indirizzo. Si rinomina, si cambia il
   raggio, si elimina, e si dà un nome ai punti senza nome.
 
@@ -507,16 +571,20 @@ ricevitore esegue gli stessi comandi `omy` dell'app per Mac, come sottoprocessi:
 | `GET /v1/transcripts` | `omy transcripts list`: giorni con riepilogo, e sessioni in attesa |
 | `GET /v1/transcripts/DAY` | `omy transcripts day DAY`: riepilogo e paragrafi (il JSONL del giorno) |
 | `POST /v1/search` `{"q", "person"?, "type"?}` | `omy transcripts search Q`: al massimo 200 paragrafi, dal giorno più recente |
-| `GET /v1/conversations?person=&type=` | `omy transcripts conversations`: le sessioni con una persona (id o `me`) o di un tipo (`room`, `meeting`, `call`, `media`), al massimo 100 |
+| `GET /v1/conversations?person=&type=&before=&limit=` | `omy transcripts conversations`: le sessioni con una persona (id o `me`) o di un tipo (`room`, `meeting`, `call`, `media`), dalla più recente, a giorni interi finché sono almeno `limit` (100). Con `more`, `next` è il `before` della pagina dopo |
 | `POST /v1/transcribe` | `omy transcribe --pending`, in background (log in `local-omy-periodic.log`) |
-| `GET /v1/people`, `PUT`/`DELETE /v1/people/ID`, `POST /v1/people/ID/kind` `{"source"}` | `omy people list`, `rename`, `delete`, `kind` |
+| `GET /v1/people`, `PUT`/`DELETE /v1/people/ID`, `POST /v1/people/ID/kind` `{"source"}` | `omy people list` (con `index`: per persona tipi, numero di conversazioni, luoghi), `rename`, `delete`, `kind` |
 | `GET /v1/voices/DAY`, `PUT /v1/voices/SESSION/LABEL` | `omy speakers list`, `rename` |
-| `GET /v1/unlabeled` | `omy speakers todo`: le sessioni degli ultimi 14 giorni con voci da etichettare |
+| `GET /v1/unlabeled?hours=24` | `omy speakers todo --hours 24`: le sessioni iniziate nelle ultime 24 ore con voci da etichettare (senza `hours`: degli ultimi 14 giorni registrati) |
 | `POST /v1/voices/SESSION/kind` `{"source", "labels"}` | `omy speakers kind` |
+| `POST /v1/voices/SESSION/unknown` `{"labels", "unknown"}` | `omy speakers unknown` (`--off` con `"unknown": false`) |
 | `GET /v1/voices/SESSION/LABEL/sample` | `omy speakers play`: il WAV (al massimo 8 s) |
 | `GET`/`POST /v1/places`, `PUT`/`DELETE /v1/places/NAME` | `omy places list`, `add`, `rename`, `remove` |
 
-Le modifiche passano una alla volta e riscrivono i giorni coinvolti, come dal Mac.
+Le modifiche passano una alla volta e riscrivono i giorni coinvolti, come dal Mac. Una
+alla volta anche tra processi diversi (app per Mac, ricevitore, job orario): chi scrive
+persone, luoghi, voci o giorni prende il lock `~/OmiArchive/cache/.write.lock`, e la
+trascrizione lo tiene solo mentre scrive, non mentre whisper e pyannote lavorano.
 
 Sul telefono non resta niente. Trascrizioni, nomi e luoghi restano in memoria finché la
 pagina è aperta. Il campione di voce arriva nella risposta e viene suonato dalla memoria

@@ -133,7 +133,9 @@ final class Maps {
     }
   }
 
-  /// "Via Roma 12, Milano", or nil. One request at a time: Apple throttles.
+  /// "Via Roma 12, Milano", or nil when Apple has none; an error when the
+  /// request fails (offline, throttled), so that it is asked again later.
+  /// One request at a time: Apple throttles.
   func address(lat: Double, lon: Double, result: @escaping FlutterResult) {
     pending.append((CLLocation(latitude: lat, longitude: lon), result))
     if pending.count == 1 { next() }
@@ -141,11 +143,15 @@ final class Maps {
 
   private func next() {
     guard let (location, result) = pending.first else { return }
-    geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "it_IT")) { [weak self] marks, _ in
-      let m = marks?.first
-      let street = [m?.thoroughfare, m?.subThoroughfare].compactMap { $0 }.joined(separator: " ")
-      let parts = [street.isEmpty ? m?.name : street, m?.locality].compactMap { $0 }.filter { !$0.isEmpty }
-      result(parts.isEmpty ? nil : parts.joined(separator: ", "))
+    geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "it_IT")) { [weak self] marks, error in
+      if let error = error as? CLError, error.code != .geocodeFoundNoResult {
+        result(FlutterError(code: "address", message: error.localizedDescription, details: nil))
+      } else {
+        let m = marks?.first
+        let street = [m?.thoroughfare, m?.subThoroughfare].compactMap { $0 }.joined(separator: " ")
+        let parts = [street.isEmpty ? m?.name : street, m?.locality].compactMap { $0 }.filter { !$0.isEmpty }
+        result(parts.isEmpty ? nil : parts.joined(separator: ", "))
+      }
       self?.pending.removeFirst()
       self?.next()
     }
@@ -257,8 +263,8 @@ final class CallLog: NSObject, CXCallObserverDelegate {
 ///   {"kind": "move", "lat", "lon", "acc", "t"}
 /// UTC ISO 8601, acc in meters. The Dart side puts the best fix for each
 /// segment into its sidecar (segment_store.dart); the Mac names it with its
-/// own list of places. Nothing is geocoded: coordinates never leave the
-/// phone and the Mac.
+/// own list of places. Only the Luoghi page sends coordinates elsewhere: to
+/// Apple, for the map and the address (Maps, below).
 final class LocationLog: NSObject, CLLocationManagerDelegate {
   private let manager = CLLocationManager()
   private let file: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

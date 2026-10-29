@@ -33,6 +33,7 @@ from omy.audio import StreamDecoder
 from omy.config import ARCHIVE, CONFIG_DIR, feature_on, load_config
 from omy.sessions import Session
 from omy.transcribe import CACHE_DIR, TRANSCRIPTS, TranscribeError, _iso, _write_atomic
+from omy_receiver.l10n import archive_tr
 from omy_receiver.segment import parse
 
 MODEL = "pyannote/speaker-diarization-community-1"
@@ -60,7 +61,7 @@ _pipeline = None
 
 
 def my_name() -> str:
-    return load_config().get("my_name", "Io")
+    return load_config().get("my_name", archive_tr("Io", "Me"))
 
 
 def available() -> bool:
@@ -176,8 +177,15 @@ def cluster_embeddings(session_id: str) -> dict:
 # context found on the Mac and the iPhone (omy.context). "media" voices (a video,
 # a TV in the room) are nobody: never recognized, never named.
 SOURCES = ("room", "meeting", "media")
-MEETING_APP = "Riunione"
+MEETING_APP = archive_tr("Riunione", "Meeting")
 MEDIA_APP = "Video"
+# An unnamed voice: "Persona 1", "Persona 2"… within a session.
+PERSON_NAME = archive_tr("Persona", "Person")
+# A voice marked unknown (omy speakers unknown) is somebody you don't know: not
+# a person (no name, no voice print, never matched to anyone), and not the same
+# somebody as any other unknown voice. Each is "Sconosciuto", numbered when a
+# session has more than one.
+UNKNOWN_NAME = archive_tr("Sconosciuto", "Unknown")
 
 
 def via(context: dict | None, source: str | None) -> dict | None:
@@ -195,7 +203,8 @@ def via(context: dict | None, source: str | None) -> dict | None:
 def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | None = None,
                   people: dict[str, tuple[str, object]] | None = None,
                   pins: dict[str, str] | None = None,
-                  sources: dict[str, str] | None = None) -> dict[str, dict]:
+                  sources: dict[str, str] | None = None,
+                  unknown: set[str] | None = None) -> dict[str, dict]:
     """label -> {"name", "person", "pinned", "similarity", "seconds", "context"}.
 
     The best match above ME_THRESHOLD is you. pins (label -> person id or
@@ -205,10 +214,13 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
     appearance. contexts (label -> (kind, app), from omy.context) marks call
     participants, "Persona 2 (Teams)", "Marco (iPhone)", and media,
     "Media (Chrome)". sources (label -> SOURCES) are set by hand: "media"
-    voices are "Video" and nobody."""
+    voices are "Video" and nobody. unknown voices (set by hand) are nobody
+    too, each "Sconosciuto" on its own."""
     contexts, people, pins, sources = contexts or {}, people or {}, pins or {}, sources or {}
-    pins = {k: v for k, v in pins.items() if (v == "me" or v in people) and sources.get(k) != "media"}
-    emb = {k: v for k, v in result["embeddings"].items() if sources.get(k) != "media"}
+    unknown = {k for k in unknown or () if sources.get(k) != "media"}
+    pins = {k: v for k, v in pins.items()
+            if (v == "me" or v in people) and sources.get(k) != "media" and k not in unknown}
+    emb = {k: v for k, v in result["embeddings"].items() if sources.get(k) != "media" and k not in unknown}
     sims = {k: float(v @ profile) for k, v in emb.items()} if profile is not None else {}
     who = dict(pins)
     if "me" not in who.values():
@@ -221,7 +233,7 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
     for sim, k, pid in pairs:
         if sim >= PERSON_THRESHOLD and k not in who and pid not in who.values():
             who[k] = pid
-    names, n = {}, 0
+    names, n, strangers = {}, 0, 0
     for _, _, label in sorted(result["turns"]):
         if label in names:
             continue
@@ -234,14 +246,18 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
             names[label] = people[who[label]][0] + call
         elif kind == "media":
             names[label] = MEDIA_APP if app == MEDIA_APP else f"Media ({app})"
+        elif label in unknown:
+            strangers += 1
+            names[label] = f"{UNKNOWN_NAME}{f' {strangers}' if len(unknown) > 1 else ''}{call}"
         else:
             n += 1
-            names[label] = f"Persona {n}{call}"
+            names[label] = f"{PERSON_NAME} {n}{call}"
     return {k: {"name": names.get(k, k), "person": who.get(k), "pinned": k in pins,
                 "similarity": round(sims[k], 3) if k in sims else None,
                 "seconds": round(result["seconds"].get(k, 0), 1),
                 "context": dict(zip(("kind", "app"), contexts[k])) if k in contexts else None,
-                **({"source": sources[k]} if k in sources else {})}
+                **({"source": sources[k]} if k in sources else {}),
+                **({"unknown": True} if k in unknown else {})}
             for k in result["seconds"]}
 
 
@@ -273,6 +289,13 @@ def diarize_session(session: Session) -> dict:
     # With voice prints off, nothing of the other voices is kept and nobody
     # but you is recognized: your profile is the only one you consented to.
     prints = feature_on("voice_prints")
+    from omy import lock
+    # Named with the people as they are now: a rename can't slip in between.
+    with lock.writing():
+        return _write_doc(session, result, ctx, contexts, prints)
+
+
+def _write_doc(session: Session, result: dict, ctx: list, contexts: dict, prints: bool) -> dict:
     if prints:
         save_npz(CLUSTERS / f"{session.id}.npz", result["embeddings"])
     clusters = name_clusters(result, load_profile(), contexts, person_profiles() if prints else {})

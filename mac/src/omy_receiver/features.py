@@ -39,6 +39,27 @@ FEATURES = {
     "auto_transcribe": ("mac", "Trascrizione automatica",
                  "Trascrive ogni ora le sessioni concluse."),
 }
+# The same in English (omy_receiver/l10n.py picks).
+FEATURES_EN = {
+    "location": ("Location", "Saves where each recording was made, from iOS visits and location changes, without keeping the GPS on."),
+    "calls": ("Calls", "Marks when you are on the phone, FaceTime or WhatsApp: only start and end, not who is calling."),
+    "battery": ("Pendant battery", "Saves the battery level with each segment, to estimate how long a charge lasts."),
+    "mac_audio": ("Calls and media on the Mac",
+                  "Marks which apps use the microphone and speakers, to tell a call from a video or music."),
+    "diarization": ("Who speaks", "Separates the voices of each session and recognizes yours."),
+    "voice_prints": ("Voice prints", "Saves a print of the other voices, to name them and recognize them in later sessions."),
+    "auto_transcribe": ("Automatic transcription", "Transcribes the finished sessions every hour."),
+}
+
+
+def described(key: str) -> tuple[str, str, str]:
+    """(device, name, what it does), in the language omy shows."""
+    from .l10n import tr
+    device, name, what = FEATURES[key]
+    en_name, en_what = FEATURES_EN[key]
+    return device, tr(name, en_name), tr(what, en_what)
+
+
 ISO_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z")
 MAX_BODY = 4096
 

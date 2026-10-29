@@ -34,13 +34,15 @@ enum Omy {
     /// Run `omy --json <args>`; `log` receives stderr line by line (on a
     /// background thread). Returns stdout (the JSON result).
     static func run(_ args: [String], log: (@Sendable (String) -> Void)? = nil) async throws -> Data {
-        guard let uv else { throw Failure(message: "uv non trovato (~/.local/bin/uv)") }
+        guard let uv else { throw Failure(message: tr("uv non trovato (~/.local/bin/uv)", "uv not found (~/.local/bin/uv)")) }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: uv)
         process.arguments = ["run", "--quiet", "--project", macSrc.path, "omy", "--json"] + args
         process.currentDirectoryURL = macSrc
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = path
+        // What omy shows (checklist, features) in the app's language.
+        env["OMY_LANG"] = L10n.code
         process.environment = env
 
         let out = Pipe(), err = Pipe()
@@ -72,7 +74,8 @@ enum Omy {
             throw Failure(message: message)
         }
         if process.terminationStatus != 0 {
-            throw Failure(message: "omy \(args.joined(separator: " ")) è uscito con codice \(process.terminationStatus)")
+            throw Failure(message: tr("omy \(args.joined(separator: " ")) è uscito con codice \(process.terminationStatus)",
+                                      "omy \(args.joined(separator: " ")) exited with code \(process.terminationStatus)"))
         }
         return data
     }

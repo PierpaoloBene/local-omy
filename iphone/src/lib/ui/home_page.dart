@@ -13,6 +13,7 @@ import 'app_shell.dart';
 import 'common.dart';
 import 'chat.dart';
 import 'settings_page.dart';
+import '../l10n.dart';
 
 /// "Oggi": the pendant, recording and uploads on the phone; what the Mac
 /// has to transcribe; today in short.
@@ -44,6 +45,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Timer? _tick, _poll;
   DayList? _mac;
   String? _macError;
+  DateTime? _macAt;
   bool _starting = false;
 
   @override
@@ -78,6 +80,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() {
         _mac = d;
         _macError = null;
+        _macAt = DateTime.now();
       });
     } on MacError catch (e) {
       if (mounted) setState(() => _macError = e.message);
@@ -96,7 +99,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await Future.delayed(const Duration(seconds: 2));
       await _loadMac();
     } on MacError catch (e) {
-      if (mounted) showMessage(context, e, title: 'Non riuscito');
+      if (mounted) showMessage(context, e, title: tr('Non riuscito', 'Failed'));
     } finally {
       if (mounted) setState(() => _starting = false);
     }
@@ -105,7 +108,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return TabScaffold(
-      title: 'Oggi',
+      title: tr('Oggi', 'Today'),
+      scrollToTop: widget.shown.retap,
       onRefresh: () async {
         widget.uploader.trigger();
         await _loadMac();
@@ -155,21 +159,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             r.recording ? CupertinoIcons.mic_fill : CupertinoIcons.mic_off,
             r.recording ? CupertinoColors.systemRed : CupertinoColors.systemGrey,
           ),
-          title: 'Registrazione',
-          value: r.recording ? 'Attiva' : 'Ferma',
+          title: tr('Registrazione', 'Recording'),
+          value: r.recording ? tr('Attiva', 'On') : tr('Ferma', 'Off'),
         ),
         IosRow(
           leading: const IconSquare(CupertinoIcons.tray_arrow_up_fill, CupertinoColors.systemBlue),
-          title: 'In coda',
+          title: tr('In coda', 'Queued'),
           value: '${u.queued}',
           trailing: u.uploading ? const CupertinoActivityIndicator() : null,
         ),
         IosRow(
           leading: const IconSquare(CupertinoIcons.checkmark_alt, CupertinoColors.systemGreen),
-          title: 'Ultimo invio',
+          title: tr('Ultimo invio', 'Last upload'),
           value: u.lastSuccessAt == null ? '—' : _fmt(u.lastSuccessAt!),
         ),
-        IosRow(title: 'Invia ora', onTap: u.trigger),
+        IosRow(title: tr('Invia ora', 'Upload now'), onTap: u.trigger),
       ],
     );
   }
@@ -177,11 +181,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget _macSection(BuildContext context) {
     final Widget body;
     if (!widget.api.configured) {
-      body = const IosRow(title: 'Non configurato', subtitle: 'Imposta URL e token del Mac in Impostazioni.');
+      body = IosRow(
+        title: tr('Non configurato', 'Not set up'),
+        subtitle: tr('Imposta URL e token del Mac in Impostazioni.', 'Set the Mac\'s URL and token in Settings.'),
+      );
     } else if (_macError != null && _mac == null) {
       body = IosRow(
         leading: const IconSquare(CupertinoIcons.wifi_slash, CupertinoColors.systemRed),
-        title: 'Non raggiungibile',
+        title: tr('Non raggiungibile', 'Not reachable'),
         subtitle: _macError,
       );
     } else if (_mac == null) {
@@ -199,16 +206,27 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           running || p.sessions > 0 ? CupertinoColors.systemPurple : CupertinoColors.systemGreen,
         ),
         title: running
-            ? 'Trascrizione in corso'
+            ? tr('Trascrizione in corso', 'Transcribing')
             : p.sessions == 0
-            ? 'Tutto trascritto'
-            : '${p.sessions} ${p.sessions == 1 ? 'sessione' : 'sessioni'} da trascrivere',
+            ? tr('Tutto trascritto', 'All transcribed')
+            : tr(
+                '${counted(p.sessions, 'sessione', 'sessioni', '', '')} da trascrivere',
+                '${counted(p.sessions, '', '', 'session', 'sessions')} to transcribe',
+              ),
         subtitle: [
-          if (running) '${p.progress.sessionsDone} di ${p.progress.sessionsTotal} sessioni',
+          if (running)
+            tr(
+              '${p.progress.sessionsDone} di ${p.progress.sessionsTotal} sessioni',
+              '${p.progress.sessionsDone} of ${p.progress.sessionsTotal} sessions',
+            ),
           if (!running && p.sessions > 0) duration(p.minutes),
           if (p.openSessions > 0)
-            '${p.openSessions == 1 ? 'una sessione ancora aperta' : '${p.openSessions} sessioni ancora aperte'}, '
-                'si trascrive quando finisce',
+            tr(
+              '${p.openSessions == 1 ? 'una sessione ancora aperta' : '${p.openSessions} sessioni ancora aperte'}, '
+                  'si trascrive quando finisce',
+              '${p.openSessions == 1 ? 'a session still open' : '${p.openSessions} sessions still open'}, '
+                  'transcribed when it ends',
+            ),
         ].join(' · ').emptyToNull,
         below: running
             ? Padding(padding: const EdgeInsets.only(top: 8), child: ProgressBar(p.progress.fraction))
@@ -218,11 +236,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final p = _mac?.pending;
     return Section(
       header: 'Mac',
+      footer: _macError != null && _mac != null
+          ? tr(
+              'Non aggiornato${_macAt == null ? '' : ' dalle ${_fmt(_macAt!)}'}: $_macError',
+              'Not up to date${_macAt == null ? '' : ' since ${_fmt(_macAt!)}'}: $_macError',
+            )
+          : null,
       children: [
         body,
         if (p != null && !p.progress.running && p.sessions > 0)
           IosRow(
-            title: 'Trascrivi ora',
+            title: tr('Trascrivi ora', 'Transcribe now'),
             onTap: _starting ? null : _transcribe,
             trailing: _starting ? const CupertinoActivityIndicator() : null,
           ),
@@ -231,12 +255,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   List<Widget> _today(BuildContext context) {
-    final today = _mac?.days.where((d) => d.day == todayIso()).firstOrNull;
+    final today = _mac?.days.where((d) => d.day == archiveDay()).firstOrNull;
     if (today == null) return [];
     return [
       Padding(
         padding: const EdgeInsets.fromLTRB(32, 16, 32, 6),
-        child: Text('OGGI IN BREVE', style: Ios.footnote(context)),
+        child: Text(tr('OGGI IN BREVE', 'TODAY IN SHORT'), style: Ios.footnote(context)),
       ),
       DaySummaryCard(summary: today, onTap: _openToday),
     ];
@@ -245,11 +269,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// Today's conversations, from the latest.
   Future<void> _openToday() async {
     try {
-      final l = await widget.api.conversations(day: todayIso(), limit: 1000);
+      final l = await widget.api.conversations(day: archiveDay(), limit: 1000);
       if (!mounted || l.conversations.isEmpty) return;
-      await ConversationViewer.open(context, widget.api, l.conversations, 0, previousPageTitle: 'Oggi');
+      await ConversationViewer.open(context, widget.api, l.conversations, 0, previousPageTitle: tr('Oggi', 'Today'));
     } on MacError catch (e) {
-      if (mounted) showMessage(context, e, title: 'Non riuscito');
+      if (mounted) showMessage(context, e, title: tr('Non riuscito', 'Failed'));
     }
   }
 
@@ -264,7 +288,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return [
       const SizedBox(height: 20),
       Section(
-        header: 'Ultimo errore',
+        header: tr('Ultimo errore', 'Last error'),
         children: [
           IosRow(
             leading: const IconSquare(CupertinoIcons.exclamationmark_triangle_fill, CupertinoColors.systemRed),
@@ -296,28 +320,39 @@ class _PendantCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final status = ble.status;
     final (Color color, IconData icon, String title, String detail) = switch (status) {
-      PendantStatus.connected => (CupertinoColors.systemGreen, CupertinoIcons.waveform, 'Connesso', 'Sta registrando'),
+      PendantStatus.connected => (
+        CupertinoColors.systemGreen,
+        CupertinoIcons.waveform,
+        tr('Connesso', 'Connected'),
+        tr('Sta registrando', 'Recording'),
+      ),
       PendantStatus.idle => (
         CupertinoColors.systemYellow,
         CupertinoIcons.pause_fill,
-        'Inattivo',
-        'Collegato, ma non arriva audio',
+        tr('Inattivo', 'Idle'),
+        tr('Collegato, ma non arriva audio', 'Connected, but no audio is coming'),
       ),
       PendantStatus.disconnected => (
         CupertinoColors.systemOrange,
         CupertinoIcons.antenna_radiowaves_left_right,
-        'Disconnesso',
-        'Si ricollega da solo${ble.lastConnectedAt == null ? '' : ' · perso alle ${_fmt(ble.lastConnectedAt!)}'}',
+        tr('Disconnesso', 'Disconnected'),
+        tr(
+          'Si ricollega da solo${ble.lastConnectedAt == null ? '' : ' · perso alle ${_fmt(ble.lastConnectedAt!)}'}',
+          'Reconnects by itself${ble.lastConnectedAt == null ? '' : ' · lost at ${_fmt(ble.lastConnectedAt!)}'}',
+        ),
       ),
       PendantStatus.notFound => (
         CupertinoColors.systemGrey,
         CupertinoIcons.bluetooth,
-        'Non trovato',
+        tr('Non trovato', 'Not found'),
         settings.deviceId == null
-            ? 'Nessun ciondolo scelto: cercalo in Impostazioni'
+            ? tr('Nessun ciondolo scelto: cercalo in Impostazioni', 'No pendant chosen: find it in Settings')
             : !ble.bluetoothOn
-            ? 'Bluetooth spento'
-            : 'Lontano o scarico${ble.lastConnectedAt == null ? '' : ' · visto alle ${_fmt(ble.lastConnectedAt!)}'}',
+            ? tr('Bluetooth spento', 'Bluetooth is off')
+            : tr(
+                'Lontano o scarico${ble.lastConnectedAt == null ? '' : ' · visto alle ${_fmt(ble.lastConnectedAt!)}'}',
+                'Out of range or flat${ble.lastConnectedAt == null ? '' : ' · seen at ${_fmt(ble.lastConnectedAt!)}'}',
+              ),
       ),
     };
     final c = resolve(context, color);
@@ -347,7 +382,7 @@ class _PendantCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Ciondolo', style: Ios.footnote(context)),
+                    Text(tr('Ciondolo', 'Pendant'), style: Ios.footnote(context)),
                     Text(title, style: Ios.title(context)),
                   ],
                 ),
@@ -364,7 +399,7 @@ class _PendantCard extends StatelessWidget {
               children: [
                 if (ble.battery != null)
                   Pill(
-                    '${ble.battery}%${live ? '' : ' (ultimo)'}',
+                    '${ble.battery}%${live ? '' : tr(' (ultimo)', ' (last)')}',
                     leading: Icon(_batteryIcon(ble.battery!), size: 20, color: _batteryColor(context, ble.battery!)),
                   ),
                 if (ble.firmware != null) Pill('Firmware ${ble.firmware}'),

@@ -5,6 +5,7 @@ import '../api/models.dart';
 import 'common.dart';
 import 'conversations.dart';
 import 'timeline.dart';
+import '../l10n.dart';
 
 /// One person (or you, with [person] 'me'): how much and where you talk,
 /// and every conversation with them. Pops true after a rename or delete.
@@ -37,8 +38,7 @@ class PersonPage extends StatefulWidget {
 }
 
 class _PersonPageState extends State<PersonPage> {
-  ConversationList? _list;
-  Object? _error;
+  late ConversationFeed _feed = ConversationFeed(widget.api, person: widget.person);
   String? _type;
   bool _busy = false;
   late String _name = widget.name;
@@ -48,17 +48,23 @@ class _PersonPageState extends State<PersonPage> {
   @override
   void initState() {
     super.initState();
-    _load();
+    _feed.refresh();
   }
 
-  Future<void> _load() async {
-    setState(() => _error = null);
-    try {
-      final l = await widget.api.conversations(person: widget.person, type: _type, limit: 5000);
-      if (mounted) setState(() => _list = l);
-    } on MacError catch (e) {
-      if (mounted) setState(() => _error = e);
-    }
+  @override
+  void dispose() {
+    _feed.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() => _feed.refresh();
+
+  void _setType(String? t) {
+    _feed.dispose();
+    setState(() {
+      _type = t;
+      _feed = ConversationFeed(widget.api, person: widget.person, type: t)..refresh();
+    });
   }
 
   /// The kind of all their voices, when it is one: room or meeting.
@@ -80,11 +86,14 @@ class _PersonPageState extends State<PersonPage> {
     if (kind == 'media') {
       if (!await confirm(
         context,
-        title: '$_name è un video?',
-        message:
-            'Tutte le sue voci diventano «Video», in ogni sessione, e non vengono più riconosciute. '
-            'Si cancellano il nome e l\'impronta vocale.',
-        action: 'È un video',
+        title: tr('$_name è un video?', 'Is $_name a video?'),
+        message: tr(
+          'Tutte le sue voci diventano «Video», in ogni sessione, e non vengono più riconosciute. '
+              'Si cancellano il nome e l\'impronta vocale.',
+          'All their voices become “Video”, in every session, and are no longer recognized. '
+              'The name and the voice print are deleted.',
+        ),
+        action: tr('È un video', 'It\'s a video'),
       )) {
         return;
       }
@@ -104,9 +113,12 @@ class _PersonPageState extends State<PersonPage> {
     if (merging &&
         !await confirm(
           context,
-          title: 'Unire a $name?',
-          message: 'Esiste già $name: le due persone diventano una sola, con le voci di entrambe.',
-          action: 'Unisci',
+          title: tr('Unire a $name?', 'Merge with $name?'),
+          message: tr(
+            'Esiste già $name: le due persone diventano una sola, con le voci di entrambe.',
+            '$name already exists: the two become one person, with the voices of both.',
+          ),
+          action: tr('Unisci', 'Merge'),
           destructive: false,
         )) {
       return;
@@ -129,9 +141,11 @@ class _PersonPageState extends State<PersonPage> {
   Future<void> _delete() async {
     if (!await confirm(
       context,
-      title: 'Eliminare $_name?',
-      message:
-          'Si cancellano il nome e l\'impronta vocale. Le sue voci tornano senza nome e si possono nominare di nuovo.',
+      title: tr('Eliminare $_name?', 'Delete $_name?'),
+      message: tr(
+        'Si cancellano il nome e l\'impronta vocale. Le sue voci tornano senza nome e si possono nominare di nuovo.',
+        'The name and the voice print are deleted. Their voices go back to unnamed and can be named again.',
+      ),
     )) {
       return;
     }
@@ -145,76 +159,85 @@ class _PersonPageState extends State<PersonPage> {
   @override
   Widget build(BuildContext context) {
     final i = widget.index;
-    return Timeline(
-      api: widget.api,
-      title: _name,
-      previousPageTitle: 'Persone',
-      busy: _busy,
-      onRefresh: _load,
-      conversations: _list?.conversations,
-      error: _error,
-      onRetry: _load,
-      trailing: _me
-          ? null
-          : CupertinoButton(padding: EdgeInsets.zero, onPressed: _busy ? null : _edit, child: const Text('Modifica')),
-      top: [
-        SliverList.list(
-          children: [
-            InsetCard(
-              child: Row(
-                children: [
-                  PersonAvatar(name: _name, me: _me, size: 64),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '${duration(widget.minutes)} · ${widget.sessions} ${widget.sessions == 1 ? 'sessione' : 'sessioni'}',
-                          style: Ios.headline(context),
-                        ),
-                        if (widget.lastSeen != null)
-                          Text('Ultima volta ${longDay(widget.lastSeen!).toLowerCase()}', style: Ios.footnote(context)),
-                        if (i != null && i.places.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  CupertinoIcons.location_solid,
-                                  size: 13,
-                                  color: resolve(context, CupertinoColors.secondaryLabel),
-                                ),
-                                const SizedBox(width: 4),
-                                Expanded(child: Text(i.places.join(', '), style: Ios.footnote(context))),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ],
+    return ListenableBuilder(
+      listenable: _feed,
+      builder: (context, _) => Timeline(
+        api: widget.api,
+        title: _name,
+        previousPageTitle: tr('Persone', 'People'),
+        busy: _busy,
+        onRefresh: _load,
+        conversations: _feed.list?.conversations,
+        hasMore: _feed.hasMore,
+        onMore: _feed.more,
+        error: _feed.error,
+        onRetry: _load,
+        trailing: _me
+            ? null
+            : CupertinoButton(
+                padding: EdgeInsets.zero,
+                onPressed: _busy ? null : _edit,
+                child: Text(tr('Modifica', 'Edit')),
               ),
-            ),
-            const SizedBox(height: 16),
-            FilterPills<String>(
-              values: [
-                for (final t in conversationTypes)
-                  if (i == null || _me || i.types.contains(t.$1)) t,
-              ],
-              selected: _type,
-              onChanged: (t) {
-                setState(() {
-                  _type = t;
-                  _list = null;
-                });
-                _load();
-              },
-            ),
-            const SizedBox(height: 12),
-          ],
-        ),
-      ],
+        top: [
+          SliverList.list(
+            children: [
+              InsetCard(
+                child: Row(
+                  children: [
+                    PersonAvatar(name: _name, me: _me, size: 64),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${duration(widget.minutes)} · ${counted(widget.sessions, 'sessione', 'sessioni', 'session', 'sessions')}',
+                            style: Ios.headline(context),
+                          ),
+                          if (widget.lastSeen != null)
+                            Text(
+                              tr(
+                                'Ultima volta ${longDay(widget.lastSeen!).toLowerCase()}',
+                                'Last seen ${longDay(widget.lastSeen!)}',
+                              ),
+                              style: Ios.footnote(context),
+                            ),
+                          if (i != null && i.places.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    CupertinoIcons.location_solid,
+                                    size: 13,
+                                    color: resolve(context, CupertinoColors.secondaryLabel),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Expanded(child: Text(i.places.join(', '), style: Ios.footnote(context))),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilterPills<String>(
+                values: [
+                  for (final t in conversationTypes)
+                    if (i == null || _me || i.types.contains(t.$1)) t,
+                ],
+                selected: _type,
+                onChanged: _setType,
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -248,8 +271,8 @@ class _EditSheetState extends State<_EditSheet> {
   @override
   Widget build(BuildContext context) => SheetPage(
     controller: widget.controller,
-    title: 'Modifica',
-    action: 'Fine',
+    title: tr('Modifica', 'Edit'),
+    action: tr('Fine', 'Done'),
     onAction: _done,
     children: [
       CupertinoFormSection.insetGrouped(
@@ -257,7 +280,7 @@ class _EditSheetState extends State<_EditSheet> {
         children: [
           CupertinoTextFormFieldRow(
             controller: _c,
-            placeholder: 'Nome',
+            placeholder: tr('Nome', 'Name'),
             textCapitalization: TextCapitalization.words,
             onFieldSubmitted: (_) => _done(),
           ),
@@ -272,25 +295,42 @@ class _EditSheetState extends State<_EditSheet> {
         child: CupertinoSlidingSegmentedControl<String>(
           groupValue: _kind,
           onValueChanged: (k) => setState(() => _kind = k),
-          children: const {
-            'room': Padding(padding: EdgeInsets.symmetric(vertical: 6), child: Text('Di persona')),
-            'meeting': Padding(padding: EdgeInsets.symmetric(vertical: 6), child: Text('Online')),
-            'media': Padding(padding: EdgeInsets.symmetric(vertical: 6), child: Text('Video')),
+          children: {
+            'room': Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Text(tr('Di persona', 'In person')),
+            ),
+            'meeting': const Padding(padding: EdgeInsets.symmetric(vertical: 6), child: Text('Online')),
+            'media': const Padding(padding: EdgeInsets.symmetric(vertical: 6), child: Text('Video')),
           },
         ),
       ),
       Padding(
         padding: const EdgeInsets.fromLTRB(32, 8, 32, 0),
         child: Text(switch (_kind) {
-          'media' => 'Era un video: tutte le sue voci diventano «Video», e il nome e l\'impronta vocale si cancellano.',
-          'meeting' => 'Tutte le sue voci: in una chiamata o una riunione online.',
-          'room' => 'Tutte le sue voci: di persona, nella stanza con te.',
-          _ => 'Le sue voci sono di tipi diversi: scegline uno per cambiarle tutte.',
+          'media' => tr(
+            'Era un video: tutte le sue voci diventano «Video», e il nome e l\'impronta vocale si cancellano.',
+            'It was a video: all their voices become “Video”, and the name and voice print are deleted.',
+          ),
+          'meeting' => tr(
+            'Tutte le sue voci: in una chiamata o una riunione online.',
+            'All their voices: in a call or an online meeting.',
+          ),
+          'room' => tr(
+            'Tutte le sue voci: di persona, nella stanza con te.',
+            'All their voices: in person, in the room with you.',
+          ),
+          _ => tr(
+            'Le sue voci sono di tipi diversi: scegline uno per cambiarle tutte.',
+            'Their voices are of different types: choose one to change them all.',
+          ),
         }, style: Ios.footnote(context)),
       ),
       const SizedBox(height: 24),
       Section(
-        children: [IosRow(title: 'Elimina persona', destructive: true, onTap: () => _done(delete: true))],
+        children: [
+          IosRow(title: tr('Elimina persona', 'Delete person'), destructive: true, onTap: () => _done(delete: true)),
+        ],
       ),
     ],
   );

@@ -9,10 +9,12 @@ import 'app_shell.dart';
 import 'common.dart';
 import 'conversations.dart';
 import 'person_page.dart';
+import '../l10n.dart';
 
 /// "Persone": two views. The people (you and those you named), filtered by
 /// the kind of conversation, each opening their conversations; and the
-/// voices still to label, of all the last days in one queue.
+/// voices still to label of the last [todoHours], while you remember who
+/// spoke (older ones: on the Mac).
 /// Every change runs on the Mac and rewrites the days where they speak.
 class PeoplePage extends StatefulWidget {
   final MacApi api;
@@ -23,6 +25,8 @@ class PeoplePage extends StatefulWidget {
   @override
   State<PeoplePage> createState() => _PeoplePageState();
 }
+
+const todoHours = 24;
 
 class _PeoplePageState extends State<PeoplePage> {
   People? _people;
@@ -55,7 +59,7 @@ class _PeoplePageState extends State<PeoplePage> {
     try {
       final people = await widget.api.people();
       final convs = await widget.api.conversations(type: _type);
-      final todo = (await widget.api.unlabeled()).sessions;
+      final todo = (await widget.api.unlabeled(hours: todoHours)).sessions;
       if (!mounted) return;
       setState(() {
         _people = people;
@@ -73,7 +77,7 @@ class _PeoplePageState extends State<PeoplePage> {
       final c = await widget.api.conversations(type: t);
       if (mounted && _type == t) setState(() => _convs = c);
     } on MacError catch (e) {
-      if (mounted) showMessage(context, e, title: 'Non riuscito');
+      if (mounted) showMessage(context, e, title: tr('Non riuscito', 'Failed'));
     }
   }
 
@@ -98,14 +102,14 @@ class _PeoplePageState extends State<PeoplePage> {
     } on Exception catch (e) {
       if (mounted) {
         setState(() => _playing = null);
-        showMessage(context, e, title: 'Ascolto non riuscito');
+        showMessage(context, e, title: tr('Ascolto non riuscito', 'Could not play'));
       }
     }
   }
 
   Future<void> _labelVoice(VoiceSession s, Voice v) async {
     final people = _people;
-    final r = await showCupertinoSheet<(String, String)>(
+    final r = await showCupertinoSheet<_Label>(
       context: context,
       scrollableBuilder: (context, controller) => _VoiceSheet(
         controller: controller,
@@ -116,7 +120,8 @@ class _PeoplePageState extends State<PeoplePage> {
       ),
     );
     if (r == null) return;
-    final (type, name) = r;
+    if (r.unknown) return _change(() => widget.api.setVoiceUnknown(s.session, [v.label]));
+    final (:type, :name, unknown: _) = r;
     final rename = type != 'media' && name.isNotEmpty && !(name == v.name && v.pinned);
     if (type == v.type && !rename) return;
     await _change(() async {
@@ -125,24 +130,33 @@ class _PeoplePageState extends State<PeoplePage> {
     });
   }
 
-  /// The voices without a name of a session, all at once: a video on, a meeting.
+  /// The voices to label of a session, all at once: strangers at the next
+  /// table, a video on, a meeting.
   Future<void> _labelSession(VoiceSession s) async {
     final unnamed = [
       for (final v in s.voices)
-        if (v.person == null) v.label,
+        if (v.todo) v.label,
     ];
     if (unnamed.isEmpty) return;
     final type = await chooseAction(
       context,
-      title: unnamed.length == 1 ? 'Segna la voce senza nome come' : 'Segna le ${unnamed.length} voci senza nome come',
+      title: unnamed.length == 1
+          ? tr('Segna la voce come', 'Mark the voice as')
+          : tr('Segna le ${unnamed.length} voci come', 'Mark the ${unnamed.length} voices as'),
       actions: [
+        ('unknown', tr('Sconosciuti', 'Unknown'), false),
         ('media', 'Video', false),
-        ('meeting', 'Riunione online', false),
-        ('room', 'Di persona', false),
-        ('auto', 'Automatico', false),
+        ('meeting', tr('Riunione online', 'Online meeting'), false),
+        ('room', tr('Di persona', 'In person'), false),
+        ('auto', tr('Automatico', 'Automatic'), false),
       ],
     );
-    if (type != null) await _change(() => widget.api.setVoiceKind(s.session, unnamed, type));
+    if (type == null) return;
+    await _change(
+      () => type == 'unknown'
+          ? widget.api.setVoiceUnknown(s.session, unnamed)
+          : widget.api.setVoiceKind(s.session, unnamed, type),
+    );
   }
 
   Future<void> _open({
@@ -161,7 +175,7 @@ class _PeoplePageState extends State<PeoplePage> {
           minutes: minutes,
           sessions: sessions,
           lastSeen: lastSeen,
-          index: _convs?.people[id],
+          index: _people?.index[id],
           others: _people?.people ?? [],
         ),
       ),
@@ -174,7 +188,8 @@ class _PeoplePageState extends State<PeoplePage> {
     final people = _people;
     final todo = _todo.fold(0, (n, s) => n + s.voices.where((v) => v.todo).length);
     return TabScaffold(
-      title: 'Persone',
+      title: tr('Persone', 'People'),
+      scrollToTop: widget.shown.retap,
       onRefresh: _load,
       busy: _busy,
       slivers: people == null
@@ -182,12 +197,16 @@ class _PeoplePageState extends State<PeoplePage> {
           : [
               SliverList.list(
                 children: [
+                  if (_error != null) Stale(_error!),
                   if (!widget.features.on('voice_prints'))
-                    const Notice(
+                    Notice(
                       icon: CupertinoIcons.info_circle_fill,
-                      text:
-                          'Impronte vocali disattivate: le voci nuove non vengono riconosciute, e non si '
-                          'possono dare nomi (Impostazioni, Funzioni).',
+                      text: tr(
+                        'Impronte vocali disattivate: le voci nuove non vengono riconosciute, e non si '
+                            'possono dare nomi (Impostazioni, Funzioni).',
+                        'Voice prints are off: new voices are not recognized, and cannot be named '
+                            '(Settings, Features).',
+                      ),
                     ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -195,8 +214,8 @@ class _PeoplePageState extends State<PeoplePage> {
                       groupValue: _labeling,
                       onValueChanged: (x) => setState(() => _labeling = x ?? _labeling),
                       children: {
-                        false: const Text('Persone'),
-                        true: Text('Da etichettare${todo > 0 ? ' · $todo' : ''}'),
+                        false: Text(tr('Persone', 'People')),
+                        true: Text('${tr('Da etichettare', 'To label')}${todo > 0 ? ' · $todo' : ''}'),
                       },
                     ),
                   ),
@@ -208,13 +227,13 @@ class _PeoplePageState extends State<PeoplePage> {
   }
 
   List<Widget> _peopleView(BuildContext context, People people) {
-    final index = _convs?.people ?? {};
+    final index = people.index;
     final shown = [
       for (final p in people.people)
         if (_type == null || (index[p.id]?.types.contains(_type) ?? false)) p,
     ];
     final label = conversationTypes
-        .firstWhere((t) => t.$1 == _type, orElse: () => ('', 'Tutte', CupertinoIcons.circle))
+        .firstWhere((t) => t.$1 == _type, orElse: () => ('', tr('Tutte', 'All'), CupertinoIcons.circle))
         .$2;
     return [
       FilterPills<String>(values: conversationTypes, selected: _type, onChanged: _setType),
@@ -222,12 +241,16 @@ class _PeoplePageState extends State<PeoplePage> {
       if (_type == null) ...[_meCard(context, people.me), const SizedBox(height: 20)],
       if (_type != 'media')
         Section(
-          header: _type == null ? 'Persone note · ${people.people.length}' : 'Persone · $label',
+          header: _type == null
+              ? tr('Persone note · ${people.people.length}', 'Known people · ${people.people.length}')
+              : tr('Persone · $label', 'People · $label'),
           children: shown.isEmpty
               ? [
                   IosRow(
-                    title: _type == null ? 'Nessuna ancora' : 'Nessuna persona con un nome',
-                    subtitle: 'Dai un nome alle voci in «Da etichettare».',
+                    title: _type == null
+                        ? tr('Nessuna ancora', 'None yet')
+                        : tr('Nessuna persona con un nome', 'No named people'),
+                    subtitle: tr('Dai un nome alle voci in «Da etichettare».', 'Name the voices in “To label”.'),
                   ),
                 ]
               : [for (final p in shown) _personRow(context, p)],
@@ -236,16 +259,18 @@ class _PeoplePageState extends State<PeoplePage> {
         ConversationSection(
           api: widget.api,
           list: _convs!,
-          previousPageTitle: 'Persone',
-          header: _type == null ? 'Conversazioni recenti' : 'Conversazioni · $label',
+          previousPageTitle: tr('Persone', 'People'),
+          header: _type == null
+              ? tr('Conversazioni recenti', 'Recent conversations')
+              : tr('Conversazioni · $label', 'Conversations · $label'),
           limit: 8,
           onMore: () => Navigator.of(context).push(
             CupertinoPageRoute(
               builder: (_) => ConversationsPage(
                 api: widget.api,
-                title: _type == null ? 'Conversazioni' : label,
+                title: _type == null ? tr('Conversazioni', 'Conversations') : label,
                 type: _type,
-                previousPageTitle: 'Persone',
+                previousPageTitle: tr('Persone', 'People'),
               ),
             ),
           ),
@@ -267,9 +292,12 @@ class _PeoplePageState extends State<PeoplePage> {
               const SizedBox(height: 2),
               Text(
                 me.enrolled
-                    ? '${duration(me.minutes)} · ${me.sessions} sessioni'
-                          '${me.lastSeen == null ? '' : ' · ultima ${shortDay(me.lastSeen!)}'}'
-                    : 'Profilo vocale non ancora creato (sul Mac: omy voice enroll)',
+                    ? '${duration(me.minutes)} · ${counted(me.sessions, 'sessione', 'sessioni', 'session', 'sessions')}'
+                          '${me.lastSeen == null ? '' : ' · ${tr('ultima', 'last')} ${shortDay(me.lastSeen!)}'}'
+                    : tr(
+                        'Profilo vocale non ancora creato (sul Mac: omy voice enroll)',
+                        'No voice profile yet (on the Mac: omy voice enroll)',
+                      ),
                 style: Ios.footnote(context),
               ),
             ],
@@ -280,20 +308,20 @@ class _PeoplePageState extends State<PeoplePage> {
   );
 
   Widget _personRow(BuildContext context, Person p) {
-    final places = _convs?.people[p.id]?.places ?? [];
+    final places = _people?.index[p.id]?.places ?? [];
     return IosRow(
       leading: PersonAvatar(name: p.name),
       title: p.name,
       subtitle: [
         duration(p.minutes),
-        '${p.sessions} ${p.sessions == 1 ? 'sessione' : 'sessioni'}',
-        if (p.lastSeen != null) 'ultima ${shortDay(p.lastSeen!)}',
+        counted(p.sessions, 'sessione', 'sessioni', 'session', 'sessions'),
+        if (p.lastSeen != null) '${tr('ultima', 'last')} ${shortDay(p.lastSeen!)}',
         if (places.isNotEmpty) places.first,
       ].join(' · '),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          for (final t in _convs?.people[p.id]?.types ?? <String>[])
+          for (final t in _people?.index[p.id]?.types ?? <String>[])
             Padding(
               padding: const EdgeInsets.only(left: 4),
               child: Icon(typeIcon(t), size: 14, color: resolve(context, CupertinoColors.tertiaryLabel)),
@@ -312,7 +340,14 @@ class _PeoplePageState extends State<PeoplePage> {
         if (s.voices.any((v) => v.todo)) s,
     ];
     if (sessions.isEmpty) {
-      return [const Empty('Nessuna voce da etichettare negli ultimi giorni: tutte hanno un nome o sono video.')];
+      return [
+        Empty(
+          tr(
+            'Nessuna voce da etichettare nelle ultime $todoHours ore. Quelle più vecchie si etichettano dal Mac.',
+            'No voices to label in the last $todoHours hours. Older ones are labeled on the Mac.',
+          ),
+        ),
+      ];
     }
     return [
       for (final s in sessions)
@@ -322,16 +357,23 @@ class _PeoplePageState extends State<PeoplePage> {
             padding: EdgeInsets.zero,
             minimumSize: const Size(0, 28),
             onPressed: _busy ? null : () => _labelSession(s),
-            child: const Text('Segna tutte…'),
+            child: Text(tr('Segna tutte…', 'Mark all…')),
           ),
           children: [
             for (final voice in s.voices)
               if (voice.todo) _voiceRow(context, s, voice),
           ],
         ),
-      const Padding(
-        padding: EdgeInsets.fromLTRB(32, 0, 32, 0),
-        child: Empty('Le sessioni degli ultimi 14 giorni con voci senza nome né tipo video.'),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(32, 0, 32, 0),
+        child: Empty(
+          tr(
+            'Le voci senza nome delle ultime $todoHours ore, finché ricordi chi parlava. '
+                'Quelle più vecchie si etichettano dal Mac.',
+            'The unnamed voices of the last $todoHours hours, while you remember who was speaking. '
+                'Older ones are labeled on the Mac.',
+          ),
+        ),
       ),
     ];
   }
@@ -358,11 +400,20 @@ class _PeoplePageState extends State<PeoplePage> {
           ),
         ),
       ),
-      title: v.pinned ? '${v.name} ✓' : v.name,
+      title: v.name,
       titleStyle: Ios.headline(
         context,
       ).copyWith(color: known ? personColor(context, v.name, me: v.person == 'me') : null),
-      subtitle: '${voiceTypeLabel(v)} · ${v.seconds < 60 ? '${v.seconds.round()} s' : duration(v.seconds / 60)}',
+      subtitle: [
+        voiceTypeLabel(v),
+        v.seconds < 60 ? '${v.seconds.round()} s' : duration(v.seconds / 60),
+        if (v.pinned)
+          tr('nominata da te', 'named by you')
+        else if (v.person != null)
+          tr('riconosciuta', 'recognized')
+        else if (v.unknown)
+          tr('sconosciuta', 'unknown'),
+      ].join(' · '),
       below: v.sample.isEmpty
           ? null
           : Padding(
@@ -378,7 +429,7 @@ class _PeoplePageState extends State<PeoplePage> {
         padding: EdgeInsets.zero,
         minimumSize: const Size(44, 44),
         onPressed: _busy ? null : () => _labelVoice(s, v),
-        child: Text(v.todo ? 'Etichetta' : 'Cambia'),
+        child: Text(v.todo ? tr('Etichetta', 'Label') : tr('Cambia', 'Change')),
       ),
     );
   }
@@ -395,19 +446,24 @@ IconData voiceTypeIcon(Voice v) => switch (v.type) {
   _ => CupertinoIcons.person_fill,
 };
 
+/// The app the Mac puts on a meeting it didn't see, in either language.
+bool _anyMeeting(String? app) => app == null || app == 'Riunione' || app == 'Meeting';
+
 String voiceTypeLabel(Voice v) => switch (v.type) {
   'media' => v.app == null || v.app == 'Video' ? 'Video' : 'Video · ${v.app}',
   'meeting' =>
     v.app == 'iPhone'
-        ? 'Chiamata'
-        : v.app == null || v.app == 'Riunione'
-        ? 'Riunione online'
-        : 'Riunione · ${v.app}',
-  _ => 'Di persona',
+        ? tr('Chiamata', 'Call')
+        : _anyMeeting(v.app)
+        ? tr('Riunione online', 'Online meeting')
+        : tr('Riunione · ${v.app}', 'Meeting · ${v.app}'),
+  _ => tr('Di persona', 'In person'),
 };
 
-/// Where a voice comes from and, unless a TV, who it is: you first, then
-/// the known people. Returns (type, name).
+typedef _Label = ({String type, String name, bool unknown});
+
+/// Where a voice comes from and, unless a video, who it is: you first, then
+/// the known people, or somebody you don't know.
 class _VoiceSheet extends StatefulWidget {
   final ScrollController controller;
   final Voice voice;
@@ -436,7 +492,10 @@ class _VoiceSheetState extends State<_VoiceSheet> {
     super.dispose();
   }
 
-  void _done([String? name]) => Navigator.pop(context, (_type, (name ?? _c.text).trim()));
+  void _done([String? name]) =>
+      Navigator.pop<_Label>(context, (type: _type, name: (name ?? _c.text).trim(), unknown: false));
+
+  void _unknown() => Navigator.pop<_Label>(context, (type: _type, name: '', unknown: true));
 
   @override
   Widget build(BuildContext context) {
@@ -446,8 +505,8 @@ class _VoiceSheetState extends State<_VoiceSheet> {
     final named = _type != 'media' && widget.prints;
     return SheetPage(
       controller: widget.controller,
-      title: 'Chi è?',
-      action: 'Salva',
+      title: tr('Chi è?', 'Who is it?'),
+      action: tr('Salva', 'Save'),
       onAction: _done,
       children: [
         if (v.sample.isNotEmpty)
@@ -465,24 +524,33 @@ class _VoiceSheetState extends State<_VoiceSheet> {
           child: CupertinoSlidingSegmentedControl<String>(
             groupValue: _type,
             onValueChanged: (t) => setState(() => _type = t ?? _type),
-            children: const {
-              'room': _Segment(CupertinoIcons.person_fill, 'Di persona'),
-              'meeting': _Segment(CupertinoIcons.videocam_fill, 'Online'),
-              'media': _Segment(CupertinoIcons.play_rectangle_fill, 'Video'),
+            children: {
+              'room': _Segment(CupertinoIcons.person_fill, tr('Di persona', 'In person')),
+              'meeting': const _Segment(CupertinoIcons.videocam_fill, 'Online'),
+              'media': const _Segment(CupertinoIcons.play_rectangle_fill, 'Video'),
             },
           ),
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(32, 4, 32, 12),
           child: Text(switch (_type) {
-            'media' =>
+            'media' => tr(
               'Una voce da uno schermo o da un altoparlante: nessun nome, nessuna impronta vocale. '
                   'Nelle trascrizioni diventa «Video».',
+              'A voice from a screen or a speaker: no name, no voice print. '
+                  'In the transcripts it becomes “Video”.',
+            ),
             'meeting' =>
-              v.kind == 'call' && v.app != null && v.app != 'Riunione'
-                  ? 'Riconosciuta dal Mac: ${v.app}. Puoi dirle chi è.'
-                  : 'Qualcuno in una chiamata o una riunione online (Teams, Zoom, Meet).',
-            _ => 'Qualcuno nella stanza con te.',
+              v.kind == 'call' && !_anyMeeting(v.app)
+                  ? tr(
+                      'Riconosciuta dal Mac: ${v.app}. Puoi dirle chi è.',
+                      'Recognized by the Mac: ${v.app}. You can say who it is.',
+                    )
+                  : tr(
+                      'Qualcuno in una chiamata o una riunione online (Teams, Zoom, Meet).',
+                      'Someone in a call or an online meeting (Teams, Zoom, Meet).',
+                    ),
+            _ => tr('Qualcuno nella stanza con te.', 'Someone in the room with you.'),
           }, style: Ios.footnote(context)),
         ),
         if (named) ...[
@@ -490,31 +558,49 @@ class _VoiceSheetState extends State<_VoiceSheet> {
             children: [
               CupertinoTextFormFieldRow(
                 controller: _c,
-                placeholder: 'Nome (facoltativo)',
+                placeholder: tr('Nome (facoltativo)', 'Name (optional)'),
                 textCapitalization: TextCapitalization.words,
                 onChanged: (_) => setState(() {}),
                 onFieldSubmitted: _done,
               ),
             ],
           ),
-          if (names.isNotEmpty)
-            Section(
-              header: 'Scegli',
-              children: [
-                for (final n in names)
-                  IosRow(
-                    leading: PersonAvatar(name: n, me: n == widget.me, size: 30),
-                    title: n,
-                    titleStyle: Ios.body(context),
-                    onTap: () => _done(n),
-                  ),
-              ],
+          Section(
+            header: tr('Scegli', 'Choose'),
+            children: [
+              for (final n in names)
+                IosRow(
+                  leading: PersonAvatar(name: n, me: n == widget.me, size: 30),
+                  title: n,
+                  titleStyle: Ios.body(context),
+                  onTap: () => _done(n),
+                ),
+              _unknownRow(context),
+            ],
+          ),
+        ] else if (_type != 'media') ...[
+          Empty(
+            tr(
+              'Impronte vocali disattivate: si può scegliere il tipo, ma non dare un nome.',
+              'Voice prints are off: you can choose the type, but not give a name.',
             ),
-        ] else if (_type != 'media')
-          const Empty('Impronte vocali disattivate: si può scegliere il tipo, ma non dare un nome.'),
+          ),
+          Section(children: [_unknownRow(context)]),
+        ],
       ],
     );
   }
+
+  Widget _unknownRow(BuildContext context) => IosRow(
+    leading: const IconSquare(CupertinoIcons.question, CupertinoColors.systemGrey),
+    title: tr('Sconosciuto', 'Unknown'),
+    titleStyle: Ios.body(context),
+    subtitle: tr(
+      'Non sai chi è: niente nome né impronta, non te lo chiede più',
+      'You don\'t know who it is: no name or voice print, not asked again',
+    ),
+    onTap: _unknown,
+  );
 }
 
 class _Segment extends StatelessWidget {

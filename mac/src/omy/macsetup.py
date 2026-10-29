@@ -14,12 +14,12 @@ import time
 from pathlib import Path
 
 from omy import iphone, transcribe
-from omy.config import CONFIG_DIR, REPO
+from omy.config import CONFIG_DIR, REPO, label_prefix
+from omy_receiver.l10n import tr
 
 MAC_SRC = REPO / "mac" / "src"
 TOKEN_FILE = Path(os.environ.get("OMY_TOKEN_FILE", CONFIG_DIR / "token"))
 AGENTS_DIR = Path("~/Library/LaunchAgents").expanduser()
-LABEL_PREFIX = "com.example.local-omy"
 AGENTS = ("receiver", "periodic")
 RECEIVER_URL = "http://127.0.0.1:8787"
 # PATH for the LaunchAgents: Homebrew (flutter, pod, whisper-cli), uv, Xcode tools.
@@ -40,7 +40,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
 # --- LaunchAgents -----------------------------------------------------------
 
 def _label(name: str) -> str:
-    return f"{LABEL_PREFIX}.{name}"
+    return f"{label_prefix()}.{name}"
 
 
 def _plist_path(name: str) -> Path:
@@ -49,8 +49,8 @@ def _plist_path(name: str) -> Path:
 
 def _render_agent(name: str) -> str:
     uv = shutil.which("uv") or str(Path("~/.local/bin/uv").expanduser())
-    template = (MAC_SRC / "launchd" / f"{_label(name)}.plist").read_text()
-    return (template.replace("__UV__", uv).replace("__MAC_DIR__", str(MAC_SRC))
+    template = (MAC_SRC / "launchd" / f"{name}.plist").read_text()
+    return (template.replace("__LABEL__", _label(name)).replace("__UV__", uv).replace("__MAC_DIR__", str(MAC_SRC))
             .replace("__HOME__", str(Path.home())).replace("__PATH__", AGENT_PATH))
 
 
@@ -125,9 +125,10 @@ def _token_state() -> tuple[bool, str]:
     try:
         st = TOKEN_FILE.lstat()
     except FileNotFoundError:
-        return False, "missing"
+        return False, tr("manca", "missing")
     if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
-        return False, f"{TOKEN_FILE} must be a regular file of yours with mode 600"
+        return False, tr(f"{TOKEN_FILE} deve essere un file tuo, normale, con mode 600",
+                     f"{TOKEN_FILE} must be a regular file of yours, mode 600")
     return True, str(TOKEN_FILE)
 
 
@@ -140,38 +141,50 @@ def checks() -> list[dict]:
     whisper = shutil.which("whisper-cli") or "/opt/homebrew/bin/whisper-cli"
     has_opus = any(Path(p).exists() for p in ("/opt/homebrew/lib/libopus.dylib", "/usr/local/lib/libopus.dylib"))
     has_whisper = Path(whisper).exists()
-    add("brew", "Homebrew: opus e whisper.cpp", has_opus and has_whisper,
+    add("brew", tr("Homebrew: opus e whisper.cpp", "Homebrew: opus and whisper.cpp"), has_opus and has_whisper,
         "ok" if has_opus and has_whisper else "brew install opus whisper.cpp")
 
     ok, detail = _token_state()
-    add("token", "Token del ricevitore", ok, detail)
+    add("token", tr("Token del ricevitore", "Receiver token"), ok, detail)
 
-    for name, label in (("receiver", "Ricevitore (LaunchAgent)"), ("periodic", "Job orario (LaunchAgent)")):
+    for name, label in (("receiver", tr("Ricevitore (LaunchAgent)", "Receiver (LaunchAgent)")),
+                        ("periodic", tr("Job orario (LaunchAgent)", "Hourly job (LaunchAgent)"))):
         a = agent_info(name)
         ok = a["loaded"] and a["up_to_date"] and (a["running"] or name == "periodic")
-        detail = "not installed" if not a["loaded"] else "outdated plist" if not a["up_to_date"] \
-            else "not running" if not ok else "ok"
+        detail = tr("non installato", "not installed") if not a["loaded"] \
+            else tr("plist non aggiornato", "plist out of date") if not a["up_to_date"] \
+            else tr("non in esecuzione", "not running") if not ok else "ok"
         add(name, label, ok, detail)
 
     ts = tailscale_info()
     add("tailscale", "tailscale serve → 127.0.0.1:8787", ts["serving"],
-        ts["url"] or ("Tailscale not installed" if not ts["installed"] else "not serving"))
+        ts["url"] or (tr("Tailscale non installato (tailscale.com/download)", "Tailscale not installed (tailscale.com/download)")
+                      if not ts["installed"] else tr("tailscale serve non attivo", "tailscale serve not running")))
 
     models = transcribe.models_status()
-    add("models", "Modelli di trascrizione", all(models.values()),
-        "ok" if all(models.values()) else f"missing: {[n for n, v in models.items() if not v]}")
+    missing = ", ".join(n for n, v in models.items() if not v)
+    add("models", tr("Modelli di trascrizione", "Transcription models"), all(models.values()),
+        "ok" if all(models.values()) else tr(f"mancano: {missing}", f"missing: {missing}"))
 
     from omy import diarize
     model = any((diarize.HF_HOME / "hub").glob("models--pyannote--speaker-diarization-community-1"))
-    detail = "ok" if model and diarize.PROFILE.is_file() else \
-        "Hugging Face token missing (README, Chi parla)" if not model and not diarize.TOKEN_FILE.is_file() else \
-        "model not downloaded" if not model else "no voice profile: omy voice enroll"
-    add("diarize", "Chi parla (pyannote e impronta vocale)", detail == "ok", detail)
+    if model and diarize.PROFILE.is_file():
+        detail = "ok"
+    elif not model and not diarize.TOKEN_FILE.is_file():
+        detail = tr("manca il token Hugging Face (mac/README.md, Chi parla)",
+                    "Hugging Face token missing (mac/README.md, Chi parla)")
+    elif not model:
+        detail = tr("modello non scaricato", "model not downloaded")
+    else:
+        detail = tr("manca la tua impronta vocale: omy voice enroll", "your voice profile is missing: omy voice enroll")
+    add("diarize", tr("Chi parla (pyannote e impronta vocale)", "Who speaks (pyannote and voice profile)"), detail == "ok", detail)
 
     cfg = iphone.load_config()
     ok = "team_id" in cfg and "device_udid" in cfg
-    add("iphone", "Team Apple e iPhone", ok,
-        f"team {cfg['team_id']}, device {cfg['device_udid']}" if ok else "not detected")
+    add("iphone", tr("Team Apple e iPhone", "Apple team and iPhone"), ok,
+        f"team {cfg['team_id']}, iPhone {cfg['device_udid']}" if ok
+        else tr("non rilevati: Apple ID in Xcode, iPhone collegato e sbloccato",
+                "not detected: Apple ID in Xcode, iPhone connected and unlocked"))
     return items
 
 

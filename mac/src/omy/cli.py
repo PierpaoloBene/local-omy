@@ -4,14 +4,16 @@ with --json (that's what the Mac app reads)."""
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
 from datetime import date, datetime
 
-from omy import battery, enroll, iphone, macsetup, people, places, review, status, transcribe
+from omy import battery, enroll, iphone, lock, macsetup, people, places, review, status, transcribe
 from omy.config import ARCHIVE, feature_on
 from omy_receiver import features
+from omy_receiver.l10n import tr
 
 
 def periodic() -> dict:
@@ -26,7 +28,8 @@ def periodic() -> dict:
         # Failures are expected at night while the phone is locked or away;
         # only speak up when the app is about to stop launching.
         if days_left is not None and days_left < iphone.URGENT_BELOW_DAYS:
-            iphone.notify(f"Rinnovo dell'app iPhone non riuscito, scade tra {days_left:.1f} giorni: {e}")
+            iphone.notify(tr(f"Rinnovo dell'app iPhone non riuscito, scade tra {days_left:.1f} giorni: {e}",
+                             f"Renewing the iPhone app failed, it expires in {days_left:.1f} days: {e}"))
         result["iphone"] = {"renewed": False, "error": str(e)}
     if not feature_on("auto_transcribe"):
         result["transcribe"] = {"skipped": "auto_transcribe off"}
@@ -34,7 +37,8 @@ def periodic() -> dict:
     try:
         result["transcribe"] = transcribe.transcribe(transcribe.pending_days())
         if result["transcribe"]["failed"]:
-            iphone.notify(f"Trascrizione non riuscita per {len(result['transcribe']['failed'])} sessioni")
+            n = len(result["transcribe"]["failed"])
+            iphone.notify(tr(f"Trascrizione non riuscita per {n} sessioni", f"Transcription failed for {n} sessions"))
     except transcribe.TranscribeError as e:
         result["transcribe"] = {"error": str(e)}
     return result
@@ -64,7 +68,7 @@ def main() -> int:
 
     tr = sub.add_parser("transcribe", help="transcribe closed sessions")
     which = tr.add_mutually_exclusive_group(required=True)
-    which.add_argument("--day", type=date.fromisoformat, help="YYYY-MM-DD (Europe/Rome)")
+    which.add_argument("--day", type=date.fromisoformat, help="YYYY-MM-DD (local day)")
     which.add_argument("--pending", action="store_true",
                        help=f"sessions not yet transcribed in the last {transcribe.PENDING_DAYS} recorded days")
     tr.add_argument("--force", action="store_true", help="transcribe again sessions already done")
@@ -81,6 +85,7 @@ def main() -> int:
         x.add_argument("--person", help="a person id, or me")
         x.add_argument("--type", choices=review.TYPES)
     tsc.add_argument("--day", type=date.fromisoformat, help="YYYY-MM-DD")
+    tsc.add_argument("--before", type=date.fromisoformat, help="only days before YYYY-MM-DD (the next page)")
     tsc.add_argument("--limit", type=int, default=review.CONVERSATIONS_LIMIT, help=f"at most {review.CONVERSATIONS_MAX}")
 
     voice = sub.add_parser("voice", help="your voice profile for diarization").add_subparsers(dest="action", required=True)
@@ -89,8 +94,9 @@ def main() -> int:
     sp = sub.add_parser("speakers", help="the voices of each session, to name them") \
         .add_subparsers(dest="action", required=True)
     spl = sp.add_parser("list", help="voices of the sessions of a day, with what they said")
-    spl.add_argument("--day", type=date.fromisoformat, required=True, help="YYYY-MM-DD (Europe/Rome)")
-    sp.add_parser("todo", help=f"sessions of the last {people.TODO_DAYS} recorded days with voices to label")
+    spl.add_argument("--day", type=date.fromisoformat, required=True, help="YYYY-MM-DD (local day)")
+    spt = sp.add_parser("todo", help=f"sessions of the last {people.TODO_DAYS} recorded days with voices to label")
+    spt.add_argument("--hours", type=int, help="only the sessions started in the last HOURS")
     spp = sp.add_parser("play", help="write a few seconds of a voice to a WAV")
     spr = sp.add_parser("rename", help="this voice is NAME, in this and the other sessions")
     for x in (spp, spr):
@@ -101,6 +107,10 @@ def main() -> int:
     spk.add_argument("session")
     spk.add_argument("source", choices=["room", "meeting", "media", "auto"])
     spk.add_argument("labels", nargs="+", help="the voices' labels, as in speakers list")
+    spu = sp.add_parser("unknown", help="somebody you don't know: no name, no voice print, not asked again")
+    spu.add_argument("session")
+    spu.add_argument("labels", nargs="+", help="the voices' labels, as in speakers list")
+    spu.add_argument("--off", action="store_true", help="not unknown any more: unnamed again")
     pe = sub.add_parser("people", help="the people you named").add_subparsers(dest="action", required=True)
     pe.add_parser("list", help="you and the named people")
     per = pe.add_parser("rename", help="new name (same as another person: merged)")
@@ -144,72 +154,13 @@ def main() -> int:
         serve()
         return 0
 
+    # What rewrites people, places and the days: one writer at a time.
+    changes = (args.cmd in ("people", "places") and args.action != "list"
+               or args.cmd == "speakers" and args.action in ("rename", "kind", "unknown")
+               or args.cmd == "transcribe" and args.render)
     try:
-        if args.cmd == "iphone":
-            result = {
-                "status": iphone.status,
-                "install": lambda: iphone.install(iphone.APP if args.no_build else None),
-                "renew": lambda: iphone.renew(force=args.force),
-            }[args.action]()
-        elif args.cmd == "status":
-            result = status.status()
-        elif args.cmd == "setup":
-            if args.action == "check":
-                result = {"checks": macsetup.checks()}
-            elif args.action == "fix":
-                result = macsetup.fix(args.item)
-            elif args.action == "token":
-                result = {"token": macsetup.read_token()}
-            else:
-                result = transcribe.download_models()
-        elif args.cmd == "transcribe":
-            days = [args.day] if args.day else transcribe.pending_days()
-            if args.render:
-                result = {"days": [d.isoformat() for d in days if transcribe.render_day(d)]}
-            else:
-                result = transcribe.transcribe(days, force=args.force)
-        elif args.cmd == "transcripts":
-            result = {
-                "list": review.list_days,
-                "day": lambda: review.day(args.day),
-                "search": lambda: review.search(args.query, args.person, args.type),
-                "conversations": lambda: review.conversations(args.person, args.type, args.limit, args.day),
-            }[args.action]()
-        elif args.cmd == "voice":
-            result = enroll.enroll()
-        elif args.cmd == "speakers":
-            result = {
-                "list": lambda: people.list_day(args.day),
-                "todo": people.unlabeled,
-                "play": lambda: people.play(args.session, args.label),
-                "rename": lambda: people.rename(args.session, args.label, args.name),
-                "kind": lambda: people.set_source(args.session, args.labels, args.source),
-            }[args.action]()
-        elif args.cmd == "places":
-            result = {
-                "list": places.list_places,
-                "add": lambda: places.add(args.name, args.lat, args.lon, args.radius),
-                "rename": lambda: places.rename(args.name, args.new),
-                "remove": lambda: places.remove(args.name),
-            }[args.action]()
-        elif args.cmd == "features":
-            if args.action == "set":
-                features.set_feature(ARCHIVE, args.key, args.state == "on")
-            result = {"features": [
-                {"key": k, "device": dev, "name": name, "description": what, **features.load(ARCHIVE)[k]}
-                for k, (dev, name, what) in features.FEATURES.items()
-            ]}
-        elif args.cmd == "battery":
-            result = battery.battery(args.days)
-        elif args.cmd == "people":
-            result = {
-                "list": people.list_people,
-                "rename": lambda: people.rename_person(args.id, args.name),
-                "delete": lambda: people.delete_person(args.id),
-                "kind": lambda: people.set_person_source(args.id, args.source),
-            }[args.action]()
-        else:
-            result = periodic()
+        with lock.writing() if changes else contextlib.nullcontext():
+            result = _run(args)
     except (iphone.IphoneError, transcribe.TranscribeError, macsetup.SetupError) as e:
         if args.json:
             print(json.dumps({"error": str(e)}))
@@ -223,6 +174,77 @@ def main() -> int:
         for k, v in result.items():
             print(f"{k:14} {v}")
     return 0
+
+
+def _run(args: argparse.Namespace) -> dict:
+    if args.cmd == "iphone":
+        result = {
+            "status": iphone.status,
+            "install": lambda: iphone.install(iphone.APP if args.no_build else None),
+            "renew": lambda: iphone.renew(force=args.force),
+        }[args.action]()
+    elif args.cmd == "status":
+        result = status.status()
+    elif args.cmd == "setup":
+        if args.action == "check":
+            result = {"checks": macsetup.checks()}
+        elif args.action == "fix":
+            result = macsetup.fix(args.item)
+        elif args.action == "token":
+            result = {"token": macsetup.read_token()}
+        else:
+            result = transcribe.download_models()
+    elif args.cmd == "transcribe":
+        days = [args.day] if args.day else transcribe.pending_days()
+        if args.render:
+            result = {"days": [d.isoformat() for d in days if transcribe.render_day(d)]}
+        else:
+            result = transcribe.transcribe(days, force=args.force)
+    elif args.cmd == "transcripts":
+        result = {
+            "list": review.list_days,
+            "day": lambda: review.day(args.day),
+            "search": lambda: review.search(args.query, args.person, args.type),
+            "conversations": lambda: review.conversations(args.person, args.type, args.limit, args.day,
+                                                          args.before),
+        }[args.action]()
+    elif args.cmd == "voice":
+        result = enroll.enroll()
+    elif args.cmd == "speakers":
+        result = {
+            "list": lambda: people.list_day(args.day),
+            "todo": lambda: people.unlabeled(hours=args.hours),
+            "play": lambda: people.play(args.session, args.label),
+            "rename": lambda: people.rename(args.session, args.label, args.name),
+            "kind": lambda: people.set_source(args.session, args.labels, args.source),
+            "unknown": lambda: people.set_unknown(args.session, args.labels, not args.off),
+        }[args.action]()
+    elif args.cmd == "places":
+        result = {
+            "list": places.list_places,
+            "add": lambda: places.add(args.name, args.lat, args.lon, args.radius),
+            "rename": lambda: places.rename(args.name, args.new),
+            "remove": lambda: places.remove(args.name),
+        }[args.action]()
+    elif args.cmd == "features":
+        if args.action == "set":
+            features.set_feature(ARCHIVE, args.key, args.state == "on")
+        result = {"features": [
+            {"key": k, "device": dev, "name": name, "description": what, **features.load(ARCHIVE)[k]}
+            for k in features.FEATURES for dev, name, what in [features.described(k)]
+        ]}
+    elif args.cmd == "battery":
+        result = battery.battery(args.days)
+    elif args.cmd == "people":
+        result = {
+            "list": people.list_people,
+            "rename": lambda: people.rename_person(args.id, args.name),
+            "delete": lambda: people.delete_person(args.id),
+            "kind": lambda: people.set_person_source(args.id, args.source),
+        }[args.action]()
+    else:
+        result = periodic()
+    return result
 
 
 if __name__ == "__main__":

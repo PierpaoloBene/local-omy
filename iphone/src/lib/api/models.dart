@@ -59,7 +59,13 @@ class Pending {
 class DayList {
   final List<DaySummary> days;
   final Pending pending;
-  DayList.fromJson(Json j) : days = _list(j['days'], DaySummary.fromJson), pending = Pending.fromJson(j['pending']);
+
+  /// Today on the Mac (its time zone).
+  final String? today;
+  DayList.fromJson(Json j)
+    : days = _list(j['days'], DaySummary.fromJson),
+      pending = Pending.fromJson(j['pending']),
+      today = j['today'];
 }
 
 class Place {
@@ -139,13 +145,24 @@ class Person {
 class People {
   final Me me;
   final List<Person> people;
-  People.fromJson(Json j) : me = Me.fromJson(j['me']), people = _list(j['people'], Person.fromJson);
+
+  /// By person id: the kinds of conversation, how many, where.
+  final Map<String, PersonIndex> index;
+  People.fromJson(Json j)
+    : me = Me.fromJson(j['me']),
+      people = _list(j['people'], Person.fromJson),
+      index = {
+        for (final e in (j['index'] as Map? ?? {}).entries) e.key as String: PersonIndex.fromJson(e.value as Json),
+      };
 }
 
 class Voice {
   final String label, name, sample;
   final String? person, kind, app, source;
   final bool pinned;
+
+  /// Somebody you don't know: no name, not asked again.
+  final bool unknown;
   final double seconds;
   Voice.fromJson(Json j)
     : label = j['label'],
@@ -156,6 +173,7 @@ class Voice {
       app = j['app'],
       source = j['source'],
       pinned = j['pinned'],
+      unknown = j['unknown'] ?? false,
       seconds = (j['seconds'] as num).toDouble();
 
   /// 'room', 'meeting' or 'media': set by hand, or what the Mac found.
@@ -167,8 +185,8 @@ class Voice {
           ? 'meeting'
           : 'room');
 
-  /// Still to label: not a video, and nobody yet.
-  bool get todo => person == null && type != 'media';
+  /// Still to label: nobody yet, not a video, not unknown.
+  bool get todo => person == null && type != 'media' && !unknown;
 }
 
 class VoiceSession {
@@ -288,14 +306,19 @@ class PersonIndex {
       conversations = j['conversations'];
 }
 
+/// A page of conversations: whole days; [next] is where the next page
+/// starts (its `before`), null after the last.
 class ConversationList {
   final List<Conversation> conversations;
-  final bool more;
-  final Map<String, PersonIndex> people;
+  final String? next;
   ConversationList.fromJson(Json j)
     : conversations = _list(j['conversations'], Conversation.fromJson),
-      more = j['more'],
-      people = {for (final e in (j['people'] as Map).entries) e.key as String: PersonIndex.fromJson(e.value as Json)};
+      next = j['more'] == true ? j['next'] : null;
+  const ConversationList(this.conversations, this.next);
+
+  /// This page followed by [older].
+  ConversationList operator +(ConversationList older) =>
+      ConversationList([...conversations, ...older.conversations], older.next);
 }
 
 class Unlabeled {

@@ -57,13 +57,15 @@ final class Addresses {
         guard !running, let (lat, lon) = queue.first else { return }
         running = true
         geocoder.reverseGeocodeLocation(CLLocation(latitude: lat, longitude: lon),
-                                        preferredLocale: Locale(identifier: "it_IT")) { marks, _ in
+                                        preferredLocale: Locale(identifier: "it_IT")) { marks, error in
+            // A failure (offline, throttled) is not kept: asked again next time it is shown.
+            let failed = (error as? CLError).map { $0.code != .geocodeFoundNoResult } ?? false
             let m = marks?.first
             let street = [m?.thoroughfare, m?.subThoroughfare].compactMap { $0 }.joined(separator: " ")
             let text = [street.isEmpty ? m?.name : street, m?.locality].compactMap { $0 }.filter { !$0.isEmpty }
                 .joined(separator: ", ")
             Task { @MainActor in
-                self.cache["\(lat),\(lon)"] = text
+                if !failed { self.cache["\(lat),\(lon)"] = text }
                 self.queue.removeFirst()
                 self.running = false
                 self.next()
@@ -103,7 +105,7 @@ private struct AddressLine: View {
 
     var body: some View {
         let a = Addresses.shared.of(lat, lon)
-        Text(a == nil ? "Cerco l'indirizzo…" : a!.isEmpty ? "Indirizzo non trovato" : a!)
+        Text(a == nil ? tr("Cerco l'indirizzo…", "Looking up the address…") : a!.isEmpty ? tr("Indirizzo non trovato", "Address not found") : a!)
             .font(.callout)
             .foregroundStyle(a?.isEmpty == false ? .primary : .secondary)
             .lineLimit(1)
@@ -124,18 +126,18 @@ final class PlacesModel {
     }
 
     func add(_ name: String, _ spot: PlaceList.Spot, radius: Int) {
-        change("Salvataggio", ["places", "add", name, String(spot.lat), String(spot.lon), "--radius", String(radius)])
+        change(tr("Salvataggio", "Saving"), ["places", "add", name, String(spot.lat), String(spot.lon), "--radius", String(radius)])
     }
 
     /// Same name and center: `places add` replaces it.
     func setRadius(_ p: PlaceList.Place, _ radius: Int) {
         guard radius != p.radius else { return }
-        change("Raggio", ["places", "add", p.name, String(p.lat), String(p.lon), "--radius", String(radius)])
+        change(tr("Raggio", "Radius"), ["places", "add", p.name, String(p.lat), String(p.lon), "--radius", String(radius)])
     }
 
-    func rename(_ name: String, to new: String) { change("Rinomina", ["places", "rename", name, new]) }
+    func rename(_ name: String, to new: String) { change(tr("Rinomina", "Rename"), ["places", "rename", name, new]) }
 
-    func remove(_ name: String) { change("Eliminazione", ["places", "remove", name]) }
+    func remove(_ name: String) { change(tr("Eliminazione", "Deleting"), ["places", "remove", name]) }
 
     private func change(_ name: String, _ args: [String]) {
         Task {
@@ -165,7 +167,8 @@ struct PlacesTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if model.features.first(where: { $0.key == "location" })?.on == false {
-                Label("Posizione disattivata (Setup, Funzioni): le registrazioni nuove non hanno il luogo.",
+                Label(tr("Posizione disattivata (Impostazioni, Funzioni): le registrazioni nuove non hanno il luogo.",
+                         "Location is off (Settings, Features): new recordings have no place."),
                       systemImage: "info.circle")
                     .foregroundStyle(.secondary)
             }
@@ -199,7 +202,7 @@ struct PlacesTab: View {
             await places.load()
             // Start from the spot to name first.
             if focus == nil, let s = places.list?.unnamed.first {
-                focus = MapFocus(lat: s.lat, lon: s.lon, radius: 150, title: "Senza nome")
+                focus = MapFocus(lat: s.lat, lon: s.lon, radius: 150, title: tr("Senza nome", "Unnamed"))
             } else if focus == nil, let p = places.list?.places.first {
                 focus = MapFocus(lat: p.lat, lon: p.lon, radius: p.radius, title: p.name)
             }
@@ -216,11 +219,11 @@ private struct NamedPlaces: View {
 
     var body: some View {
         List {
-            Section("Luoghi con nome") {
+            Section(tr("Luoghi con nome", "Named places")) {
                 ForEach(places.list?.places ?? []) { p in
                     HStack {
                         if editing == p.id {
-                            TextField("Nome", text: $newName)
+                            TextField(tr("Nome", "Name"), text: $newName)
                                 .onSubmit {
                                     let n = newName.trimmingCharacters(in: .whitespaces)
                                     if !n.isEmpty, n != p.name { places.rename(p.name, to: n) }
@@ -231,7 +234,7 @@ private struct NamedPlaces: View {
                             VStack(alignment: .leading) {
                                 Text(p.name)
                                 AddressLine(lat: p.lat, lon: p.lon)
-                                Text("raggio \(p.radius) m · \(duration(p.minutes))" + (p.lastSeen.map { ", ultima \(longDay($0))" } ?? ""))
+                                Text(tr("raggio", "radius") + " \(p.radius) m · \(duration(p.minutes))" + (p.lastSeen.map { tr(", ultima ", ", last ") + longDay($0) } ?? ""))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             .contentShape(Rectangle())
@@ -239,31 +242,31 @@ private struct NamedPlaces: View {
                         }
                         Spacer()
                         Menu {
-                            Button("Rinomina") { newName = p.name; editing = p.id }
-                            Menu("Raggio") {
+                            Button(tr("Rinomina", "Rename")) { newName = p.name; editing = p.id }
+                            Menu(tr("Raggio", "Radius")) {
                                 ForEach([50, 100, 150, 300, 500, 1000], id: \.self) { r in
                                     Button("\(r) m" + (r == p.radius ? " ✓" : "")) { places.setRadius(p, r) }
                                 }
                             }
-                            Button("Elimina…", role: .destructive) { deleting = p }
+                            Button(tr("Elimina…", "Delete…"), role: .destructive) { deleting = p }
                         } label: { Image(systemName: "ellipsis.circle") }
                             .menuStyle(.borderlessButton).fixedSize()
                     }
                 }
                 if places.list?.places.isEmpty == true {
-                    Text("Nessuno: dai un nome a un punto qui accanto.").font(.caption).foregroundStyle(.secondary)
+                    Text(tr("Nessuno: dai un nome a un punto qui accanto.", "None: name a spot on the right.")).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
         .confirmationDialog(
-            "Eliminare \(deleting?.name ?? "")?",
+            tr("Eliminare \(deleting?.name ?? "")?", "Delete \(deleting?.name ?? "")?"),
             isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
         ) {
-            Button("Elimina", role: .destructive) {
+            Button(tr("Elimina", "Delete"), role: .destructive) {
                 if let p = deleting { places.remove(p.name) }
             }
         } message: {
-            Text("Viene cancellato solo il nome: le posizioni restano, e nelle trascrizioni tornano coordinate.")
+            Text(tr("Viene cancellato solo il nome: le posizioni restano, e nelle trascrizioni tornano coordinate.", "Only the name is deleted: the positions stay, and the transcripts show coordinates again."))
         }
     }
 }
@@ -276,12 +279,12 @@ private struct UnnamedSpots: View {
     var body: some View {
         if let list = places.list {
             if list.unnamed.isEmpty {
-                Text("Nessun punto senza nome. Le posizioni arrivano dall'iPhone con i segmenti.")
+                Text(tr("Nessun punto senza nome. Le posizioni arrivano dall'iPhone con i segmenti.", "No unnamed spots. Positions come from the iPhone with the segments."))
                     .foregroundStyle(.secondary)
                 Spacer()
             } else {
                 List {
-                    Section("Dove hai registrato, senza un nome") {
+                    Section(tr("Dove hai registrato, senza un nome", "Where you recorded, without a name")) {
                         ForEach(list.unnamed) { SpotRow(places: places, spot: $0, focus: $focus) }
                     }
                 }
@@ -306,17 +309,17 @@ private struct SpotRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Button {
-                    focus = MapFocus(lat: spot.lat, lon: spot.lon, radius: radius, title: name.isEmpty ? "Senza nome" : name)
+                    focus = MapFocus(lat: spot.lat, lon: spot.lon, radius: radius, title: name.isEmpty ? tr("Senza nome", "Unnamed") : name)
                 } label: { Image(systemName: shown ? "map.fill" : "map") }
                     .buttonStyle(.borderless)
-                    .help("Mostra sulla mappa")
+                    .help(tr("Mostra sulla mappa", "Show on the map"))
                 AddressLine(lat: spot.lat, lon: spot.lon)
             }
             HStack {
-                TextField("Nome", text: $name)
+                TextField(tr("Nome", "Name"), text: $name)
                     .onSubmit(submit)
                     .frame(maxWidth: 200)
-                Picker("Raggio", selection: $radius) {
+                Picker(tr("Raggio", "Radius"), selection: $radius) {
                     ForEach([50, 100, 150, 300, 500], id: \.self) { Text("\($0) m").tag($0) }
                 }
                 .fixedSize()
@@ -333,12 +336,13 @@ private struct SpotRow: View {
 
     private var details: String {
         var parts = [duration(spot.minutes),
-                     spot.days == 1 ? "1 giorno" : "\(spot.days) giorni",
-                     spot.from == spot.to ? "alle \(spot.from)" : "tra le \(spot.from) e le \(spot.to)"]
-        if let d = spot.lastSeen { parts.append("ultima \(longDay(d))") }
+                     spot.days == 1 ? tr("1 giorno", "1 day") : "\(spot.days) " + tr("giorni", "days"),
+                     spot.from == spot.to ? tr("alle \(spot.from)", "at \(spot.from)")
+                         : tr("tra le \(spot.from) e le \(spot.to)", "between \(spot.from) and \(spot.to)")]
+        if let d = spot.lastSeen { parts.append(tr("ultima ", "last ") + longDay(d)) }
         if let n = spot.nearest {
-            parts.append(n.meters < 1000 ? "a \(n.meters) m da \(n.name)"
-                         : "a \(String(format: "%.1f", Double(n.meters) / 1000)) km da \(n.name)")
+            let distance = n.meters < 1000 ? "\(n.meters) m" : String(format: "%.1f km", Double(n.meters) / 1000)
+            parts.append(tr("a \(distance) da \(n.name)", "\(distance) from \(n.name)"))
         }
         return parts.joined(separator: " · ")
     }
@@ -348,7 +352,7 @@ private struct SpotRow: View {
         guard !n.isEmpty else { return }
         // A place has one center: the same name would move it here.
         if places.list?.places.contains(where: { $0.name.caseInsensitiveCompare(n) == .orderedSame }) == true {
-            places.error = "\(n) esiste già: scegli un altro nome, o allarga il raggio di \(n)"
+            places.error = tr("\(n) esiste già: scegli un altro nome, o allarga il raggio di \(n)", "\(n) already exists: choose another name, or widen the radius of \(n)")
             return
         }
         places.add(n, spot, radius: radius)

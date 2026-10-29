@@ -7,7 +7,7 @@ timestamps back to wall-clock time.
 
 Output, derived and regenerable (the raw archive is only read):
   transcripts/YYYY-MM-DD/<session>.json   speech items with UTC start/end
-  transcripts/YYYY-MM-DD.md               the readable day, Europe/Rome times
+  transcripts/YYYY-MM-DD.md               the readable day, local times (omy_receiver/localtime.py)
   transcripts/YYYY-MM-DD.jsonl            the same paragraphs with their metadata, for other apps
 A session JSON exists only once complete (temp file + rename). Segments can
 reach the Mac hours late (Mac asleep, phone queue): a session that grew after
@@ -35,6 +35,7 @@ from typing import Callable
 from omy.audio import StreamDecoder, normalize_wav, split_at_pauses
 from omy.config import ARCHIVE, feature_on
 from omy.sessions import LOCAL_TZ, Session, recorded_days, sessions_for_day
+from omy_receiver.l10n import archive_tr
 from omy_receiver.segment import SegmentError, parse
 
 MODELS_DIR = ARCHIVE / "models"
@@ -394,6 +395,12 @@ def render_day(day: date) -> Path | None:
     """Rebuild transcripts/DAY.md (to read) and transcripts/DAY.jsonl (for
     other apps) from the session JSONs of that day, with the speaker of each
     paragraph when diarized. Sessions with no speech are left out."""
+    from omy import lock
+    with lock.writing():
+        return _render_day(day)
+
+
+def _render_day(day: date) -> Path | None:
     day_dir = TRANSCRIPTS / day.isoformat()
     docs = sorted((json.loads(p.read_text()) for p in day_dir.glob("*.json")), key=lambda d: d["start"]) \
         if day_dir.is_dir() else []
@@ -414,14 +421,14 @@ def render_day(day: date) -> Path | None:
         spk = _speakers_doc(day_dir, doc["session"])
         calls = [c for c in spk.get("context", []) if c["kind"] == "call"]
         if calls:
-            lines += ["_" + ", ".join(f"Chiamata ({c['app']}) {_hm(c['start'])}–{_hm(c['end'])}" for c in calls) + "_", ""]
+            lines += ["_" + ", ".join(f"{archive_tr('Chiamata', 'Call')} ({c['app']}) {_hm(c['start'])}–{_hm(c['end'])}" for c in calls) + "_", ""]
         fixes = [places.segment_fix(s) for s in doc["segments"]] if place_list is not None else []
         for turn, items in _paragraphs(speech, spk.get("turns", [])):
             head = f"**{_hm(items[0]['start'])}" + (f" · {turn['speaker']}**" if turn else "**")
             lines += [" ".join([head] + [it["text"] for it in items]), ""]
             records.append(_record(doc, turn, items, spk.get("clusters", {}), fixes, place_list))
     if len(lines) == 2:
-        lines += ["_(nessun parlato)_", ""]
+        lines += [archive_tr("_(nessun parlato)_", "_(no speech)_"), ""]
     _write_atomic(TRANSCRIPTS / f"{day.isoformat()}.jsonl",
                   "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
     path = TRANSCRIPTS / f"{day.isoformat()}.md"

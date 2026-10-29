@@ -28,19 +28,24 @@ struct DayVoices: Decodable {
         let kind: String?
         let app: String?
         let source: String?
+        /// Somebody you don't know (omy speakers unknown): not asked again.
+        let unknown: Bool
         let sample: String
         var id: String { label }
 
         /// "room", "meeting" or "media": set by hand, or what the Mac found.
         var type: String { source ?? (kind == "media" ? "media" : kind == "call" ? "meeting" : "room") }
-        /// Still to label: not a video, and nobody yet.
-        var todo: Bool { person == nil && type != "media" }
+        /// Still to label: nobody yet, not a video, not unknown.
+        var todo: Bool { person == nil && type != "media" && !unknown }
         var typeLabel: String {
             switch type {
             case "media": return app == nil || app == "Video" ? "Video" : "Video · \(app!)"
             case "meeting":
-                return app == "iPhone" ? "Chiamata" : app == nil || app == "Riunione" ? "Riunione online" : "Riunione · \(app!)"
-            default: return "Di persona"
+                // "Riunione" or "Meeting": the archive's language.
+                return app == "iPhone" ? tr("Chiamata", "Call")
+                    : app == nil || app == "Riunione" || app == "Meeting" ? tr("Riunione online", "Online meeting")
+                    : tr("Riunione", "Meeting") + " · \(app!)"
+            default: return tr("Di persona", "In person")
             }
         }
     }
@@ -76,22 +81,29 @@ final class PeopleModel {
 
     func play(_ session: String, _ label: String) {
         Task {
-            await run("Ascolto") {
+            await run(tr("Ascolto", "Playing")) {
                 let s = try await Omy.decode(Sample.self, ["speakers", "play", session, label])
                 self.sound?.stop()
+                // Read into memory, then the file goes: no voice stays on disk.
                 self.sound = NSSound(contentsOfFile: s.path, byReference: false)
+                try? FileManager.default.removeItem(atPath: s.path)
                 self.sound?.play()
             }
         }
     }
 
     func rename(_ session: String, _ label: String, to name: String, day: String?) {
-        change("Rinomina", ["speakers", "rename", session, label, name], day: day)
+        change(tr("Rinomina", "Rename"), ["speakers", "rename", session, label, name], day: day)
     }
 
     /// Where these voices come from: room, meeting, media, or auto.
     func setKind(_ session: String, _ labels: [String], _ source: String, day: String?) {
-        change("Tipo", ["speakers", "kind", session, source] + labels, day: day)
+        change(tr("Tipo", "Type"), ["speakers", "kind", session, source] + labels, day: day)
+    }
+
+    /// Somebody you don't know: no name, no voice print, not asked again.
+    func setUnknown(_ session: String, _ labels: [String], day: String?) {
+        change(tr("Sconosciuto", "Unknown"), ["speakers", "unknown", session] + labels, day: day)
     }
 
     /// New name and, if given, where all the voices come from (room,
@@ -100,7 +112,7 @@ final class PeopleModel {
     func edit(_ p: PeopleList.Person, name: String, kind: String?, day: String?) {
         let name = name.trimmingCharacters(in: .whitespaces)
         Task {
-            await run("Modifica") {
+            await run(tr("Modifica", "Edit")) {
                 if let kind { _ = try await Omy.run(["people", "kind", p.id, kind]) }
                 if kind != "media", !name.isEmpty, name != p.name { _ = try await Omy.run(["people", "rename", p.id, name]) }
             }
@@ -109,7 +121,7 @@ final class PeopleModel {
     }
 
     func delete(_ id: String, day: String?) {
-        change("Eliminazione", ["people", "delete", id], day: day)
+        change(tr("Eliminazione", "Deleting"), ["people", "delete", id], day: day)
     }
 
     private func change(_ name: String, _ args: [String], day: String?) {
@@ -140,7 +152,8 @@ struct PeopleTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if model.features.first(where: { $0.key == "voice_prints" })?.on == false {
-                Label("Impronte vocali disattivate (Setup, Funzioni): le voci nuove non vengono salvate né riconosciute, e non si possono dare nomi.",
+                Label(tr("Impronte vocali disattivate (Impostazioni, Funzioni): le voci nuove non vengono salvate né riconosciute, e non si possono dare nomi.",
+                         "Voice prints are off (Settings, Features): new voices are not saved or recognized, and cannot be named."),
                       systemImage: "info.circle")
                     .foregroundStyle(.secondary)
             }
@@ -157,7 +170,7 @@ struct PeopleTab: View {
                 KnownPeople(people: people, day: day)
                     .frame(minWidth: 230, idealWidth: 260, maxWidth: 320)
                 VStack(alignment: .leading) {
-                    Picker("Giorno", selection: $day) {
+                    Picker(tr("Giorno", "Day"), selection: $day) {
                         ForEach(model.status?.transcripts.days ?? [], id: \.self) { Text(longDay($0)).tag(Optional($0)) }
                     }
                     .frame(maxWidth: 280)
@@ -181,11 +194,12 @@ private struct KnownPeople: View {
 
     var body: some View {
         List {
-            Section("Persone riconosciute") {
+            Section(tr("Persone note", "Known people")) {
                 if let me = people.people?.me {
                     VStack(alignment: .leading) {
                         Text(me.name).bold()
-                        Text(me.enrolled ? "tu · \(heard(me.minutes, me.sessions))" : "tu · impronta vocale assente (Setup)")
+                        Text(me.enrolled ? tr("tu", "you") + " · \(heard(me.minutes, me.sessions))"
+                             : tr("tu · impronta vocale assente (Impostazioni)", "you · no voice profile (Settings)"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -193,19 +207,19 @@ private struct KnownPeople: View {
                     HStack {
                         VStack(alignment: .leading) {
                             Text(p.name)
-                            Text(heard(p.minutes, p.sessions) + (p.lastSeen.map { ", ultima \(longDay($0))" } ?? ""))
+                            Text(heard(p.minutes, p.sessions) + (p.lastSeen.map { tr(", ultima ", ", last ") + longDay($0) } ?? ""))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Menu {
-                            Button("Modifica…") { editing = p }
-                            Button("Elimina…", role: .destructive) { deleting = p }
+                            Button(tr("Modifica…", "Edit…")) { editing = p }
+                            Button(tr("Elimina…", "Delete…"), role: .destructive) { deleting = p }
                         } label: { Image(systemName: "ellipsis.circle") }
                             .menuStyle(.borderlessButton).fixedSize()
                     }
                 }
                 if people.people?.people.isEmpty == true {
-                    Text("Nessuno: dai un nome a una voce qui accanto.").font(.caption).foregroundStyle(.secondary)
+                    Text(tr("Nessuno: dai un nome a una voce qui accanto.", "Nobody: name a voice on the right.")).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -213,19 +227,20 @@ private struct KnownPeople: View {
             EditPerson(person: p) { name, kind in people.edit(p, name: name, kind: kind, day: day) }
         }
         .confirmationDialog(
-            "Eliminare \(deleting?.name ?? "")?",
+            tr("Eliminare \(deleting?.name ?? "")?", "Delete \(deleting?.name ?? "")?"),
             isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
         ) {
-            Button("Elimina", role: .destructive) {
+            Button(tr("Elimina", "Delete"), role: .destructive) {
                 if let p = deleting { people.delete(p.id, day: day) }
             }
         } message: {
-            Text("Viene cancellato il nome con i suoi campioni. Le sue voci restano, tornano \"Persona N\" nelle trascrizioni e puoi dar loro di nuovo un nome.")
+            Text(tr("Viene cancellato il nome con i suoi campioni. Le sue voci restano, tornano senza nome nelle trascrizioni e puoi dar loro di nuovo un nome.",
+                     "The name and its samples are deleted. Their voices stay, go back to unnamed in the transcripts, and can be named again."))
         }
     }
 
     private func heard(_ minutes: Double, _ sessions: Int) -> String {
-        "\(minutes < 1 ? "<1" : String(Int(minutes))) min in \(sessions) sessioni"
+        "\(minutes < 1 ? "<1" : String(Int(minutes))) min in \(sessions) " + tr("sessioni", "sessions")
     }
 }
 
@@ -239,25 +254,27 @@ private struct EditPerson: View {
 
     var body: some View {
         Form {
-            TextField("Nome", text: $name)
-            Picker("Tipo", selection: $kind) {
-                Text("Non cambiare").tag("")
-                Label("Di persona", systemImage: "person.fill").tag("room")
-                Label("Riunione online", systemImage: "video.fill").tag("meeting")
+            TextField(tr("Nome", "Name"), text: $name)
+            Picker(tr("Tipo", "Type"), selection: $kind) {
+                Text(tr("Non cambiare", "Don't change")).tag("")
+                Label(tr("Di persona", "In person"), systemImage: "person.fill").tag("room")
+                Label(tr("Riunione online", "Online meeting"), systemImage: "video.fill").tag("meeting")
                 Label("Video", systemImage: "play.rectangle.fill").tag("media")
             }
             Text(kind == "media"
-                 ? "Era un video: tutte le sue voci diventano \"Video\", in ogni sessione, e non vengono più riconosciute. Si cancellano il nome e l'impronta vocale."
-                 : kind.isEmpty ? "Il tipo vale per tutte le sue voci." : "Tutte le sue voci prendono questo tipo.")
+                 ? tr("Era un video: tutte le sue voci diventano \"Video\", in ogni sessione, e non vengono più riconosciute. Si cancellano il nome e l'impronta vocale.",
+                      "It was a video: all their voices become \"Video\", in every session, and are no longer recognized. The name and voice print are deleted.")
+                 : kind.isEmpty ? tr("Il tipo vale per tutte le sue voci.", "The type applies to all their voices.")
+                 : tr("Tutte le sue voci prendono questo tipo.", "All their voices take this type."))
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding()
         .frame(width: 380)
         .onAppear { name = person.name }
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("Annulla") { dismiss() } }
+            ToolbarItem(placement: .cancellationAction) { Button(tr("Annulla", "Cancel")) { dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
-                Button(kind == "media" ? "È un video" : "Salva") {
+                Button(kind == "media" ? tr("È un video", "It's a video") : tr("Salva", "Save")) {
                     save(name, kind.isEmpty ? nil : kind)
                     dismiss()
                 }
@@ -275,13 +292,13 @@ private struct DayVoicesList: View {
     var body: some View {
         if let v = people.voices, v.day == day {
             if v.sessions.isEmpty {
-                Text("Nessuna voce in questo giorno (non ancora diarizzato?)").foregroundStyle(.secondary)
+                Text(tr("Nessuna voce in questo giorno (non ancora diarizzato?)", "No voices on this day (not diarized yet?)")).foregroundStyle(.secondary)
                 Spacer()
             } else {
                 let todo = v.sessions.reduce(0) { $0 + $1.voices.filter(\.todo).count }
                 Picker("", selection: $todoOnly) {
-                    Text("Da etichettare (\(todo))").tag(true)
-                    Text("Tutte").tag(false)
+                    Text(tr("Da etichettare", "To label") + " (\(todo))").tag(true)
+                    Text(tr("Tutte", "All")).tag(false)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -294,17 +311,20 @@ private struct DayVoicesList: View {
                             }
                         } header: {
                             HStack {
-                                Text("Sessione delle \(s.start.map(localTime) ?? "?")")
+                                Text(tr("Sessione delle ", "Session at ") + (s.start.map(localTime) ?? "?"))
                                 Spacer()
-                                let unnamed = s.voices.filter { $0.person == nil }.map(\.label)
+                                let unnamed = s.voices.filter(\.todo).map(\.label)
                                 if !unnamed.isEmpty {
-                                    Menu("Segna tutte come…") {
-                                        Section("Le \(unnamed.count) voci senza nome di questa sessione") {
-                                            Button("Video") { people.setKind(s.session, unnamed, "media", day: day) }
-                                            Button("Riunione online") { people.setKind(s.session, unnamed, "meeting", day: day) }
-                                            Button("Di persona") { people.setKind(s.session, unnamed, "room", day: day) }
+                                    Menu(tr("Segna tutte come…", "Mark all as…")) {
+                                        Section(unnamed.count == 1 ? tr("La voce da etichettare", "The voice to label")
+                                                : tr("Le \(unnamed.count) voci da etichettare", "The \(unnamed.count) voices to label")) {
+                                            Button(tr("Sconosciuti", "Unknown")) { people.setUnknown(s.session, unnamed, day: day) }
                                             Divider()
-                                            Button("Automatico") { people.setKind(s.session, unnamed, "auto", day: day) }
+                                            Button("Video") { people.setKind(s.session, unnamed, "media", day: day) }
+                                            Button(tr("Riunione online", "Online meeting")) { people.setKind(s.session, unnamed, "meeting", day: day) }
+                                            Button(tr("Di persona", "In person")) { people.setKind(s.session, unnamed, "room", day: day) }
+                                            Divider()
+                                            Button(tr("Automatico", "Automatic")) { people.setKind(s.session, unnamed, "auto", day: day) }
                                         }
                                     }
                                     .menuStyle(.borderlessButton).fixedSize()
@@ -313,7 +333,8 @@ private struct DayVoicesList: View {
                         }
                     }
                     if todoOnly && todo == 0 {
-                        Text("Tutte le voci di questo giorno hanno un nome o un tipo.").foregroundStyle(.secondary)
+                        Text(tr("Nessuna voce da etichettare in questo giorno: hanno un nome, sono sconosciute o video.",
+                                 "No voices to label on this day: they have a name, are unknown or videos.")).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -335,30 +356,35 @@ private struct VoiceRow: View {
         HStack(alignment: .top, spacing: 10) {
             Button { people.play(session, voice.label) } label: { Image(systemName: "play.circle") }
                 .buttonStyle(.borderless)
-                .help("Ascolta qualche secondo")
+                .help(tr("Ascolta qualche secondo", "Listen to a few seconds"))
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    TextField("Nome", text: $name)
+                    TextField(tr("Nome", "Name"), text: $name)
                         .onSubmit(submit)
                         .frame(maxWidth: 200)
                     .disabled(voice.type == "media")
-                    Menu("Chi è") {
+                    Menu(tr("Chi è", "Who is it")) {
                         if let me = people.people?.me { Button(me.name) { name = me.name; submit() } }
                         ForEach(people.people?.people ?? []) { p in Button(p.name) { name = p.name; submit() } }
+                        Divider()
+                        Button(tr("Sconosciuto", "Unknown")) { people.setUnknown(session, [voice.label], day: day) }
+                            .disabled(voice.unknown)
                     }
                     .fixedSize()
                     .disabled(voice.type == "media")
-                    Picker("Tipo", selection: Binding(get: { voice.type }, set: { t in
+                    Picker(tr("Tipo", "Type"), selection: Binding(get: { voice.type }, set: { t in
                         if t != voice.type { people.setKind(session, [voice.label], t, day: day) }
                     })) {
-                        Label("Di persona", systemImage: "person.fill").tag("room")
-                        Label("Riunione online", systemImage: "video.fill").tag("meeting")
+                        Label(tr("Di persona", "In person"), systemImage: "person.fill").tag("room")
+                        Label(tr("Riunione online", "Online meeting"), systemImage: "video.fill").tag("meeting")
                         Label("Video", systemImage: "play.rectangle.fill").tag("media")
                     }
                     .labelsHidden()
                     .fixedSize()
-                    .help("Da dove viene la voce. Video (o la TV): nessun nome, nessuna impronta vocale.")
-                    Text("\(voice.typeLabel) · \(Int(voice.seconds)) s" + (voice.pinned ? " · nominata a mano" : voice.person != nil ? " · riconosciuta" : ""))
+                    .help(tr("Da dove viene la voce. Video (o la TV): nessun nome, nessuna impronta vocale.", "Where the voice comes from. Video (or the TV): no name, no voice print."))
+                    Text("\(voice.typeLabel) · \(Int(voice.seconds)) s"
+                         + (voice.pinned ? tr(" · nominata a mano", " · named by you") : voice.person != nil ? tr(" · riconosciuta", " · recognized")
+                            : voice.unknown ? tr(" · sconosciuta", " · unknown") : ""))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if !voice.sample.isEmpty {

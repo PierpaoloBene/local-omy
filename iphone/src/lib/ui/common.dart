@@ -5,11 +5,28 @@ library;
 import 'package:flutter/cupertino.dart';
 
 import '../api/mac_api.dart';
+import '../l10n.dart';
 
 const tint = CupertinoColors.systemIndigo;
 
-const _weekdays = ['lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato', 'domenica'];
-const _months = [
+final _weekdays = english
+    ? ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    : ['lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato', 'domenica'];
+const _monthsEn = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+const _monthsIt = [
   'gennaio',
   'febbraio',
   'marzo',
@@ -23,25 +40,38 @@ const _months = [
   'novembre',
   'dicembre',
 ];
+final _months = english ? _monthsEn : _monthsIt;
 
+/// Today on the phone, for what happens on it (uploads, errors).
 String todayIso() => DateTime.now().toIso8601String().substring(0, 10);
 
-/// "Oggi", "Ieri", or "Mercoledì 29 ottobre" (with the year if not this one).
+/// Today in the archive, for its days: the Mac's, wherever the phone is.
+String archiveDay() => archiveToday ?? todayIso();
+
+/// "Oggi", "Ieri", or "Mercoledì 29 ottobre" ("Today", "Yesterday",
+/// "Wednesday, October 29"), with the year if not this one: a day of the
+/// archive.
 String longDay(String iso, {bool relative = true}) {
   final d = DateTime.parse(iso);
-  final today = DateTime.parse(todayIso());
+  final today = DateTime.parse(archiveDay());
   final ago = today.difference(d).inDays;
-  if (relative && ago == 0) return 'Oggi';
-  if (relative && ago == 1) return 'Ieri';
-  final s = '${_weekdays[d.weekday - 1]} ${d.day} ${_months[d.month - 1]}${d.year == today.year ? '' : ' ${d.year}'}';
+  if (relative && ago == 0) return tr('Oggi', 'Today');
+  if (relative && ago == 1) return tr('Ieri', 'Yesterday');
+  final year = d.year == today.year ? '' : ' ${d.year}';
+  if (english) return '${_weekdays[d.weekday - 1]}, ${_months[d.month - 1]} ${d.day}$year';
+  final s = '${_weekdays[d.weekday - 1]} ${d.day} ${_months[d.month - 1]}$year';
   return s[0].toUpperCase() + s.substring(1);
 }
 
-/// "29 ott".
+/// "29 ott", "Oct 29".
 String shortDay(String iso) {
   final d = DateTime.parse(iso);
-  return '${d.day} ${_months[d.month - 1].substring(0, 3)}';
+  final m = _months[d.month - 1].substring(0, 3);
+  return english ? '$m ${d.day}' : '${d.day} $m';
 }
+
+/// 1,5 in Italian, 1.5 in English.
+String _decimal(double v) => english ? v.toStringAsFixed(1) : v.toStringAsFixed(1).replaceAll('.', ',');
 
 /// "HH:MM" of a local ISO time as the Mac writes it.
 String hm(String iso) => iso.length >= 16 ? iso.substring(11, 16) : iso;
@@ -50,9 +80,9 @@ String duration(num minutes) => minutes < 1
     ? '<1 min'
     : minutes < 90
     ? '${minutes.round()} min'
-    : '${(minutes / 60).toStringAsFixed(1).replaceAll('.', ',')} h';
+    : '${_decimal(minutes / 60)} h';
 
-String meters(int m) => m < 1000 ? '$m m' : '${(m / 1000).toStringAsFixed(1).replaceAll('.', ',')} km';
+String meters(int m) => m < 1000 ? '$m m' : '${_decimal(m / 1000)} km';
 
 Color resolve(BuildContext context, Color c) => CupertinoDynamicColor.resolve(c, context);
 
@@ -340,6 +370,16 @@ class Notice extends StatelessWidget {
   }
 }
 
+/// Data on screen that the last reload couldn't refresh, and why.
+class Stale extends StatelessWidget {
+  final Object error;
+  const Stale(this.error, {super.key});
+
+  @override
+  Widget build(BuildContext context) =>
+      Notice(icon: CupertinoIcons.exclamationmark_circle, text: tr('Non aggiornato: $error', 'Not up to date: $error'));
+}
+
 /// A thin rounded progress bar (iOS has no Cupertino one).
 class ProgressBar extends StatelessWidget {
   final double? value;
@@ -364,8 +404,9 @@ class ProgressBar extends StatelessWidget {
 }
 
 /// The large-title page every tab uses: iOS pull to refresh, a spinner in
-/// the bar while a change runs on the Mac.
-class TabScaffold extends StatelessWidget {
+/// the bar while a change runs on the Mac, back to the top when the tab is
+/// tapped again ([scrollToTop]).
+class TabScaffold extends StatefulWidget {
   final String title;
   final String? previousPageTitle;
   final List<Widget> slivers;
@@ -373,6 +414,7 @@ class TabScaffold extends StatelessWidget {
   final Widget? trailing;
   final bool busy;
   final Widget? searchField;
+  final Listenable? scrollToTop;
   const TabScaffold({
     super.key,
     required this.title,
@@ -382,32 +424,59 @@ class TabScaffold extends StatelessWidget {
     this.trailing,
     this.busy = false,
     this.searchField,
+    this.scrollToTop,
   });
 
   @override
+  State<TabScaffold> createState() => _TabScaffoldState();
+}
+
+class _TabScaffoldState extends State<TabScaffold> {
+  final _scroll = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    widget.scrollToTop?.addListener(_toTop);
+  }
+
+  @override
+  void dispose() {
+    widget.scrollToTop?.removeListener(_toTop);
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _toTop() {
+    if (_scroll.hasClients) _scroll.animateTo(0, duration: const Duration(milliseconds: 400), curve: Curves.easeOut);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final right = busy ? const CupertinoActivityIndicator() : trailing;
+    final w = widget;
+    final right = w.busy ? const CupertinoActivityIndicator() : w.trailing;
     return CupertinoPageScaffold(
       backgroundColor: CupertinoColors.systemGroupedBackground,
       child: CustomScrollView(
+        controller: _scroll,
         physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
         slivers: [
-          if (searchField != null)
+          if (w.searchField != null)
             CupertinoSliverNavigationBar.search(
-              largeTitle: Text(title),
-              previousPageTitle: previousPageTitle,
+              largeTitle: Text(w.title),
+              previousPageTitle: w.previousPageTitle,
               trailing: right,
-              searchField: searchField!,
+              searchField: w.searchField!,
             )
           else
             CupertinoSliverNavigationBar(
-              largeTitle: Text(title),
-              previousPageTitle: previousPageTitle,
+              largeTitle: Text(w.title),
+              previousPageTitle: w.previousPageTitle,
               trailing: right,
             ),
-          if (onRefresh != null) CupertinoSliverRefreshControl(onRefresh: onRefresh),
+          if (w.onRefresh != null) CupertinoSliverRefreshControl(onRefresh: w.onRefresh),
           const SliverToBoxAdapter(child: SizedBox(height: 8)),
-          ...slivers,
+          ...w.slivers,
           // Clear of the tab bar, which the content scrolls under.
           SliverToBoxAdapter(child: SizedBox(height: 40 + MediaQuery.paddingOf(context).bottom)),
         ],
@@ -436,7 +505,7 @@ class LoadState extends StatelessWidget {
                 Icon(CupertinoIcons.wifi_slash, size: 44, color: resolve(context, CupertinoColors.tertiaryLabel)),
                 const SizedBox(height: 12),
                 Text('$error', textAlign: TextAlign.center, style: Ios.subhead(context)),
-                CupertinoButton(onPressed: onRetry, child: const Text('Riprova')),
+                CupertinoButton(onPressed: onRetry, child: Text(tr('Riprova', 'Try again'))),
               ],
             ),
     ),
@@ -473,7 +542,7 @@ Future<bool> change(BuildContext context, void Function(bool) setBusy, Future<vo
     await body();
     return true;
   } on MacError catch (e) {
-    if (context.mounted) showMessage(context, e, title: 'Non riuscito');
+    if (context.mounted) showMessage(context, e, title: tr('Non riuscito', 'Failed'));
     return false;
   } finally {
     setBusy(false);
@@ -494,7 +563,7 @@ Future<String?> askName(BuildContext context, {required String title, String ini
           CupertinoTextField(
             controller: c,
             autofocus: true,
-            placeholder: 'Nome',
+            placeholder: tr('Nome', 'Name'),
             textCapitalization: TextCapitalization.words,
             clearButtonMode: OverlayVisibilityMode.editing,
             onSubmitted: (v) => Navigator.pop(context, v.trim()),
@@ -502,11 +571,11 @@ Future<String?> askName(BuildContext context, {required String title, String ini
         ],
       ),
       actions: [
-        CupertinoDialogAction(onPressed: () => Navigator.pop(context), child: const Text('Annulla')),
+        CupertinoDialogAction(onPressed: () => Navigator.pop(context), child: Text(tr('Annulla', 'Cancel'))),
         CupertinoDialogAction(
           isDefaultAction: true,
           onPressed: () => Navigator.pop(context, c.text.trim()),
-          child: const Text('Salva'),
+          child: Text(tr('Salva', 'Save')),
         ),
       ],
     ),
@@ -517,7 +586,7 @@ Future<bool> confirm(
   BuildContext context, {
   required String title,
   required String message,
-  String action = 'Elimina',
+  String? action,
   bool destructive = true,
 }) async =>
     await showCupertinoDialog<bool>(
@@ -526,12 +595,12 @@ Future<bool> confirm(
         title: Text(title),
         content: Text(message),
         actions: [
-          CupertinoDialogAction(onPressed: () => Navigator.pop(context, false), child: const Text('Annulla')),
+          CupertinoDialogAction(onPressed: () => Navigator.pop(context, false), child: Text(tr('Annulla', 'Cancel'))),
           CupertinoDialogAction(
             isDestructiveAction: destructive,
             isDefaultAction: !destructive,
             onPressed: () => Navigator.pop(context, true),
-            child: Text(action),
+            child: Text(action ?? tr('Elimina', 'Delete')),
           ),
         ],
       ),
@@ -557,7 +626,10 @@ Future<T?> chooseAction<T>(
           child: Text(label),
         ),
     ],
-    cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.pop(context), child: const Text('Annulla')),
+    cancelButton: CupertinoActionSheetAction(
+      onPressed: () => Navigator.pop(context),
+      child: Text(tr('Annulla', 'Cancel')),
+    ),
   ),
 );
 
@@ -586,7 +658,7 @@ class SheetPage extends StatelessWidget {
       leading: CupertinoButton(
         padding: EdgeInsets.zero,
         onPressed: () => Navigator.pop(context),
-        child: const Text('Annulla'),
+        child: Text(tr('Annulla', 'Cancel')),
       ),
       middle: Text(title),
       trailing: CupertinoButton(

@@ -7,11 +7,13 @@ import '../api/models.dart';
 import 'chat.dart';
 import 'common.dart';
 import 'conversations.dart';
+import '../l10n.dart';
 
 /// Every conversation, newest first, in one scroll: the day stays at the top
 /// while you scroll through it, and the index on the right edge jumps to a
 /// day, like the letters in Contacts. Rows and day headers have a fixed
-/// height, so where a day starts is known before it is built.
+/// height, so where a day starts is known before it is built. Older pages
+/// load as the end comes near ([onMore]).
 class Timeline extends StatefulWidget {
   final MacApi api;
   final String title;
@@ -26,12 +28,21 @@ class Timeline extends StatefulWidget {
 
   /// null while loading.
   final List<Conversation>? conversations;
+
+  /// There are older conversations: [onMore] loads them.
+  final bool hasMore;
+  final VoidCallback? onMore;
+
+  /// With [conversations], they are out of date: shown above them.
   final Object? error;
   final VoidCallback? onRetry;
-  final String empty;
+  final String? empty;
 
   /// Shown instead of the conversations (search results).
   final List<Widget>? replacement;
+
+  /// Fires when the tab is tapped again: back to the top.
+  final Listenable? scrollToTop;
 
   const Timeline({
     super.key,
@@ -44,10 +55,13 @@ class Timeline extends StatefulWidget {
     this.onRefresh,
     this.top = const [],
     required this.conversations,
+    this.hasMore = false,
+    this.onMore,
     this.error,
     this.onRetry,
-    this.empty = 'Nessuna conversazione.',
+    this.empty,
     this.replacement,
+    this.scrollToTop,
   });
 
   @override
@@ -62,9 +76,37 @@ class _TimelineState extends State<Timeline> {
   String? _scrubbing;
 
   @override
+  void initState() {
+    super.initState();
+    widget.scrollToTop?.addListener(_toTop);
+  }
+
+  @override
+  void didUpdateWidget(Timeline old) {
+    super.didUpdateWidget(old);
+    if (old.scrollToTop != widget.scrollToTop) {
+      old.scrollToTop?.removeListener(_toTop);
+      widget.scrollToTop?.addListener(_toTop);
+    }
+  }
+
+  @override
   void dispose() {
+    widget.scrollToTop?.removeListener(_toTop);
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _toTop() {
+    if (_scroll.hasClients) _scroll.animateTo(0, duration: const Duration(milliseconds: 400), curve: Curves.easeOut);
+  }
+
+  /// Near the end (two screens), the next page.
+  bool _onScroll(ScrollNotification n) {
+    if (widget.hasMore && widget.replacement == null && n.metrics.extentAfter < 2 * n.metrics.viewportDimension) {
+      widget.onMore?.call();
+    }
+    return false;
   }
 
   static List<(String, List<Conversation>)> _byDay(List<Conversation> cs) {
@@ -96,7 +138,7 @@ class _TimelineState extends State<Timeline> {
     widget.api,
     all,
     all.indexOf(c),
-    previousPageTitle: widget.title.length > 14 ? 'Indietro' : widget.title,
+    previousPageTitle: widget.title.length > 14 ? tr('Indietro', 'Back') : widget.title,
   );
 
   @override
@@ -107,55 +149,75 @@ class _TimelineState extends State<Timeline> {
     final right = widget.busy ? const CupertinoActivityIndicator() : widget.trailing;
     final pad = MediaQuery.paddingOf(context);
     final scrubber = widget.replacement == null && days.length > 1;
+    // A first page shorter than two screens never scrolls near its end.
+    if (widget.hasMore && widget.replacement == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _scroll.hasClients && _scroll.position.extentAfter < 2 * _scroll.position.viewportDimension) {
+          widget.onMore?.call();
+        }
+      });
+    }
     return CupertinoPageScaffold(
       backgroundColor: CupertinoColors.systemGroupedBackground,
       child: Stack(
         children: [
-          CupertinoScrollbar(
-            controller: _scroll,
-            child: CustomScrollView(
+          NotificationListener<ScrollNotification>(
+            onNotification: _onScroll,
+            child: CupertinoScrollbar(
               controller: _scroll,
-              physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-              slivers: [
-                if (widget.searchField != null)
-                  CupertinoSliverNavigationBar.search(
-                    largeTitle: Text(widget.title),
-                    previousPageTitle: widget.previousPageTitle,
-                    trailing: right,
-                    searchField: widget.searchField!,
-                  )
-                else
-                  CupertinoSliverNavigationBar(
-                    largeTitle: Text(widget.title),
-                    previousPageTitle: widget.previousPageTitle,
-                    trailing: right,
-                  ),
-                if (widget.onRefresh != null) CupertinoSliverRefreshControl(onRefresh: widget.onRefresh),
-                const SliverToBoxAdapter(child: SizedBox(height: 8)),
-                ...widget.top,
-                if (widget.replacement != null)
-                  ...widget.replacement!
-                else if (all == null)
-                  LoadState(loading: widget.error == null, error: widget.error, onRetry: widget.onRetry ?? () {})
-                else ...[
-                  SliverToBoxAdapter(key: _start, child: const SizedBox.shrink()),
-                  if (all.isEmpty) SliverToBoxAdapter(child: Empty(widget.empty)),
-                  for (final (day, cs) in days)
-                    SliverMainAxisGroup(
-                      slivers: [
-                        SliverPersistentHeader(pinned: true, delegate: _DayHeader(day, cs)),
-                        SliverFixedExtentList(
-                          itemExtent: row,
-                          delegate: SliverChildBuilderDelegate(
-                            (context, i) => TimelineRow(c: cs[i], onTap: () => _open(all, cs[i])),
-                            childCount: cs.length,
-                          ),
-                        ),
-                      ],
+              child: CustomScrollView(
+                controller: _scroll,
+                physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                slivers: [
+                  if (widget.searchField != null)
+                    CupertinoSliverNavigationBar.search(
+                      largeTitle: Text(widget.title),
+                      previousPageTitle: widget.previousPageTitle,
+                      trailing: right,
+                      searchField: widget.searchField!,
+                    )
+                  else
+                    CupertinoSliverNavigationBar(
+                      largeTitle: Text(widget.title),
+                      previousPageTitle: widget.previousPageTitle,
+                      trailing: right,
                     ),
+                  if (widget.onRefresh != null) CupertinoSliverRefreshControl(onRefresh: widget.onRefresh),
+                  const SliverToBoxAdapter(child: SizedBox(height: 8)),
+                  ...widget.top,
+                  if (all != null && widget.error != null && widget.replacement == null)
+                    SliverToBoxAdapter(child: Stale(widget.error!)),
+                  if (widget.replacement != null)
+                    ...widget.replacement!
+                  else if (all == null)
+                    LoadState(loading: widget.error == null, error: widget.error, onRetry: widget.onRetry ?? () {})
+                  else ...[
+                    SliverToBoxAdapter(key: _start, child: const SizedBox.shrink()),
+                    if (all.isEmpty)
+                      SliverToBoxAdapter(
+                        child: Empty(widget.empty ?? tr('Nessuna conversazione.', 'No conversations.')),
+                      ),
+                    for (final (day, cs) in days)
+                      SliverMainAxisGroup(
+                        slivers: [
+                          SliverPersistentHeader(pinned: true, delegate: _DayHeader(day, cs)),
+                          SliverFixedExtentList(
+                            itemExtent: row,
+                            delegate: SliverChildBuilderDelegate(
+                              (context, i) => TimelineRow(c: cs[i], onTap: () => _open(all, cs[i])),
+                              childCount: cs.length,
+                            ),
+                          ),
+                        ],
+                      ),
+                    if (widget.hasMore)
+                      const SliverToBoxAdapter(
+                        child: Padding(padding: EdgeInsets.all(16), child: CupertinoActivityIndicator()),
+                      ),
+                  ],
+                  SliverToBoxAdapter(child: SizedBox(height: 40 + pad.bottom)),
                 ],
-                SliverToBoxAdapter(child: SizedBox(height: 40 + pad.bottom)),
-              ],
+              ),
             ),
           ),
           if (scrubber)
@@ -214,7 +276,7 @@ class _DayHeader extends SliverPersistentHeaderDelegate {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              '$n ${n == 1 ? 'conversazione' : 'conversazioni'} · ${duration(minutes)}',
+              '${counted(n, 'conversazione', 'conversazioni', 'conversation', 'conversations')} · ${duration(minutes)}',
               style: Ios.footnote(context),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -303,7 +365,7 @@ class TimelineRow extends StatelessWidget {
                         const SizedBox(width: 4),
                         Expanded(
                           child: Text(
-                            (others.isEmpty ? ['Solo tu'] : others.map((p) => p.name)).join(', '),
+                            (others.isEmpty ? [tr('Solo tu', 'Just you')] : others.map((p) => p.name)).join(', '),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: Ios.footnote(context).copyWith(color: resolve(context, CupertinoColors.label)),
