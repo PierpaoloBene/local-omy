@@ -72,6 +72,7 @@ def relabel() -> list[str]:
     embeddings and the current people; re-render the days that changed."""
     profile = diarize.load_profile()
     people = diarize.person_profiles()
+    media = diarize.media_prints() if feature_on("voice_prints") else None
     days = set()
     for path, doc in _docs():
         if doc.get("version") != diarize.VERSION:
@@ -86,7 +87,7 @@ def relabel() -> list[str]:
         pins = {k: c["person"] for k, c in clusters.items() if c.get("pinned")}
         sources = {k: c["source"] for k, c in clusters.items() if c.get("source")}
         unknown = {k for k, c in clusters.items() if c.get("unknown")}
-        new = diarize.name_clusters(result, profile, contexts, people, pins, sources, unknown)
+        new = diarize.name_clusters(result, profile, contexts, people, pins, sources, unknown, media)
         if new == clusters:
             continue
         doc["clusters"] = new
@@ -123,7 +124,7 @@ def list_day(day: date) -> dict:
             if c["seconds"] < MIN_SECONDS and not c.get("person"):
                 continue
             text = " ".join(said.get(label, []))
-            ctx = diarize.via(c["context"], c.get("source")) or {}
+            ctx = diarize.via(c["context"], c.get("source"), "media" in c) or {}
             voices.append({
                 "label": label, "name": c["name"], "person": c.get("person"), "pinned": c.get("pinned", False),
                 "seconds": c["seconds"], "kind": ctx.get("kind"), "app": ctx.get("app"), "source": c.get("source"),

@@ -15,6 +15,8 @@ Voice data, all biometric (mode 600, never leaves the Mac), in
   clusters/<session>.npz the embedding of each voice of each session, so a
                          voice can be named later without running pyannote
   people.json            the people you named, people/<id>.npz their samples
+The voices marked "media" by hand (omy speakers kind) are the samples of the
+videos: a voice close to one of them is a video too (MEDIA_THRESHOLD).
 
 The model is downloaded once from Hugging Face with the token in
 ~/.config/local-omy/hf_token (its terms must be accepted on the model page);
@@ -51,6 +53,11 @@ ME_THRESHOLD = 0.5
 # within one. Measured: the same speaker in three talks 1.0, 0.92, 0.49; other
 # voices 0.1 or less.
 PERSON_THRESHOLD = 0.4
+# A voice heard again from a video: the closest voice marked "media" by hand,
+# in any session, at least this similar. Against each one, not a mean: they
+# are many different voices. Measured: the same TV voices across sessions
+# 0.68-0.97; the unnamed voices of the room mostly 0.3-0.6.
+MEDIA_THRESHOLD = 0.65
 CLUSTERS = VOICES / "clusters"
 PEOPLE = VOICES / "people.json"
 PEOPLE_DIR = VOICES / "people"
@@ -147,6 +154,21 @@ def person_profiles() -> dict[str, tuple[str, object]]:
     return out
 
 
+def media_prints() -> list:
+    """The embeddings of the voices marked "media" by hand, in every session."""
+    out = []
+    for path in TRANSCRIPTS.glob("????-??-??/speakers/*.json"):
+        try:
+            doc = json.loads(path.read_text())
+        except ValueError:
+            continue
+        labels = [k for k, c in doc.get("clusters", {}).items() if c.get("source") == "media"]
+        if labels:
+            emb = cluster_embeddings(doc["session"])
+            out += [emb[k] for k in labels if k in emb]
+    return out
+
+
 def save_npz(path: Path, arrays: dict) -> None:
     """Atomic, mode 600; keys may contain "/" (stored as "~")."""
     import io
@@ -188,14 +210,16 @@ PERSON_NAME = archive_tr("Persona", "Person")
 UNKNOWN_NAME = archive_tr("Sconosciuto", "Unknown")
 
 
-def via(context: dict | None, source: str | None) -> dict | None:
+def via(context: dict | None, source: str | None, seen: bool = False) -> dict | None:
     """The context of a voice ({"kind": "call"|"media", "app"}), after its
-    source set by hand."""
+    source set by hand. seen: it sounds like a voice marked media by hand."""
     if source == "room":
         return None
     if source == "meeting":
         return context if context and context["kind"] == "call" else {"kind": "call", "app": MEETING_APP}
     if source == "media":
+        return {"kind": "media", "app": MEDIA_APP}
+    if seen and not (context and context["kind"] == "media"):
         return {"kind": "media", "app": MEDIA_APP}
     return context
 
@@ -204,7 +228,8 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
                   people: dict[str, tuple[str, object]] | None = None,
                   pins: dict[str, str] | None = None,
                   sources: dict[str, str] | None = None,
-                  unknown: set[str] | None = None) -> dict[str, dict]:
+                  unknown: set[str] | None = None,
+                  media: list | None = None) -> dict[str, dict]:
     """label -> {"name", "person", "pinned", "similarity", "seconds", "context"}.
 
     The best match above ME_THRESHOLD is you. pins (label -> person id or
@@ -215,7 +240,9 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
     participants, "Persona 2 (Teams)", "Marco (iPhone)", and media,
     "Media (Chrome)". sources (label -> SOURCES) are set by hand: "media"
     voices are "Video" and nobody. unknown voices (set by hand) are nobody
-    too, each "Sconosciuto" on its own."""
+    too, each "Sconosciuto" on its own. media (media_prints) are the voices
+    marked media elsewhere: a voice heard again from them is a video as well,
+    unless pinned, set by hand or closer to a named person."""
     contexts, people, pins, sources = contexts or {}, people or {}, pins or {}, sources or {}
     unknown = {k for k in unknown or () if sources.get(k) != "media"}
     pins = {k: v for k, v in pins.items()
@@ -228,7 +255,14 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
         me = max(free, key=free.get, default=None)
         if me is not None and free[me] >= ME_THRESHOLD:
             who[me] = "me"
-    pairs = sorted(((float(v @ pv), k, pid) for k, v in emb.items() if k not in who
+    seen = {}
+    for k, v in emb.items():
+        if k in who or k in sources or not media:
+            continue
+        m = max(float(v @ w) for w in media)
+        if m >= MEDIA_THRESHOLD and m >= max((float(v @ pv) for _, pv in people.values()), default=-1):
+            seen[k] = m
+    pairs = sorted(((float(v @ pv), k, pid) for k, v in emb.items() if k not in who and k not in seen
                     for pid, (_, pv) in people.items() if pid not in who.values()), reverse=True)
     for sim, k, pid in pairs:
         if sim >= PERSON_THRESHOLD and k not in who and pid not in who.values():
@@ -237,7 +271,8 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
     for _, _, label in sorted(result["turns"]):
         if label in names:
             continue
-        ctx = via(dict(zip(("kind", "app"), contexts[label])) if label in contexts else None, sources.get(label))
+        ctx = via(dict(zip(("kind", "app"), contexts[label])) if label in contexts else None, sources.get(label),
+                  label in seen)
         kind, app = (ctx["kind"], ctx["app"]) if ctx else (None, None)
         call = f" ({app})" if kind == "call" else ""
         if who.get(label) == "me":
@@ -257,6 +292,7 @@ def name_clusters(result: dict, profile, contexts: dict[str, tuple[str, str]] | 
                 "seconds": round(result["seconds"].get(k, 0), 1),
                 "context": dict(zip(("kind", "app"), contexts[k])) if k in contexts else None,
                 **({"source": sources[k]} if k in sources else {}),
+                **({"media": round(seen[k], 3)} if k in seen else {}),
                 **({"unknown": True} if k in unknown else {})}
             for k in result["seconds"]}
 
@@ -298,7 +334,8 @@ def diarize_session(session: Session) -> dict:
 def _write_doc(session: Session, result: dict, ctx: list, contexts: dict, prints: bool) -> dict:
     if prints:
         save_npz(CLUSTERS / f"{session.id}.npz", result["embeddings"])
-    clusters = name_clusters(result, load_profile(), contexts, person_profiles() if prints else {})
+    clusters = name_clusters(result, load_profile(), contexts, person_profiles() if prints else {},
+                             media=media_prints() if prints else None)
     doc = {
         "version": VERSION,
         "session": session.id,

@@ -369,7 +369,7 @@ def _record(doc: dict, turn: dict | None, items: list[dict], clusters: dict,
     start = _t(items[0]["start"])
     cluster = clusters.get(turn["label"], {}) if turn else {}
     from omy.diarize import via as effective
-    via = effective(cluster.get("context"), cluster.get("source"))
+    via = effective(cluster.get("context"), cluster.get("source"), "media" in cluster)
     speaker = turn and turn["speaker"]
     if speaker and via and speaker.endswith(f" ({via['app']})"):
         speaker = speaker[:-len(via["app"]) - 3]

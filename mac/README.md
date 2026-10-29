@@ -340,7 +340,13 @@ uv run omy people kind <id> media                      # tipo di tutte le sue vo
     o `Riunione` se il Mac non l'ha vista;
   - `media`: un video (o una TV, una radio). È nessuno: non viene riconosciuta come persona e non
     ha nome. Se era nominata, il suo campione esce dall'impronta della persona. Nelle
-    trascrizioni diventa `Video`, con `via` `{"kind": "media", "app": "Video"}`;
+    trascrizioni diventa `Video`, con `via` `{"kind": "media", "app": "Video"}`. Le voci
+    segnate video servono anche da campioni: una voce di un'altra sessione che somiglia
+    (≥ 0,65) a una di loro diventa `Video` da sola ed esce da "Da etichettare" (nel
+    documento della sessione, `"media"` è la somiglianza). Così il conduttore o lo
+    youtuber che senti spesso viene riconosciuto dopo averlo segnato una volta. Non vale
+    per te, per le voci con un nome fissato o un tipo scelto a mano, né per una voce più
+    simile a una persona con un nome. Se sbaglia, segna quella voce `room`;
   - `auto`: torna a quello che hanno visto il Mac (le app che usano microfono e altoparlanti)
     e l'iPhone (le chiamate).
 

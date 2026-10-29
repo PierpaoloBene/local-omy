@@ -76,3 +76,40 @@ def test_queue_of_the_last_hours(archive, monkeypatch):
 def _day():
     from datetime import date
     return date(2026, 10, 29)
+
+
+def test_heard_again_from_a_video():
+    from omy import diarize
+    me = vec(1, 0, 0, 0)
+    result = {"turns": [(0, 1, "A"), (1, 2, "B"), (2, 3, "C"), (3, 4, "D")],
+              "embeddings": {"A": vec(1, 0, 0, 0), "B": vec(0, 1, 0, 0), "C": vec(0, 0, 1, 0.2), "D": vec(0, 0, 0, 1)},
+              "seconds": {"A": 1, "B": 1, "C": 1, "D": 1}}
+    media = [vec(1, 0, 0, 0), vec(0, 0, 1, 0)]
+    c = diarize.name_clusters(result, me, media=media, sources={"D": "room"})
+    # You are never a video; C sounds like a video marked elsewhere.
+    assert c["A"]["person"] == "me" and "media" not in c["A"]
+    assert c["C"]["name"] == "Video" and c["C"]["media"] > diarize.MEDIA_THRESHOLD
+    assert c["B"]["name"] == "Persona 1" and "media" not in c["B"]
+    # Set by hand wins: D is in the room whatever it sounds like.
+    c = diarize.name_clusters(result, me, media=[vec(0, 0, 0, 1)], sources={"D": "room"})
+    assert "media" not in c["D"]
+    # Closer to a named person: that person.
+    c = diarize.name_clusters(result, None, people={"p1": ("Marco", vec(0, 0, 1, 0.2))}, media=media)
+    assert c["C"]["name"] == "Marco" and "media" not in c["C"]
+
+
+def test_mark_media_finds_it_in_other_sessions(archive):
+    from omy import people
+    other = "20261029T120000Z-0000beef"
+    write_speakers(archive, "2026-10-29", SESSION, {"SPEAKER_00": vec(1, 0, 0), "SPEAKER_01": vec(0, 1, 0)})
+    write_speakers(archive, "2026-10-29", other, {"SPEAKER_00": vec(0.1, 1, 0), "SPEAKER_01": vec(0, 0, 1)},
+                   start="2026-10-29T12:00:00.000Z")
+    people.set_source(SESSION, ["SPEAKER_01"], "media")
+    voices = {(s["session"], v["label"]): v for s in people.list_day(_day())["sessions"] for v in s["voices"]}
+    seen = voices[(other, "SPEAKER_00")]
+    assert seen["kind"] == "media" and seen["name"] == "Video" and not people.todo(seen)
+    assert people.todo(voices[(other, "SPEAKER_01")])
+    # Back to auto: nothing to hear it from any more.
+    people.set_source(SESSION, ["SPEAKER_01"], "auto")
+    voices = {(s["session"], v["label"]): v for s in people.list_day(_day())["sessions"] for v in s["voices"]}
+    assert people.todo(voices[(other, "SPEAKER_00")])
