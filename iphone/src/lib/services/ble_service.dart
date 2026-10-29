@@ -24,6 +24,21 @@ const Map<int, String> codecNames = {1: 'pcm8', 20: 'opus', 21: 'opusFS320'};
 
 enum PendantState { disconnected, connecting, streaming }
 
+/// What the app shows: [PendantState] seen from the outside.
+enum PendantStatus {
+  /// No pendant chosen, or not seen for a while: out of range, or flat.
+  notFound,
+
+  /// Was connected a moment ago; reconnecting by itself.
+  disconnected,
+
+  /// Connected, but no audio arriving.
+  idle,
+
+  /// Connected and sending audio.
+  connected,
+}
+
 class BleService {
   static final BleService _instance = BleService._internal();
   factory BleService() => _instance;
@@ -34,6 +49,10 @@ class BleService {
   /// it (not after a user force-quit).
   static Future<void> init() async {
     await FlutterBluePlus.setOptions(restoreState: true);
+    FlutterBluePlus.adapterState.listen((s) {
+      _instance.bluetoothOn = s == BluetoothAdapterState.on || s == BluetoothAdapterState.unknown;
+      _instance._stateController.add(_instance._state);
+    });
   }
 
   BluetoothDevice? _device;
@@ -62,6 +81,28 @@ class BleService {
   String? firmware;
 
   String? get deviceId => _device?.remoteId.str;
+
+  static const _audioQuiet = Duration(seconds: 10);
+  static const _lostFor = Duration(minutes: 10);
+  DateTime? _lastAudioAt;
+  DateTime? _lastConnectedAt;
+
+  bool bluetoothOn = true;
+
+  PendantStatus get status {
+    final now = DateTime.now();
+    if (_device == null) return PendantStatus.notFound;
+    if (_state == PendantState.streaming) {
+      final a = _lastAudioAt;
+      return a != null && now.difference(a) < _audioQuiet ? PendantStatus.connected : PendantStatus.idle;
+    }
+    final c = _lastConnectedAt;
+    return c != null && now.difference(c) < _lostFor ? PendantStatus.disconnected : PendantStatus.notFound;
+  }
+
+  /// When the link dropped, while [PendantStatus.disconnected] or
+  /// [PendantStatus.notFound] after a connection.
+  DateTime? get lastConnectedAt => _state == PendantState.streaming ? null : _lastConnectedAt;
 
   /// Scan for devices whose name contains "omi".
   Stream<List<ScanResult>> scan({Duration timeout = const Duration(seconds: 15)}) async* {
@@ -95,6 +136,7 @@ class BleService {
         _onConnected(device);
       } else if (s == BluetoothConnectionState.disconnected) {
         codecId = null;
+        if (_state == PendantState.streaming) _lastConnectedAt = DateTime.now();
         if (_device == device) _setState(PendantState.connecting);
       }
     });
@@ -111,6 +153,7 @@ class BleService {
     final device = _device;
     _device = null;
     firmware = null;
+    _lastConnectedAt = null;
     await _connSub?.cancel();
     _connSub = null;
     codecId = null;
@@ -174,7 +217,10 @@ class BleService {
       }
 
       final sub = audio.onValueReceived.listen((v) {
-        if (v.isNotEmpty) _audioController.add(Uint8List.fromList(v));
+        if (v.isNotEmpty) {
+          _lastAudioAt = DateTime.now();
+          _audioController.add(Uint8List.fromList(v));
+        }
       });
       device.cancelWhenDisconnected(sub);
       await audio.setNotifyValue(true);

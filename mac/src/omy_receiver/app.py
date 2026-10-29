@@ -36,7 +36,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.requests import ClientDisconnect
 
 from . import features
@@ -49,6 +49,16 @@ MAX_META_HEADER = 4096
 MIN_TOKEN_LEN = 32
 LOCAL_TZ = ZoneInfo("Europe/Rome")
 MAX_QUEUE = 1_000_000
+
+# The iPhone app reviews transcripts, people and places through the omy
+# commands the Mac app runs (python -m omy.cli --json …).
+OMY_TIMEOUT = 600
+DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+VOICE_LABEL = re.compile(r"SPEAKER_[0-9]{2,3}")
+PERSON_ID = re.compile(r"[0-9a-f]{12}")
+MAX_NAME = 80
+MAX_QUERY = 100
+MAX_JSON_BODY = 4096
 
 log = logging.getLogger("uvicorn.error")
 
@@ -129,6 +139,14 @@ def load_config() -> Config:
 def _error(status: int, detail: str) -> JSONResponse:
     headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
     return JSONResponse({"error": detail}, status_code=status, headers=headers)
+
+
+def _name(v) -> str:
+    """A person or place name from the phone; never read as an option by omy."""
+    if (not isinstance(v, str) or not v.strip() or len(v) > MAX_NAME or v.lstrip().startswith("-")
+            or any(ord(c) < 32 for c in v)):
+        raise ValueError("invalid name")
+    return v.strip()
 
 
 def _authorized(request: Request, token: bytes) -> bool:
@@ -334,6 +352,183 @@ def create_app(config: Config) -> FastAPI:
         except ValueError as e:
             return _error(400, str(e))
         return {"features": merged}
+
+    omy_lock = asyncio.Lock()
+    omy_env = {**os.environ, "OMY_ARCHIVE": str(config.archive)}
+    transcribing: list[asyncio.subprocess.Process] = []
+
+    async def omy(*args: str) -> dict:
+        """Runs omy --json ARGS; its error, if any, as ValueError."""
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "omy.cli", "--json", *args,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=omy_env,
+        )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), OMY_TIMEOUT)
+        except TimeoutError:
+            proc.kill()
+            raise
+        try:
+            result = json.loads(out)
+        except ValueError:
+            log.error("omy %s failed: %s", args[:2], err.decode(errors="replace")[-500:])
+            raise RuntimeError("omy failed")
+        if proc.returncode != 0:
+            raise ValueError(result.get("error", "omy failed"))
+        return result
+
+    async def run(request: Request, *args: str, change: bool = False):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        try:
+            if change:
+                # One change at a time: each rewrites people/places and the days.
+                async with omy_lock:
+                    return await omy(*args)
+            return await omy(*args)
+        except ValueError as e:
+            return _error(400, str(e))
+        except (RuntimeError, TimeoutError):
+            return _error(500, "omy failed")
+
+    async def json_body(request: Request) -> dict:
+        body = b""
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > MAX_JSON_BODY:
+                raise ValueError("body too large")
+        doc = json.loads(body or b"{}")
+        if not isinstance(doc, dict):
+            raise ValueError("body is not an object")
+        return doc
+
+    async def change(request: Request, build) -> JSONResponse | dict:
+        """A change whose omy arguments come from the JSON body."""
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        try:
+            args = build(await json_body(request))
+        except (ValueError, TypeError, KeyError):
+            return _error(400, "invalid body")
+        return await run(request, *args, change=True)
+
+    @app.get("/v1/transcripts")
+    async def transcripts(request: Request):
+        return await run(request, "transcripts", "list")
+
+    @app.get("/v1/transcripts/{day}")
+    async def transcript_day(day: str, request: Request):
+        if not DAY.fullmatch(day):
+            return _error(400, "invalid day")
+        return await run(request, "transcripts", "day", day)
+
+    # POST, so what you search for stays out of the access log.
+    @app.post("/v1/search")
+    async def search(request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        try:
+            q = (await json_body(request))["q"]
+            if not isinstance(q, str) or not q.strip() or len(q) > MAX_QUERY or q.lstrip().startswith("-"):
+                raise ValueError
+        except (ValueError, KeyError):
+            return _error(400, "invalid query")
+        return await run(request, "transcripts", "search", q)
+
+    # Starts transcribing the closed sessions now, without waiting for the
+    # hourly job; GET /v1/transcripts shows the progress.
+    @app.post("/v1/transcribe")
+    async def transcribe_now(request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        if transcribing and transcribing[0].returncode is None:
+            return {"started": False, "running": True}
+        logfile = open(Path("~/Library/Logs/local-omy-periodic.log").expanduser(), "ab")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "omy.cli", "--json", "transcribe", "--pending",
+                stdin=asyncio.subprocess.DEVNULL, stdout=logfile, stderr=logfile, env=omy_env,
+            )
+        finally:
+            logfile.close()
+        transcribing[:] = [proc]
+        asyncio.get_running_loop().create_task(proc.wait())
+        return {"started": True, "running": True}
+
+    @app.get("/v1/people")
+    async def people_list(request: Request):
+        return await run(request, "people", "list")
+
+    @app.put("/v1/people/{person}")
+    async def person_rename(person: str, request: Request):
+        if not PERSON_ID.fullmatch(person):
+            return _error(400, "invalid person")
+        return await change(request, lambda b: ["people", "rename", person, _name(b["name"])])
+
+    @app.delete("/v1/people/{person}")
+    async def person_delete(person: str, request: Request):
+        if not PERSON_ID.fullmatch(person):
+            return _error(400, "invalid person")
+        return await run(request, "people", "delete", person, change=True)
+
+    @app.get("/v1/voices/{day}")
+    async def voices(day: str, request: Request):
+        if not DAY.fullmatch(day):
+            return _error(400, "invalid day")
+        return await run(request, "speakers", "list", "--day", day)
+
+    @app.put("/v1/voices/{session}/{label}")
+    async def voice_rename(session: str, label: str, request: Request):
+        if not SEGMENT_ID.fullmatch(session) or not VOICE_LABEL.fullmatch(label):
+            return _error(400, "invalid voice")
+        return await change(request, lambda b: ["speakers", "rename", session, label, _name(b["name"])])
+
+    # A few seconds of a voice, to recognize it: the WAV goes to the phone in
+    # the response only (the phone plays it from memory); voice prints never
+    # leave the Mac.
+    @app.get("/v1/voices/{session}/{label}/sample")
+    async def voice_sample(session: str, label: str, request: Request):
+        if not SEGMENT_ID.fullmatch(session) or not VOICE_LABEL.fullmatch(label):
+            return _error(400, "invalid voice")
+        async with omy_lock:
+            result = await run(request, "speakers", "play", session, label)
+            if isinstance(result, Response):
+                return result
+            path = Path(result["path"])
+            data = await asyncio.to_thread(path.read_bytes)
+            path.unlink(missing_ok=True)
+        return Response(data, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+    @app.get("/v1/places")
+    async def places_list(request: Request):
+        return await run(request, "places", "list")
+
+    def place_args(b: dict) -> list[str]:
+        lat, lon, radius = b["lat"], b["lon"], b.get("radius", 150)
+        if not all(_number(v) for v in (lat, lon)) or not isinstance(radius, int) or isinstance(radius, bool):
+            raise ValueError("invalid place")
+        return ["places", "add", _name(b["name"]), repr(float(lat)), repr(float(lon)), "--radius", str(radius)]
+
+    @app.post("/v1/places")
+    async def place_add(request: Request):
+        return await change(request, place_args)
+
+    @app.put("/v1/places/{name}")
+    async def place_rename(name: str, request: Request):
+        try:
+            name = _name(name)
+        except ValueError:
+            return _error(400, "invalid name")
+        return await change(request, lambda b: ["places", "rename", name, _name(b["name"])])
+
+    @app.delete("/v1/places/{name}")
+    async def place_remove(name: str, request: Request):
+        try:
+            name = _name(name)
+        except ValueError:
+            return _error(400, "invalid name")
+        return await run(request, "places", "remove", name, change=True)
 
     return app
 

@@ -1,3 +1,4 @@
+import AVFoundation
 import CallKit
 import CoreLocation
 import Flutter
@@ -7,6 +8,7 @@ import UIKit
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private let callLog = CallLog()
   private let locationLog = LocationLog()
+  private let playback = Playback()
 
   override func application(
     _ application: UIApplication,
@@ -36,7 +38,59 @@ import UIKit
           result(FlutterMethodNotImplemented)
         }
       }
+      // A voice sample from the Mac (mac_api.dart), played from memory.
+      let audio = FlutterMethodChannel(name: "local_omy/audio", binaryMessenger: registrar.messenger())
+      audio.setMethodCallHandler { [weak self] call, result in
+        switch call.method {
+        case "play":
+          guard let wav = call.arguments as? FlutterStandardTypedData else {
+            result(FlutterError(code: "args", message: "WAV bytes expected", details: nil))
+            return
+          }
+          do {
+            result(try self?.playback.play(wav.data))
+          } catch {
+            result(FlutterError(code: "play", message: error.localizedDescription, details: nil))
+          }
+        case "stop":
+          self?.playback.stop()
+          result(nil)
+        default:
+          result(FlutterMethodNotImplemented)
+        }
+      }
     }
+  }
+}
+
+/// Plays a WAV held in memory: nothing is written to disk.
+final class Playback: NSObject, AVAudioPlayerDelegate {
+  private var player: AVAudioPlayer?
+
+  /// Seconds of audio.
+  func play(_ data: Data) throws -> Double {
+    stop()
+    let session = AVAudioSession.sharedInstance()
+    try session.setCategory(.playback)
+    try session.setActive(true)
+    let p = try AVAudioPlayer(data: data)
+    p.delegate = self
+    p.play()
+    player = p
+    return p.duration
+  }
+
+  func stop() {
+    guard let p = player else { return }
+    p.stop()
+    finished()
+  }
+
+  func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { finished() }
+
+  private func finished() {
+    player = nil
+    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
   }
 }
 

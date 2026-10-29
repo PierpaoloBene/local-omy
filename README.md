@@ -5,6 +5,8 @@ Un ingresso: l'audio del ciondolo via BLE. Un'uscita: file audio grezzi sul Mac 
 Se il Mac non è raggiungibile i file restano sull'iPhone e partono appena torna raggiungibile.
 
 Sul telefono niente decodifica né trascrizione. Sul Mac la trascrizione è locale (whisper.cpp).
+Dall'iPhone si rivedono trascrizioni, persone e luoghi, chiedendoli al Mac. Sul telefono non
+resta nulla ([mac/README.md](mac/README.md#rivedere-dalliphone)).
 
 Fork di [kbdevs/omibutfree](https://github.com/kbdevs/omibutfree) (licenza MIT),
 ridotto all'osso. Grazie a kbdevs per il lavoro di base sul BLE.

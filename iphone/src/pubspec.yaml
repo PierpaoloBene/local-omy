@@ -10,6 +10,11 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  # Italian texts of the iOS widgets (copy, paste, cancel…).
+  flutter_localizations:
+    sdk: flutter
+  # SF-style icons (CupertinoIcons).
+  cupertino_icons: ^1.0.8
 
   # BLE link to the pendant. Pinned to 1.x: 2.x changed license and API,
   # and 1.36 already has iOS autoConnect + state restoration.

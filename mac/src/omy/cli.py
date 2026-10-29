@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import date, datetime
 
-from omy import battery, enroll, iphone, macsetup, people, places, status, transcribe
+from omy import battery, enroll, iphone, macsetup, people, places, review, status, transcribe
 from omy.config import ARCHIVE, feature_on
 from omy_receiver import features
 
@@ -69,6 +69,12 @@ def main() -> int:
                        help=f"sessions not yet transcribed in the last {transcribe.PENDING_DAYS} recorded days")
     tr.add_argument("--force", action="store_true", help="transcribe again sessions already done")
     tr.add_argument("--render", action="store_true", help="only rebuild the day markdown from the JSONs")
+
+    ts = sub.add_parser("transcripts", help="read the transcripts (what the iPhone app shows)") \
+        .add_subparsers(dest="action", required=True)
+    ts.add_parser("list", help="the days with a summary, and what is waiting to be transcribed")
+    ts.add_parser("day", help="the paragraphs of a day").add_argument("day", type=date.fromisoformat)
+    ts.add_parser("search", help="paragraphs whose text or speaker contains QUERY").add_argument("query")
 
     voice = sub.add_parser("voice", help="your voice profile for diarization").add_subparsers(dest="action", required=True)
     voice.add_parser("enroll", help="build it from the P: lines of the clips in ~/OmiArchive/voices/enroll")
@@ -147,6 +153,12 @@ def main() -> int:
                 result = {"days": [d.isoformat() for d in days if transcribe.render_day(d)]}
             else:
                 result = transcribe.transcribe(days, force=args.force)
+        elif args.cmd == "transcripts":
+            result = {
+                "list": review.list_days,
+                "day": lambda: review.day(args.day),
+                "search": lambda: review.search(args.query),
+            }[args.action]()
         elif args.cmd == "voice":
             result = enroll.enroll()
         elif args.cmd == "speakers":

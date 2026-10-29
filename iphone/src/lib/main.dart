@@ -1,11 +1,14 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
+import 'api/mac_api.dart';
 import 'features.dart';
 import 'recording/recorder.dart';
 import 'recording/segment_store.dart';
 import 'services/ble_service.dart';
 import 'settings.dart';
-import 'ui/home_page.dart';
+import 'ui/app_shell.dart';
+import 'ui/common.dart';
 import 'upload/uploader.dart';
 
 Future<void> main() async {
@@ -27,11 +30,21 @@ Future<void> main() async {
   if (deviceId != null) ble.connect(deviceId);
 
   runApp(
-    MaterialApp(
+    CupertinoApp(
       title: 'local-omy',
-      theme: ThemeData(colorSchemeSeed: Colors.teal),
-      darkTheme: ThemeData(colorSchemeSeed: Colors.teal, brightness: Brightness.dark),
-      home: HomePage(ble: ble, recorder: recorder, uploader: uploader, settings: settings, features: features),
+      debugShowCheckedModeBanner: false,
+      theme: const CupertinoThemeData(primaryColor: tint),
+      locale: const Locale('it'),
+      supportedLocales: const [Locale('it')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      home: AppShell(
+        ble: ble,
+        recorder: recorder,
+        uploader: uploader,
+        settings: settings,
+        features: features,
+        api: MacApi(settings),
+      ),
     ),
   );
 }

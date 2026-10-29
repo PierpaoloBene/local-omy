@@ -447,6 +447,43 @@ silenzio ha il file vuoto.
 
 I file hanno mode 600 e restano sul Mac, come il resto dell'archivio.
 
+## Rivedere dall'iPhone
+
+L'app iPhone ha quattro schede:
+- **Oggi:** lo stato del ciondolo, cioè connesso, inattivo (collegato ma senza audio),
+  disconnesso (perso da meno di 10 minuti, si ricollega da solo) o non trovato. Poi la
+  registrazione e la coda di invio, cosa resta da trascrivere sul Mac (con **Trascrivi ora**)
+  e il riepilogo di oggi.
+- **Trascrizioni:** i giorni, ognuno con il riepilogo (orari, durata, chi ha parlato, dove).
+  Un giorno si apre paragrafo per paragrafo. La ricerca trova parole o persone in tutti i
+  giorni e porta al paragrafo.
+- **Persone:** tu, le persone con un nome (rinomina, unisci, elimina) e le voci di un giorno.
+  Le voci si possono ascoltare e nominare.
+- **Luoghi:** come la scheda del Mac. Si rinomina, si cambia il raggio, si elimina, e si dà
+  un nome ai punti senza nome.
+
+Il telefono parla con il ricevitore, con lo stesso URL e lo stesso token degli upload. Il
+ricevitore esegue gli stessi comandi `omy` dell'app per Mac, come sottoprocessi:
+
+| Richiesta | Comando |
+|---|---|
+| `GET /v1/transcripts` | `omy transcripts list`: giorni con riepilogo, e sessioni in attesa |
+| `GET /v1/transcripts/DAY` | `omy transcripts day DAY`: riepilogo e paragrafi (il JSONL del giorno) |
+| `POST /v1/search` `{"q"}` | `omy transcripts search Q`: al massimo 200 paragrafi, dal giorno più recente |
+| `POST /v1/transcribe` | `omy transcribe --pending`, in background (log in `local-omy-periodic.log`) |
+| `GET /v1/people`, `PUT`/`DELETE /v1/people/ID` | `omy people list`, `rename`, `delete` |
+| `GET /v1/voices/DAY`, `PUT /v1/voices/SESSION/LABEL` | `omy speakers list`, `rename` |
+| `GET /v1/voices/SESSION/LABEL/sample` | `omy speakers play`: il WAV (al massimo 8 s) |
+| `GET`/`POST /v1/places`, `PUT`/`DELETE /v1/places/NAME` | `omy places list`, `add`, `rename`, `remove` |
+
+Le modifiche passano una alla volta e riscrivono i giorni coinvolti, come dal Mac.
+
+Sul telefono non resta niente. Trascrizioni, nomi e luoghi restano in memoria finché la
+pagina è aperta. Il campione di voce arriva nella risposta e viene suonato dalla memoria
+(`AVAudioPlayer`, senza file). Sul Mac il WAV viene cancellato appena mandato. Le impronte
+vocali non escono mai dal Mac. Le coordinate restano tra Mac e iPhone: non c'è mappa, e
+niente viene geocodificato.
+
 ## Configurazione (variabili d'ambiente)
 
 | Variabile | Default | |
@@ -474,6 +511,13 @@ Controlli eseguiti, in quest'ordine, prima di leggere il corpo:
 - **Impostazioni:** `GET` e `PUT /v1/settings`, con lo stesso token. Il corpo del `PUT` è al
   massimo 4 KB. Accetta solo `{"features": {chiave: {"on": bool, "at": ISO UTC}}}`, ignora
   le chiavi sconosciute e non scrive mai altro che `settings.json`.
+- **Revisione dall'iPhone** ([sopra](#rivedere-dalliphone)): stesso token.
+  - Giorno, sessione, etichetta della voce e id della persona sono verificati con una regex
+    prima di diventare argomenti di `omy`. Gli argomenti vengono passati senza shell.
+  - Nomi e ricerche: al massimo 80 e 100 caratteri, nessun carattere di controllo, e non
+    possono iniziare con `-`, così `omy` non li legge come opzioni.
+  - Corpi JSON al massimo 4 KB.
+  - La ricerca viaggia nel corpo, quindi non finisce nel log degli accessi.
 - **Dimensione del corpo:** `Content-Length` viene controllato subito, e i byte vengono
   contati anche durante lo streaming (risposta 413).
 

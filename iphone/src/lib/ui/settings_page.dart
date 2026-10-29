@@ -1,12 +1,13 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../features.dart';
 import '../services/ble_service.dart';
 import '../settings.dart';
 import '../upload/uploader.dart';
+import 'common.dart';
 
 class SettingsPage extends StatefulWidget {
   final BleService ble;
@@ -82,7 +83,7 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
     setState(() => _results = []);
     _scan = widget.ble.scan().listen(
       (r) => setState(() => _results = r),
-      onError: (e) => _snack('Scan non riuscito: $e'),
+      onError: (e) => mounted ? showMessage(context, e, title: 'Ricerca non riuscita') : null,
     );
   }
 
@@ -110,103 +111,135 @@ class _SettingsPageState extends State<SettingsPage> with WidgetsBindingObserver
     if (_token.text.isNotEmpty) await widget.settings.setToken(_token.text.trim());
     _token.clear();
     setState(() => _urlError = null);
-    _snack('Salvato');
+    showMessage(context, 'URL e token salvati.', title: 'Salvato');
     widget.uploader.trigger();
     widget.features.sync();
   }
 
-  Widget _featureList(BuildContext context) {
+  static const _icons = <String, (IconData, Color)>{
+    'location': (CupertinoIcons.location_fill, CupertinoColors.systemBlue),
+    'calls': (CupertinoIcons.phone_fill, CupertinoColors.systemGreen),
+    'battery': (CupertinoIcons.battery_full, CupertinoColors.systemGreen),
+    'mac_audio': (CupertinoIcons.speaker_2_fill, CupertinoColors.systemPink),
+    'diarization': (CupertinoIcons.person_2_fill, CupertinoColors.systemOrange),
+    'voice_prints': (CupertinoIcons.waveform, CupertinoColors.systemPurple),
+    'auto_transcribe': (CupertinoIcons.text_bubble_fill, CupertinoColors.systemIndigo),
+  };
+
+  List<Widget> _features(BuildContext context) {
     final f = widget.features;
+    String two(int v) => v.toString().padLeft(2, '0');
     final sync = f.lastSyncError != null
         ? 'Sincronizzazione con il Mac non riuscita: ${f.lastSyncError}'
         : f.lastSyncAt == null
-        ? 'Non ancora sincronizzate con il Mac'
-        : 'Sincronizzate con il Mac alle ${TimeOfDay.fromDateTime(f.lastSyncAt!).format(context)}';
-    final small = Theme.of(context).textTheme.bodySmall;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(sync, style: small),
-        for (final (device, title) in [('iphone', 'iPhone'), ('mac', 'Mac')]) ...[
-          const SizedBox(height: 12),
-          Text(title, style: Theme.of(context).textTheme.titleSmall),
-          for (final MapEntry(key: key, value: (d, name, description)) in featureInfo.entries)
-            if (d == device)
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text(name),
-                subtitle: Text(description),
-                value: f.on(key),
-                onChanged: (v) => f.set(key, v),
+        ? 'Non ancora sincronizzate con il Mac.'
+        : 'Sincronizzate con il Mac alle ${two(f.lastSyncAt!.hour)}:${two(f.lastSyncAt!.minute)}. '
+              'Spegnere una funzione interrompe la raccolta, ma non cancella quello che c\'è già.';
+    return [
+      for (final (device, title) in [('iphone', 'Funzioni sull\'iPhone'), ('mac', 'Funzioni sul Mac')])
+        Section(
+          header: title,
+          footer: device == 'mac' ? sync : null,
+          children: [
+            for (final MapEntry(key: key, value: (d, name, description)) in featureInfo.entries)
+              if (d == device)
+                IosRow(
+                  leading: IconSquare(
+                    _icons[key]?.$1 ?? CupertinoIcons.gear_solid,
+                    _icons[key]?.$2 ?? CupertinoColors.systemGrey,
+                  ),
+                  title: name,
+                  subtitle: description,
+                  trailing: CupertinoSwitch(value: f.on(key), onChanged: (v) => f.set(key, v)),
+                ),
+            if (device == 'iphone' && _locationProblem() != null)
+              IosRow(
+                leading: const IconSquare(CupertinoIcons.location_slash_fill, CupertinoColors.systemRed),
+                title: 'Posizione in background',
+                subtitle: _locationProblem(),
+                trailing: CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  onPressed: f.openSettings,
+                  child: const Text('Apri'),
+                ),
               ),
-          if (device == 'iphone' && _locationProblem() != null)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.location_off, color: Theme.of(context).colorScheme.error),
-              title: Text(_locationProblem()!),
-              trailing: TextButton(onPressed: f.openSettings, child: const Text('Impostazioni')),
-            ),
-        ],
-        const SizedBox(height: 12),
-        Text('Spegnere una funzione interrompe la raccolta, ma non cancella quello che c\'è già.', style: small),
-      ],
-    );
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+          ],
+        ),
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
     final saved = widget.settings.deviceId;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Impostazioni')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text('Ciondolo', style: Theme.of(context).textTheme.titleMedium),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(saved ?? 'Nessuno scelto'),
-            trailing: saved == null ? null : TextButton(onPressed: _forget, child: const Text('Dimentica')),
-          ),
-          OutlinedButton(onPressed: _startScan, child: const Text('Cerca ciondoli')),
-          for (final r in _results)
-            ListTile(
-              title: Text(r.device.platformName),
-              subtitle: Text('${r.device.remoteId.str} · ${r.rssi} dBm'),
-              trailing: r.device.remoteId.str == saved ? const Icon(Icons.check) : null,
-              onTap: () => _choose(r),
+    return TabScaffold(
+      title: 'Impostazioni',
+      previousPageTitle: 'Oggi',
+      slivers: [
+        SliverList.list(
+          children: [
+            Section(
+              header: 'Ciondolo',
+              children: [
+                IosRow(
+                  leading: const IconSquare(CupertinoIcons.bluetooth, CupertinoColors.systemBlue),
+                  title: saved == null ? 'Nessuno scelto' : 'Omi',
+                  subtitle: saved,
+                ),
+                IosRow(title: 'Cerca ciondoli', onTap: _startScan),
+                for (final r in _results)
+                  IosRow(
+                    title: r.device.platformName,
+                    subtitle: '${r.device.remoteId.str} · ${r.rssi} dBm',
+                    trailing: r.device.remoteId.str == saved
+                        ? Icon(CupertinoIcons.checkmark_alt, color: resolve(context, tint))
+                        : null,
+                    onTap: () => _choose(r),
+                  ),
+                if (saved != null) IosRow(title: 'Dimentica questo ciondolo', destructive: true, onTap: _forget),
+              ],
             ),
-          const SizedBox(height: 24),
-          Text('Mac', style: Theme.of(context).textTheme.titleMedium),
-          TextField(
-            controller: _url,
-            keyboardType: TextInputType.url,
-            autocorrect: false,
-            decoration: InputDecoration(labelText: 'URL', hintText: 'https://mac.tailnet.ts.net', errorText: _urlError),
-          ),
-          TextField(
-            controller: _token,
-            obscureText: true,
-            autocorrect: false,
-            enableSuggestions: false,
-            decoration: InputDecoration(
-              labelText: 'Token',
-              helperText: widget.settings.token == null
-                  ? 'Non impostato'
-                  : 'Impostato (lascia vuoto per non cambiarlo)',
+            const SizedBox(height: 12),
+            CupertinoFormSection.insetGrouped(
+              header: const Text('MAC'),
+              footer: Text(
+                _urlError ??
+                    (widget.settings.token == null
+                        ? 'Token non impostato.'
+                        : 'Token impostato: lascia vuoto il campo per non cambiarlo.'),
+                style: Ios.footnote(
+                  context,
+                ).copyWith(color: _urlError == null ? null : resolve(context, CupertinoColors.systemRed)),
+              ),
+              children: [
+                CupertinoTextFormFieldRow(
+                  controller: _url,
+                  prefix: const SizedBox(width: 60, child: Text('URL')),
+                  placeholder: 'https://mac.tailnet.ts.net',
+                  keyboardType: TextInputType.url,
+                  autocorrect: false,
+                ),
+                CupertinoTextFormFieldRow(
+                  controller: _token,
+                  prefix: const SizedBox(width: 60, child: Text('Token')),
+                  placeholder: widget.settings.token == null ? 'Incolla il token' : '••••••••',
+                  obscureText: true,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                ),
+              ],
             ),
-          ),
-          const SizedBox(height: 16),
-          FilledButton(onPressed: _save, child: const Text('Salva')),
-          const SizedBox(height: 24),
-          Text('Funzioni', style: Theme.of(context).textTheme.titleMedium),
-          ListenableBuilder(listenable: widget.features, builder: (context, _) => _featureList(context)),
-        ],
-      ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: CupertinoButton.filled(onPressed: _save, child: const Text('Salva')),
+            ),
+            const SizedBox(height: 12),
+            ListenableBuilder(
+              listenable: widget.features,
+              builder: (context, _) => Column(children: _features(context)),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
