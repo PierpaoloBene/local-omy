@@ -233,9 +233,17 @@ quale app e se usa ingresso o uscita. La diarizzazione lo usa per le voci che no
 - una voce che parla mentre un'app riproduce soltanto (YouTube nel browser, Musica,
   Spotify) è un media: `Media (Chrome)`.
 
-Valgono solo per l'audio che passa dal Mac e solo dal 29 ottobre 2026: la TV in salotto e le
-chiamate sul telefono non lasciano traccia. Una persona presente nella stanza durante una
-chiamata sul Mac viene contata come partecipante.
+Le **chiamate sull'iPhone** (telefono, FaceTime, WhatsApp: tutto ciò che usa CallKit) le
+osserva l'app iPhone (`CXCallObserver`), che ne registra solo inizio e fine e non chi chiama.
+Le copia nel sidecar dei segmenti che toccano (`"calls": [{"start", "end"}]`, opzionale e
+validato dal ricevitore), e le voci altrui diventano `Persona 2 (iPhone)`.
+
+Nel markdown, sotto il titolo della sessione, compare `_Chiamata (iPhone) 10:12–10:25_`.
+Serve anche quando dall'auricolare non si sente l'altra persona.
+
+Valgono solo dal 29 ottobre 2026. La TV in salotto e quello che succede su un altro
+computer (per esempio Teams sul Mac di lavoro) non lasciano traccia. Una persona presente
+nella stanza durante una chiamata viene contata come partecipante.
 
 Una voce cantata non viene riconosciuta come tua.
 

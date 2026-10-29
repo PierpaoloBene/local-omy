@@ -5,6 +5,9 @@
 ///   {id}.bin         closed and fsynced segment
 ///   {id}.json        sidecar metadata of a .bin
 ///
+/// Documents/calls.json (written by CallLog in AppDelegate.swift) lists when
+/// calls were connected; the calls overlapping a segment go into its sidecar.
+///
 /// The closed .bin/.json pairs ARE the upload queue: there is no database.
 library;
 
@@ -115,7 +118,7 @@ class SegmentStore {
       data = Uint8List.sublistView(data, 0, seg.validLength);
     }
 
-    final meta = buildSidecar(id: id, deviceId: deviceId, data: data, seg: seg);
+    final meta = buildSidecar(id: id, deviceId: deviceId, data: data, seg: seg, calls: _calls());
     final tmp = File('${dir.path}/$id.json.tmp');
     final raf = tmp.openSync(mode: FileMode.write);
     raf.writeStringSync(const JsonEncoder.withIndent('  ').convert(meta));
@@ -126,6 +129,23 @@ class SegmentStore {
     if (partMeta.existsSync()) partMeta.deleteSync();
   }
 
+  /// Calls from Documents/calls.json as (start, end) in UTC ms; end is null
+  /// while a call is on (or if the app was killed during it).
+  List<(int, int?)> _calls() {
+    try {
+      final list = jsonDecode(File('${dir.parent.path}/calls.json').readAsStringSync()) as List;
+      return [
+        for (final c in list.cast<Map>())
+          (
+            DateTime.parse(c['start'] as String).millisecondsSinceEpoch,
+            c['end'] == null ? null : DateTime.parse(c['end'] as String).millisecondsSinceEpoch,
+          ),
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+
   void delete(String id) {
     for (final f in [bin(id), json(id)]) {
       if (f.existsSync()) f.deleteSync();
@@ -133,13 +153,23 @@ class SegmentStore {
   }
 }
 
+/// A call still open this long after its start is taken as ended (the app
+/// was killed before CallKit said so).
+const _maxCall = Duration(hours: 4);
+
 Map<String, Object?> buildSidecar({
   required String id,
   required String deviceId,
   required Uint8List data,
   required ParsedSegment seg,
+  List<(int, int?)> calls = const [],
 }) {
   String iso(int ms) => DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true).toIso8601String();
+  final startMs = seg.startMs, endMs = seg.startMs + seg.records.last.offsetMs;
+  final overlapping = [
+    for (final (s, e) in calls)
+      if (s < endMs && (e ?? s + _maxCall.inMilliseconds) > startMs) {'start': iso(s), if (e != null) 'end': iso(e)},
+  ];
   return {
     'id': id,
     'device_id': deviceId,
@@ -150,6 +180,8 @@ Map<String, Object?> buildSidecar({
     'first_packet_index': seg.records.first.packetIndex,
     'last_packet_index': seg.records.last.packetIndex,
     'sha256': sha256.convert(data).toString(),
+    // Only when there are some: older Macs reject unknown fields.
+    if (overlapping.isNotEmpty) 'calls': overlapping.take(20).toList(),
   };
 }
 

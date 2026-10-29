@@ -8,8 +8,11 @@ most JOIN apart make one interval per app:
 diarize labels the voices that aren't yours with them: a voice heard while a
 call was on is a call participant, one heard while media played is media.
 
-Only audio that goes through this Mac is known: a TV in the room or a call on
-the phone leaves no trace here.
+Calls on the iPhone (phone, FaceTime, WhatsApp: anything using CallKit) come
+from the segment sidecars, where the phone copies the calls overlapping each
+segment ("calls": [{"start", "end"?}]): app "iPhone".
+
+A TV in the room, or anything on another computer, leaves no trace.
 """
 
 from __future__ import annotations
@@ -99,7 +102,32 @@ def intervals(start: datetime, end: datetime) -> list[Interval]:
                 r.append([t, t, "i" in flags])
     out = [Interval(a - PAD, b + PAD, name, "call" if mic else "media")
            for name, rs in runs.items() for a, b, mic in rs]
+    out += phone_calls(start, end)
     return [i for i in out if i.end > start and i.start < end]
+
+
+def phone_calls(start: datetime, end: datetime) -> list[Interval]:
+    """iPhone calls from the sidecars of the segments in [start, end). A call
+    without end (still on, or the app was killed) lasts until the last segment
+    that lists it."""
+    calls: dict[datetime, datetime] = {}
+    day = start.astimezone(LOCAL_TZ).date()
+    while day <= end.astimezone(LOCAL_TZ).date():
+        for meta_path in (ARCHIVE / "raw" / "audio" / day.isoformat()).glob("*.json"):
+            try:
+                meta = json.loads(meta_path.read_text())
+            except ValueError:
+                continue
+            for c in meta.get("calls", []):
+                s = _t(c["start"])
+                e = _t(c["end"]) if "end" in c else _t(meta["end"])
+                calls[s] = max(calls.get(s, e), e)
+        day += timedelta(days=1)
+    return [Interval(s, e, "iPhone", "call") for s, e in sorted(calls.items())]
+
+
+def _t(iso: str) -> datetime:
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
 
 
 def classify(turns: list[tuple[datetime, datetime]], context: list[Interval]) -> tuple[str, str] | None:

@@ -336,6 +336,14 @@ def _speakers(day_dir: Path, session_id: str) -> list[tuple[datetime, datetime, 
     return [(t(x["start"]), t(x["end"]), x["speaker"]) for x in doc["turns"]]
 
 
+def _context(day_dir: Path, session_id: str) -> list[dict]:
+    """Calls and media during the session, as found by diarize (omy.context)."""
+    try:
+        return json.loads((day_dir / "speakers" / f"{session_id}.json").read_text()).get("context", [])
+    except (FileNotFoundError, ValueError):
+        return []
+
+
 def _speaker_of(turns: list, start: datetime, end: datetime) -> str | None:
     best, overlap = None, timedelta(0)
     for s, e, name in turns:
@@ -360,6 +368,9 @@ def render_day(day: date) -> Path | None:
         if not speech:
             continue
         lines += [f"## {_hm(doc['start'])}–{_hm(doc['end'])}", ""]
+        calls = [c for c in _context(day_dir, doc["session"]) if c["kind"] == "call"]
+        if calls:
+            lines += ["_" + ", ".join(f"Chiamata ({c['app']}) {_hm(c['start'])}–{_hm(c['end'])}" for c in calls) + "_", ""]
         turns = _speakers(day_dir, doc["session"])
         block: list[str] = []
         block_start: datetime | None = None

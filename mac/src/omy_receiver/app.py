@@ -61,6 +61,8 @@ META_FIELDS: dict[str, type | tuple[type, ...]] = {
     "last_packet_index": (int, type(None)),
     "sha256": str,
 }
+# Optional: calls the phone saw connected during the segment, [{"start", "end"?}].
+MAX_CALLS = 20
 
 
 class ConfigError(Exception):
@@ -128,8 +130,16 @@ def _parse_meta(raw: str, segment_id: str, sha: str) -> dict:
         meta = json.loads(base64.urlsafe_b64decode(raw.encode("ascii") + b"=" * (-len(raw) % 4)))
     except (binascii.Error, UnicodeError, ValueError) as e:
         raise ValueError("meta is not base64url JSON") from e
-    if not isinstance(meta, dict) or set(meta) != set(META_FIELDS):
+    if not isinstance(meta, dict) or set(meta) - {"calls"} != set(META_FIELDS):
         raise ValueError("meta has wrong fields")
+    if "calls" in meta:
+        calls = meta["calls"]
+        if not isinstance(calls, list) or len(calls) > MAX_CALLS:
+            raise ValueError("meta field calls has wrong type")
+        for c in calls:
+            if (not isinstance(c, dict) or not {"start"} <= set(c) <= {"start", "end"}
+                    or not all(isinstance(v, str) and ISO_UTC.fullmatch(v) for v in c.values())):
+                raise ValueError("meta field calls has wrong type")
     for key, typ in META_FIELDS.items():
         # bool is an int subclass: reject it explicitly.
         if not isinstance(meta[key], typ) or isinstance(meta[key], bool):
