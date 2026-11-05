@@ -69,8 +69,16 @@ VAD_ARGS = ["-vt", "0.35", "-vp", "200"]
 # transcribed again in FALLBACK_LANGUAGE.
 LANGUAGES = {"it", "en"}
 FALLBACK_LANGUAGE = "it"
+# Lines whisper is less sure of than this (mean token probability of the
+# line, "conf" in the session JSON) are shown as UNCLEAR in the markdown: on
+# overlapping voices and noise their text is mostly invented. Measured on the
+# hand-corrected clips (tools/eval_transcribe.py --sweep): hides half of the
+# wrong words (62 -> 32) and 3% of the right ones (248 -> 241).
+CONF_MIN = 0.65
+UNCLEAR = archive_tr("[incomprensibile]", "[unintelligible]")
 # Bumped when the above changes: older transcripts are redone (plan()).
-PIPELINE = 3
+# 4: "conf" per line.
+PIPELINE = 4
 # Silence longer than this starts a new paragraph in the day markdown, and so
 # does a paragraph that has run this long without one.
 BLOCK_GAP = timedelta(minutes=2)
@@ -155,7 +163,7 @@ def _run_whisper(wav: Path, language: str = LANGUAGE) -> list[dict]:
         # ("Grazie a tutti." x18) that whisper produces on noise.
         "-mc", "0",
         "--vad", "-vm", str(MODELS_DIR / VAD_MODEL), *VAD_ARGS,
-        "-np", "-oj", "-of", str(base), "-f", str(wav),
+        "-np", "-ojf", "-of", str(base), "-f", str(wav),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     if r.returncode != 0:
         raise TranscribeError(f"whisper-cli failed (exit {r.returncode}): {r.stderr.strip()[-500:]}")
@@ -166,15 +174,25 @@ def _run_whisper(wav: Path, language: str = LANGUAGE) -> list[dict]:
         out.unlink(missing_ok=True)
     lang = data.get("result", {}).get("language")
     return [
-        {"from": it["offsets"]["from"], "to": it["offsets"]["to"], "text": it["text"].strip(), "language": lang}
+        {"from": it["offsets"]["from"], "to": it["offsets"]["to"], "text": it["text"].strip(), "language": lang,
+         "conf": _confidence(it.get("tokens", []))}
         for it in data["transcription"] if it["text"].strip()
     ]
+
+
+def _confidence(tokens: list[dict]) -> float | None:
+    """Mean probability of the text tokens of a line (whisper's own certainty):
+    low on overlapping voices and noise, where the text makes no sense."""
+    ps = [t["p"] for t in tokens if "p" in t and not t["text"].startswith("[_")]
+    return round(sum(ps) / len(ps), 3) if ps else None
 
 
 def transcribe_wav(wav: Path) -> list[dict]:
     """_run_whisper over a whole WAV, prepared as measured best: normalized,
     then cut at pauses into windows of about WINDOW_S, each with its own
-    language detection."""
+    language detection. (Cutting at the diarization's speaker turns instead
+    was measured worse: 117 wrong words instead of 62 on the clips, see
+    tools/eval_transcribe.py. Short pieces lose context and the language.)"""
     norm = wav.with_name(f"{wav.stem}-norm.wav")
     temp: list[Path] = [norm]
     try:
@@ -296,7 +314,8 @@ def _norm(text: str) -> str:
 
 def _clean(speech: list[dict]) -> list[dict]:
     """Speech fit to read: whisper's repetition loops (the same line over and
-    over) collapsed to one line, stock phrases alone in silence dropped."""
+    over) collapsed to one line, stock phrases alone in silence dropped, lines
+    below CONF_MIN replaced by UNCLEAR (consecutive ones by one)."""
     out: list[dict] = []
     for it in speech:
         if out and _norm(it["text"]) == _norm(out[-1]["text"]):
@@ -314,6 +333,11 @@ def _clean(speech: list[dict]) -> list[dict]:
             after = i + 1 < len(out) and t(out[i + 1]["start"]) - t(it["end"]) < ISOLATED
             if not (before or after):
                 continue
+        if it.get("conf") is not None and it["conf"] < CONF_MIN:
+            if kept and kept[-1].get("unclear"):
+                kept[-1] = {**kept[-1], "end": it["end"]}
+                continue
+            it = {**it, "text": UNCLEAR, "unclear": True}
         kept.append(it)
     return kept
 

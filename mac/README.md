@@ -248,6 +248,10 @@ Il markdown viene ripulito, mentre i JSON restano grezzi:
 - una frase ripetuta più volte di fila (un loop di whisper) compare una volta sola;
 - le frasi tipiche che whisper inventa sul rumore ("Thank you.", "Grazie per la visione."…)
   vengono tolte se nei 30 s prima e dopo non c'è altro parlato;
+- le frasi di cui whisper è poco sicuro (probabilità media dei token sotto 0,65, campo
+  `conf` nel JSON) diventano `[incomprensibile]`, e più frasi così di fila ne diventano una
+  sola. Succede soprattutto quando più voci si accavallano: lì il testo era quasi sempre
+  inventato. Le stesse righe vanno nel `.jsonl` per le altre app;
 - le sessioni senza parlato non compaiono.
 
 `uv run omy transcribe --pending --render` rigenera il markdown dai JSON senza ritrascrivere.
@@ -458,8 +462,26 @@ Risultati del 29 ottobre 2026 (1.000 parole circa):
 | Parole inventate nel silenzio | 2 | 0 |
 
 `large-v3` (non turbo) non ha migliorato le misure ed è 3 volte più lento. La
-conversazione in famiglia, con più voci lontane e rumore, resta il caso difficile:
+conversazione di gruppo, con più voci lontane che si accavallano e rumore, resta il caso difficile:
 lì si ritrova circa metà delle parole.
+
+Misure del 5 novembre 2026, sugli spezzoni corretti a mano rimasti (`voices/enroll`, circa
+500 parole; `uv run python tools/eval_transcribe.py --sweep`):
+
+| | parole ritrovate | parole sbagliate |
+|---|---|---|
+| pipeline attuale | 248 | 62 |
+| con `[incomprensibile]` sotto 0,65 | 241 | 32 |
+| trascrizione per turno di parola (diarizzazione prima, un pezzo per turno) | 218 | 129 |
+| voci separate prima (pyannote `speech-separation-ami-1.0`), ogni traccia trascritta | 203 | 88 |
+| Qwen3-ASR 1.7B con forced aligner, al posto di whisper | | WER 56% contro 46% |
+
+La trascrizione per turno è peggiore: pezzi di pochi secondi tolgono a whisper il contesto e
+la lingua (frasi inventate in inglese), e dove le voci si accavallano la stessa frase esce
+due volte. La separazione delle voci (addestrata su riunioni in inglese con microfoni da
+tavolo) sul ciondolo raggruppa 8 voci in 2, e sulle tracce separate whisper inventa ("Ciao"
+ripetuto decine di volte); sulla CPU è anche più lenta del tempo reale. Qwen3-ASR sbaglia di
+più anche rileggendo l'intero archivio ritrascritto.
 
 Diarizzazione: il 95% delle tue parole viene attribuito a te, e il 92% di quelle
 attribuite a te è davvero tuo. La misura è ottimista, perché gli spezzoni sono gli stessi
