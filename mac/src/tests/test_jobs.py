@@ -96,8 +96,43 @@ def test_requeue_keeps_attempts_and_reset_running():
     jobs.requeue(jid)  # preemption: as if never started
     assert jobs.get(jid).attempts == 0 and jobs.state_of(jid) == "queued"
     jobs.next_job(["organize"])
-    assert jobs.reset_running() == 1  # worker restart
-    assert jobs.state_of(jid) == "queued" and jobs.get(jid).attempts == 0
+    assert jobs.reset_running() == 1  # worker restart: the attempt stays counted
+    assert jobs.state_of(jid) == "queued" and jobs.get(jid).attempts == 1
+
+
+def test_a_job_that_crashes_the_worker_runs_out_of_attempts():
+    jid = jobs.enqueue("diarize", "s1")
+    for n in range(1, jobs.MAX_ATTEMPTS + 1):
+        assert jobs.next_job(["diarize"]).attempts == n
+        jobs.reset_running()  # the worker died, again
+    assert jobs.state_of(jid) == "failed" and jobs.next_job(["diarize"]) is None
+
+
+def test_gave_up_only_on_the_same_input():
+    jid = jobs.enqueue("organize", "s1", input_hash="h1")
+    for _ in range(jobs.MAX_ATTEMPTS):
+        j = jobs.next_job(["organize"], now=time.time() + 1e6)
+        jobs.fail(j.id, "x", retry_after=0)
+    assert jobs.state_of(jid) == "failed"
+    assert jobs.gave_up("organize", "s1", "h1")
+    assert not jobs.gave_up("organize", "s1", "h2")  # the input changed
+    assert not jobs.gave_up("organize", "other", "h1")
+    jobs.finish(jobs.enqueue("organize", "s1", input_hash="h2"))
+    assert not jobs.gave_up("organize", "s1", "h1")  # done since
+
+
+def test_ignore_window_and_force_flags_upgrade_queued_and_running():
+    o = jobs.enqueue("organize", "s1", ignore_window=True)
+    j = jobs.get(o)
+    assert j.ignore_window and not j.force
+    assert jobs.next_job([], forced_kinds=["organize"]).key == "s1"  # running, plain
+    assert jobs.enqueue("organize", "s1", force=True, ignore_window=True) == o  # upgrade a running job
+    assert jobs.get(o).force
+    jobs.finish(o)  # a forced re-run follows
+    again = jobs.next_job([], forced_kinds=["organize"])
+    assert again is not None and again.id != o and again.force
+    jobs.finish(again.id)
+    assert jobs.next_job(["organize"]) is None  # no endless re-runs
 
 
 def test_pending_counts_queued_and_running():

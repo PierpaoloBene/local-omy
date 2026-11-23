@@ -514,6 +514,27 @@ def progress() -> dict:
     return {"running": True, **p}
 
 
+class Busy(TranscribeError):
+    """Another transcription or diarization holds cache/.transcribe.lock."""
+
+
+BUSY_EXIT = 75  # `omy job` exit code for Busy: the worker tries again soon
+
+
+def take_lock():
+    """cache/.transcribe.lock, non-blocking: one whisper or pyannote at a time,
+    whoever starts it (the worker's jobs, `omy transcribe`, the old periodic).
+    The caller closes the file to release it."""
+    CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock = (CACHE_DIR / ".transcribe.lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        raise Busy("another transcription is running")
+    return lock
+
+
 def transcribe(days: list[date], force: bool = False) -> dict:
     """Transcribe the closed sessions of these days that have no transcript yet
     or grew since (all closed sessions with force), then rebuild those days'
@@ -521,12 +542,7 @@ def transcribe(days: list[date], force: bool = False) -> dict:
     missing = [n for n, ok in models_status().items() if not ok]
     if missing:
         raise TranscribeError(f"missing models {missing}: run omy setup models")
-    CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock = (CACHE_DIR / ".transcribe.lock").open("w")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        raise TranscribeError("another transcription is running")
+    lock = take_lock()
 
     result: dict = {"transcribed": [], "failed": {}, "open": [], "days": []}
     with lock:
@@ -636,12 +652,7 @@ def transcribe_job(session_id: str) -> dict:
     if missing:
         raise TranscribeError(f"missing models {missing}: run omy setup models")
     session = find_session(session_id)
-    CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock = (CACHE_DIR / ".transcribe.lock").open("w")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        raise TranscribeError("another transcription is running")
+    lock = take_lock()
     with lock:
         todo, still_open = plan([session.day])
         mine = next(((s, prior) for s, prior in todo if s.id == session_id), None)
@@ -674,6 +685,7 @@ def diarize_job(session_id: str) -> dict:
     session = find_session(session_id)
     if _load_doc(session) is None:
         raise TranscribeError(f"session {session_id} is not transcribed yet")
-    diarize.diarize_session(session)
-    render_day(session.day)
+    with take_lock():
+        diarize.diarize_session(session)
+        render_day(session.day)
     return {"diarized": [session.id], "days": [session.day.isoformat()]}

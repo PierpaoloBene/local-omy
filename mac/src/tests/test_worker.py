@@ -1,6 +1,7 @@
 """The worker: order, organize gating, preemption, chat model, render hook.
 Models, subprocesses and the brain modules are fakes."""
 
+import json
 import sys
 import threading
 import time
@@ -15,17 +16,24 @@ from omy import jobs, models, worker
 class FakeProc:
     """A job subprocess that ends by itself (exit_after seconds) or when terminated."""
 
-    def __init__(self, exit_after=0.0, code=0):
+    def __init__(self, exit_after=0.0, code=0, ignore_term=False):
         self.t_end = time.monotonic() + exit_after
         self.code, self.returncode, self.terminated = code, None, False
+        self.ignore_term, self.killed = ignore_term, False
 
     def poll(self):
-        if self.returncode is None and (self.terminated or time.monotonic() >= self.t_end):
+        if self.returncode is None and self.killed:
+            self.returncode = -9
+        elif self.returncode is None and ((self.terminated and not self.ignore_term)
+                                          or time.monotonic() >= self.t_end):
             self.returncode = -15 if self.terminated else self.code
         return self.returncode
 
     def terminate(self):
         self.terminated = True
+
+    def kill(self):
+        self.killed = True
 
 
 class FakeModels:
@@ -51,6 +59,14 @@ class FakeModels:
         self.calls.append(("release_all",))
         self.loaded = None
 
+    def abort(self, role=None):
+        self.calls.append(("abort", role))
+        if self.loaded == role or role is None:
+            self.loaded = None
+        if self.on_release:
+            self.on_release(role)
+        return True
+
 
 @pytest.fixture
 def env(archive, monkeypatch):
@@ -58,6 +74,7 @@ def env(archive, monkeypatch):
     monkeypatch.setattr(models, "ensure", fm.ensure)
     monkeypatch.setattr(models, "release", fm.release)
     monkeypatch.setattr(models, "release_all", fm.release_all)
+    monkeypatch.setattr(models, "abort", fm.abort)
     monkeypatch.setattr(models, "available", lambda role: fm.chat_file)
     monkeypatch.setattr(models, "state", lambda: {"loaded": fm.loaded, "pid": None, "port": None})
     monkeypatch.setattr(models, "chat_idle", lambda: 300.0)
@@ -232,7 +249,7 @@ def test_organize_preempted_by_a_question(env, monkeypatch):
     env.w.guard_once()
     t.join(5)
     assert not t.is_alive()
-    assert ("release", "organizer") in env.fm.calls
+    assert ("abort", "organizer") in env.fm.calls
     assert env.fm.calls[-1] == ("ensure", "chat") and env.fm.loaded == "chat"
     assert jobs.state_of(jid) == "queued" and jobs.get(jid).attempts == 0
     # no heavy work while the questions last; it resumes after CHAT_IDLE
@@ -309,7 +326,7 @@ def test_wake_file_triggers_scan(env):
 def test_scan_enqueues_transcribe_diarize_and_organize(env, monkeypatch):
     from omy import transcribe
     from omy import sessions
-    sess = lambda i: types.SimpleNamespace(id=i, closed=lambda: True)  # noqa: E731
+    sess = lambda i: types.SimpleNamespace(id=i, closed=lambda: True, segments=[])  # noqa: E731
     monkeypatch.setattr(worker, "feature_on", lambda k: True)
     monkeypatch.setattr(transcribe, "pending_days", lambda: [datetime(2026, 11, 21).date()])
     monkeypatch.setattr(transcribe, "plan", lambda days: ([(sess("t1"), None)], ["open1"]))
@@ -391,6 +408,8 @@ def test_receiver_transcribe_wakes_the_worker(archive):
     token = "t" * 40
     c = TestClient(create_app(Config(token=token.encode(), archive=archive)))
     auth = {"Authorization": f"Bearer {token}"}
+    (archive / "cache").mkdir(exist_ok=True)
+    (archive / "cache" / "worker.json").write_text(json.dumps({"heartbeat": time.time()}))
     assert c.post("/v1/transcribe").status_code == 401
     before = jobs.wake_time()
     time.sleep(0.01)

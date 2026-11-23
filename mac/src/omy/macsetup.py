@@ -20,7 +20,8 @@ from omy_receiver.l10n import tr
 MAC_SRC = REPO / "mac" / "src"
 TOKEN_FILE = Path(os.environ.get("OMY_TOKEN_FILE", CONFIG_DIR / "token"))
 AGENTS_DIR = Path("~/Library/LaunchAgents").expanduser()
-AGENTS = ("receiver", "periodic", "worker")
+# Installed by `omy setup`. launchd/periodic.plist stays in the repo for a rollback, not installed.
+AGENTS = ("receiver", "worker")
 RECEIVER_URL = "http://127.0.0.1:8787"
 # PATH for the LaunchAgents: Homebrew (flutter, pod, whisper-cli), uv, Xcode tools.
 AGENT_PATH = ":".join([
@@ -87,6 +88,8 @@ def install_agent(name: str) -> None:
     for _ in range(10):
         r = _run(["launchctl", "bootstrap", domain, str(path)])
         if r.returncode == 0:
+            if name == "worker":
+                retire_agent("periodic")  # the worker replaces it; two would fight over pyannote
             return
         time.sleep(0.5)
     raise SetupError(f"launchctl bootstrap {name} failed: {r.stderr.strip()}")
@@ -94,8 +97,7 @@ def install_agent(name: str) -> None:
 
 def retire_agent(name: str = "periodic") -> bool:
     """Stop a LaunchAgent and delete its plist (the worker replaces periodic).
-    Returns whether there was a plist. Not run by anything: `omy setup` leaves
-    the decision to the user."""
+    Returns whether there was a plist. Run by install_agent("worker")."""
     _run(["launchctl", "bootout", f"gui/{os.getuid()}/{_label(name)}"])
     path = _plist_path(name)
     existed = path.exists()
