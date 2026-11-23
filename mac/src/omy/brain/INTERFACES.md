@@ -29,7 +29,8 @@ dell'id sessione, `HHMM` ora locale di inizio, `slug` dal titolo (ascii, max 40)
              "luoghi": [{"nome": …, "refs": …, "conf": …}], "organizzazioni": [...], "progetti": [...]},
   "impegni_e_todo": [{"chi": "Io", "chi_id": "me" | "<id>" | null, "verso_chi": "Rosalinda" | null,
                       "verso_chi_id": … | null, "cosa": "…", "scadenza_testo": "venerdì" | null,
-                      "scadenza": "2026-11-27" | null, "stato": "aperto", "refs": [...], "conf": {...}}],
+                      "scadenza": "2026-11-27" | null, "stato": "aperto", "refs": [...], "conf": {...},
+                      "uid": "<8 hex, stabile>"}],
   "date_ed_eventi_citati": [{"testo_data": "due giorni fa", "data": "2026-10-28" | null,
                              "evento": "…", "refs": [...], "conf": {...}}],
   "ascoltato": [{"riassunto": "…", "app": "YouTube" | null, "refs": [...]}],
@@ -44,7 +45,20 @@ dell'id sessione, `HHMM` ora locale di inizio, `slug` dal titolo (ascii, max 40)
 Regole: i nomi nei campi testuali (`riassunto`, `testo`, `cosa`…) sono quelli visti dal modello; la sostituzione
 con i nomi attuali avviene SOLO in fase di rendering (vault) usando `partecipanti[].nome_al_momento` → nome attuale
 della `person`. Il sidecar non viene riscritto per un cambio nome. `collegamenti` li calcola il vault (non il modello)
-e li scrive con `vault.update_links()`; l'organizer li lascia `[]`.
+e li scrive con `vault.update_links()`; l'organizer li lascia `[]` alla prima
+elaborazione e, rielaborando, conserva quelli del vecchio sidecar finché `update_links` non li ricalcola.
+Sidecar scritti sempre con `json.dumps(..., ensure_ascii=False, indent=2)`, ordine delle chiavi dello schema.
+
+`uid` (impegni): generato una volta (`sha1(sessione|primo ref|cosa)[:8]`) e usato dal vault per l'id `^c<uid>`
+(senza `uid`: formula vecchia, hash di sessione+`cosa`). Rielaborando, un impegno che coincide con uno vecchio
+(stesso `chi_id`, o stesso `chi`, e `cosa` simile >= 0.8) eredita `stato` e `uid`. Il vault applica anche i
+"destick": `- [ ]` in `impegni.md`/nota -> `stato` "aperto" (vince il file modificato più di recente).
+
+`elaborazione.input_hash` NON contiene i nomi dei parlanti: per paragrafo (id riga, inizio, label cluster o
+person id, media, testo) + prompt/schema version + nome modello (`models.model_path("organizer").stem`),
+calcolato una volta all'inizio. Un rename di persona non rielabora. `organize.rehash(session_id) -> bool`
+migra un sidecar vecchio al nuovo schema di hash (si fida del chiamante che il testo sia lo stesso; controlla
+solo la struttura dei paragrafi).
 
 ## 2. Modelli (modulo `omy.models`, agente A)
 ```python

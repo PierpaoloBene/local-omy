@@ -28,7 +28,8 @@ from omy.brain import NOTES, SCHEMA_VERSION, WORK, confidence, dates, llm
 from omy.config import ARCHIVE
 
 PROMPT_VERSION = 1
-MODEL = "Qwen3.8-27B-GSQ-RCO-IQ2_XS-mtp"
+MODEL = "Qwen3.8-27B-GSQ-RCO-IQ2_XS-mtp"  # fallback when omy.models cannot tell
+CARRY = 0.8  # similarity of `cosa` above which a re-organized commitment is the same one as before
 HERE = Path(__file__).resolve().parent
 CHARS_PER_TOKEN = 3.2
 PART_MIN_TOKENS, PART_MAX_TOKENS = 2000, 4000
@@ -65,6 +66,15 @@ def _check_preempt() -> None:
     except ImportError:
         return
     models.check_preempt()
+
+
+def model_name() -> str:
+    """The organizer model actually configured (file name without .gguf), else the constant."""
+    try:
+        from omy import models
+        return models.model_path("organizer").stem or MODEL
+    except (ImportError, AttributeError, Exception):
+        return MODEL
 
 
 def _fold(text: str) -> str:
@@ -167,6 +177,14 @@ class Session:
         return {f"P{n}": {"riga": r["id"], "inizio": r["start"], "fine": r["end"], "label": self.labels[n - 1],
                           "media": _is_media(r)} for n, r in enumerate(self.rows, 1)}
 
+    def input_hash(self) -> str:
+        """Hash of what the model sees, WITHOUT speaker display names (a rename must not re-run the
+        model): per paragraph row id, start, cluster label (or person id), media flag, text."""
+        paras = [[r["id"], r["start"], self.labels[n] or r.get("person"), _is_media(r), r["text"]]
+                 for n, r in enumerate(self.rows)]
+        body = json.dumps(paras, ensure_ascii=False)
+        return hashlib.sha256(f"{body}\n{PROMPT_VERSION}\n{SCHEMA_VERSION}\n{model_name()}".encode()).hexdigest()
+
     def speech_chars(self) -> int:
         return sum(len(r["text"]) for r in self.rows if not _is_media(r))
 
@@ -208,9 +226,7 @@ def _seconds(r: dict) -> float:
 
 
 def input_hash(session_id: str) -> str:
-    s = Session(session_id)
-    body = json.dumps([[ln, lb] for ln, lb in zip(s.lines, s.labels)], ensure_ascii=False)
-    return hashlib.sha256(f"{body}\n{PROMPT_VERSION}\n{SCHEMA_VERSION}\n{MODEL}".encode()).hexdigest()
+    return Session(session_id).input_hash()
 
 
 # --- where the note lives ----------------------------------------------------------------
@@ -242,6 +258,33 @@ def needs_organize(session_id: str) -> bool:
         return json.loads(path.read_text()).get("elaborazione", {}).get("input_hash") != h
     except (OSError, ValueError):
         return True
+
+
+def rehash(session_id: str) -> bool:
+    """Migration helper: rewrite the input_hash of an existing sidecar with the current scheme.
+    It TRUSTS the caller that the note was made from this very transcript text; it only checks that
+    the paragraph structure (rows, starts, labels, media flags) is the one the sidecar recorded.
+    True if the sidecar now carries the current hash."""
+    path = note_path(session_id)
+    if path is None:
+        return False
+    try:
+        sc = json.loads(path.read_text())
+        s = Session(session_id)
+    except (OSError, ValueError, OrganizeError):
+        return False
+    old = sc.get("paragrafi") or {}
+    new = s.paragraphs()
+    if set(old) != set(new) or any(
+            (old[k].get("riga"), old[k].get("inizio"), old[k].get("label"), old[k].get("media")) !=
+            (v["riga"], v["inizio"], v["label"], v["media"]) for k, v in new.items()):
+        return False
+    h = s.input_hash()
+    el = sc.setdefault("elaborazione", {})
+    if el.get("input_hash") != h:
+        el["input_hash"] = h
+        _write_atomic(path, json.dumps(sc, ensure_ascii=False, indent=2) + "\n")
+    return True
 
 
 def _slug(title: str) -> str:
@@ -327,7 +370,7 @@ def _call(base_url: str, system: str, user: str, schema: dict, max_tokens: int) 
 def _extract_part(s: Session, base_url: str, system: str, schema: dict, k: int, first: int, last: int,
                   work: Path) -> dict:
     user = "\n".join(s.lines[first:last + 1])
-    key = _hash(system, user, PROMPT_VERSION, SCHEMA_VERSION, MODEL)
+    key = _hash(system, user, PROMPT_VERSION, SCHEMA_VERSION, model_name())
     ck = work / f"part-{k}.json"
     try:
         got = json.loads(ck.read_text())
@@ -464,7 +507,8 @@ def _check(s: Session, merged: dict) -> dict:
         d = dates.resolve(sc, ref_dt, prefer="future") if sc else None
         todo.append({"chi": chi, "chi_id": chi_id, "verso_chi": verso, "verso_chi_id": c.person_id(verso),
                      "cosa": cosa, "scadenza_testo": sc, "scadenza": d.isoformat() if d else None,
-                     "stato": "aperto", "refs": refs, "conf": i.get("conf")})
+                     "stato": "aperto", "refs": refs, "conf": i.get("conf"),
+                     "uid": hashlib.sha1(f"{s.id}|{refs[0]}|{cosa}".encode()).hexdigest()[:8]})
     out["impegni_e_todo"] = _merge(todo, lambda a, b: _similar(a["cosa"], b["cosa"]) and
                                    a["chi_id"] == b["chi_id"] and (a["chi_id"] is not None or
                                                                    _fold(a["chi"] or "") == _fold(b["chi"] or "")))
@@ -494,6 +538,34 @@ def _check(s: Session, merged: dict) -> dict:
             tags.append(t)
     out["tag"] = tags
     return out
+
+
+def _old_uid(sid: str, cosa: str) -> str:
+    """The id the vault derived before commitments had a uid (so a carried-over ^id does not change)."""
+    return hashlib.sha1(f"{sid}|{(cosa or '').casefold().strip()}".encode()).hexdigest()[:8]
+
+
+def carry_over(sid: str, new: list[dict], old: list[dict]) -> None:
+    """A re-organization keeps what the user did: stato and uid of a commitment that matches an old one
+    (same chi_id or chi, `cosa` similar >= CARRY)."""
+    free = list(range(len(old)))
+    for it in new:
+        best, best_r = None, 0.0
+        for k in free:
+            o = old[k]
+            same_who = (it["chi_id"] is not None and it["chi_id"] == o.get("chi_id")) or \
+                _fold(it["chi"] or "") == _fold(o.get("chi") or "")
+            if not same_who:
+                continue
+            a, b = _norm_text(it["cosa"]), _norm_text(o.get("cosa") or "")
+            r = 1.0 if a == b else difflib.SequenceMatcher(None, a, b).ratio()
+            if r >= CARRY and r > best_r:
+                best, best_r = k, r
+        if best is not None:
+            free.remove(best)
+            o = old[best]
+            it["stato"] = o.get("stato") or it["stato"]
+            it["uid"] = o.get("uid") or _old_uid(sid, o.get("cosa"))
 
 
 def _with_conf(note: dict) -> None:
@@ -542,7 +614,7 @@ def _reduce(base_url: str, parts: list[dict], work: Path) -> dict:
         blocks.append(f"Parte {k} (P{p['da']}-P{p['a']}): {_clean(r.get('riassunto_parte'), 1500)}\n{pts}".rstrip())
     user = "\n\n".join(blocks)
     system = (HERE / "prompts" / "reduce.md").read_text()
-    key = _hash(system, user, PROMPT_VERSION, SCHEMA_VERSION, MODEL)
+    key = _hash(system, user, PROMPT_VERSION, SCHEMA_VERSION, model_name())
     ck = work / "reduce.json"
     try:
         got = json.loads(ck.read_text())
@@ -558,6 +630,13 @@ def _reduce(base_url: str, parts: list[dict], work: Path) -> dict:
 def organize_session(session_id: str, base_url: str) -> Path:
     t0 = time.monotonic()
     s = Session(session_id)
+    in_hash = s.input_hash()  # once, from the very rows the prompt is made of
+    model = model_name()
+    old_path = note_path(session_id)
+    try:
+        old = json.loads(old_path.read_text()) if old_path else {}
+    except (OSError, ValueError):
+        old = {}
     note = _base(s)
     if s.speech_chars() < TRIVIAL_CHARS:
         body = _trivial(s)
@@ -598,17 +677,18 @@ def organize_session(session_id: str, base_url: str) -> Path:
     note.update({k: body[k] for k in ("titolo", "qualita", "riassunto", "parti", "punti_chiave", "entita",
                                       "impegni_e_todo", "date_ed_eventi_citati", "ascoltato", "tag")})
     _with_conf(note)
-    note["collegamenti"] = []
+    carry_over(session_id, note["impegni_e_todo"], old.get("impegni_e_todo") or [])
+    note["collegamenti"] = old.get("collegamenti") or []  # the vault recomputes them (update_links)
     note["confidenza"] = confidence.combine(confs) or {"media": None, "minima": None}
     note["da_rivedere"] = confidence.da_rivedere(note)
-    note["elaborazione"] = {"modello": MODEL, "prompt_version": PROMPT_VERSION, "schema_version": SCHEMA_VERSION,
-                            "input_hash": input_hash(session_id),
+    note["elaborazione"] = {"modello": model, "prompt_version": PROMPT_VERSION, "schema_version": SCHEMA_VERSION,
+                            "input_hash": in_hash,
                             "creato": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
                             "durata_s": round(time.monotonic() - t0, 1), "n_parti": n_parts}
-    path = note_path(session_id)
+    path = old_path
     if path is None:
         start = datetime.fromisoformat(s.rows[0]["start"])
         path = NOTES / s.day[:4] / s.day[5:7] / s.day[8:10] / f"{start:%H%M}-{_slug(note['titolo'])}-{_id8(session_id)}.json"
-    _write_atomic(path, json.dumps(note, ensure_ascii=False, indent=1) + "\n")
+    _write_atomic(path, json.dumps(note, ensure_ascii=False, indent=2) + "\n")
     shutil.rmtree(WORK / session_id, ignore_errors=True)
     return path
