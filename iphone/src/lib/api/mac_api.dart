@@ -18,6 +18,32 @@ import '../l10n.dart';
 /// wherever the phone is.
 String? archiveToday;
 
+/// The events of a text/event-stream: one JSON per `data: {...}` line, in
+/// chunks cut anywhere. Other lines (comments, keep-alives) and events of
+/// types this app doesn't know are skipped.
+Stream<AskEvent> parseAskStream(Stream<List<int>> bytes) async* {
+  await for (final line in bytes.transform(utf8.decoder).transform(const LineSplitter())) {
+    if (!line.startsWith('data:')) continue;
+    final data = line.substring(5).trim();
+    if (data.isEmpty) continue;
+    final AskEvent? e;
+    try {
+      e = AskEvent.fromJson(jsonDecode(data) as Json);
+    } catch (_) {
+      continue;
+    }
+    if (e != null) yield e;
+  }
+}
+
+/// 2026-11-23T14:30:00+01:00: the phone's time with its offset.
+String isoWithOffset(DateTime t) {
+  String two(int n) => n.toString().padLeft(2, '0');
+  final o = t.timeZoneOffset, a = o.abs();
+  return '${t.year.toString().padLeft(4, '0')}-${two(t.month)}-${two(t.day)}T${two(t.hour)}:${two(t.minute)}:${two(t.second)}'
+      '${o.isNegative ? '-' : '+'}${two(a.inHours)}:${two(a.inMinutes % 60)}';
+}
+
 class MacError implements Exception {
   final String message;
   const MacError(this.message);
@@ -66,6 +92,64 @@ class MacApi {
 
   /// The sessions started in the last [hours] with voices still to label.
   Future<Unlabeled> unlabeled({required int hours}) => _get('/v1/unlabeled', Unlabeled.fromJson, {'hours': '$hours'});
+
+  /// The note of [session]; null if the Mac has none.
+  Future<Note?> note(String session) async {
+    final base = _settings.macUrl, token = _settings.token;
+    if (base == null || token == null) throw MacError(_notConfigured);
+    final http.Response res;
+    try {
+      res = await http.Response.fromStream(
+        await _client
+            .send(
+              http.Request('GET', Uri.parse('$base/v1/brain/note/${Uri.encodeComponent(session)}'))
+                ..headers['Authorization'] = 'Bearer $token',
+            )
+            .timeout(_read),
+      ).timeout(_read);
+    } on SocketException {
+      throw MacError(_unreachable);
+    } on http.ClientException {
+      throw MacError(_unreachable);
+    } on Exception {
+      throw MacError(tr('Il Mac non ha risposto in tempo', 'The Mac did not answer in time'));
+    }
+    if (res.statusCode == 404) return null;
+    if (res.statusCode != 200) throw MacError(_statusError(res.statusCode));
+    return _parse(res, Note.fromJson);
+  }
+
+  /// Asks the archive: the answer streams as events (status, citations,
+  /// text, done). [history]: the last turns of the chat (at most 4 are sent).
+  Stream<AskEvent> ask(String question, List<AskTurn> history) async* {
+    final base = _settings.macUrl, token = _settings.token;
+    if (base == null || token == null) throw MacError(_notConfigured);
+    final req = http.Request('POST', Uri.parse('$base/v1/ask'))
+      ..headers['Authorization'] = 'Bearer $token'
+      ..headers['Content-Type'] = 'application/json'
+      ..headers['Accept'] = 'text/event-stream'
+      ..body = jsonEncode({
+        'question': question,
+        'history': [for (final t in history.length > 4 ? history.sublist(history.length - 4) : history) t.toJson()],
+        'now': isoWithOffset(DateTime.now()),
+      });
+    final http.StreamedResponse res;
+    try {
+      res = await _client.send(req).timeout(_read);
+    } on SocketException {
+      throw MacError(_unreachable);
+    } on http.ClientException {
+      throw MacError(_unreachable);
+    } on Exception {
+      throw MacError(tr('Il Mac non ha risposto in tempo', 'The Mac did not answer in time'));
+    }
+    if (res.statusCode != 200) throw MacError(_statusError(res.statusCode));
+    try {
+      yield* parseAskStream(res.stream);
+    } on http.ClientException {
+      throw MacError(_unreachable);
+    }
+  }
 
   Future<void> transcribeNow() => _send('POST', '/v1/transcribe');
 
@@ -181,6 +265,28 @@ class MacApi {
       );
     }
     return res;
+  }
+
+  static final _notConfigured = tr(
+    'Mac non configurato: URL e token in Impostazioni',
+    'Mac not set up: URL and token in Settings',
+  );
+
+  static String _statusError(int code) {
+    if (code == 401) return tr('Token non valido (Impostazioni)', 'Invalid token (Settings)');
+    if (code >= 502 && code <= 504) {
+      return tr(
+        'Il ricevitore sul Mac è fermo: riavvialo dall\'app Mac (Impostazioni)',
+        'The receiver on the Mac is stopped: restart it from the Mac app (Settings)',
+      );
+    }
+    if (code == 404) {
+      return tr(
+        'Il Mac va aggiornato: non conosce questa richiesta',
+        'The Mac needs an update: it does not know this request',
+      );
+    }
+    return tr('Errore dal Mac (HTTP $code)', 'Error from the Mac (HTTP $code)');
   }
 
   static final _unreachable = tr(

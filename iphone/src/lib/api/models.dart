@@ -321,6 +321,115 @@ class ConversationList {
       ConversationList([...conversations, ...older.conversations], older.next);
 }
 
+/// A source of an answer from POST /v1/ask: a note or a passage of text.
+class Citation {
+  final int n;
+  final String kind, session, day, time, rowId, title, snippet;
+  final double t;
+  Citation.fromJson(Json j)
+    : n = (j['n'] as num).toInt(),
+      kind = j['kind'] as String? ?? 'testo',
+      session = j['session'] as String,
+      day = j['day'] as String,
+      time = j['time'] as String? ?? '',
+      t = (j['t'] as num? ?? 0).toDouble(),
+      rowId = j['row_id'] as String? ?? '',
+      title = j['title'] as String? ?? '',
+      snippet = j['snippet'] as String? ?? '';
+}
+
+/// One turn sent back as context of the next question.
+class AskTurn {
+  final String role, content;
+  const AskTurn(this.role, this.content);
+  Json toJson() => {'role': role, 'content': content};
+}
+
+/// What the Mac streams while it answers (text/event-stream).
+sealed class AskEvent {
+  const AskEvent();
+
+  /// Null for events of a type this app doesn't know (newer Mac).
+  static AskEvent? fromJson(Json j) => switch (j['type']) {
+    'status' => AskStatus(j['stage'] as String? ?? ''),
+    'citations' => AskCitations(_list(j['items'], Citation.fromJson)),
+    'delta' => AskDelta(j['text'] as String? ?? ''),
+    'done' => AskDone(
+      notFound: j['not_found'] == true,
+      timings: {for (final e in ((j['timings'] as Map?) ?? {}).entries) '${e.key}': (e.value as num).toDouble()},
+    ),
+    'error' => AskError(j['message'] as String? ?? ''),
+    _ => null,
+  };
+}
+
+/// waking, searching or answering.
+class AskStatus extends AskEvent {
+  final String stage;
+  const AskStatus(this.stage);
+}
+
+class AskCitations extends AskEvent {
+  final List<Citation> items;
+  const AskCitations(this.items);
+}
+
+class AskDelta extends AskEvent {
+  final String text;
+  const AskDelta(this.text);
+}
+
+class AskDone extends AskEvent {
+  final bool notFound;
+  final Map<String, double> timings;
+  const AskDone({this.notFound = false, this.timings = const {}});
+}
+
+class AskError extends AskEvent {
+  final String message;
+  const AskError(this.message);
+}
+
+/// The sidecar of a session (GET /v1/brain/note/{session}): what the app shows.
+class Note {
+  final String titolo, data, oraInizio, riassunto;
+  final List<String> puntiChiave, impegni, dateEventi, entita;
+
+  Note.fromJson(Json j)
+    : titolo = j['titolo'] as String? ?? '',
+      data = j['data'] as String? ?? '',
+      oraInizio = j['ora_inizio'] as String? ?? '',
+      riassunto = j['riassunto'] as String? ?? '',
+      puntiChiave = [for (final x in (j['punti_chiave'] as List? ?? [])) x is Map ? '${x['testo'] ?? ''}' : '$x'],
+      impegni = [for (final x in (j['impegni_e_todo'] as List? ?? [])) _commitment(x)],
+      dateEventi = [for (final x in (j['date_ed_eventi_citati'] as List? ?? [])) _event(x)],
+      entita = _entities(j['entita']);
+
+  static String _commitment(Object? x) {
+    if (x is! Map) return '$x';
+    final chi = x['chi'] as String?, verso = x['verso_chi'] as String?, due = x['scadenza'] ?? x['scadenza_testo'];
+    return [
+      if (chi != null) chi,
+      if (verso != null) '-> $verso',
+      '${x['cosa'] ?? ''}',
+      if (due != null) '($due)',
+    ].join(' ');
+  }
+
+  static String _event(Object? x) {
+    if (x is! Map) return '$x';
+    final d = x['data'] ?? x['testo_data'];
+    return d == null ? '${x['evento'] ?? ''}' : '$d: ${x['evento'] ?? ''}';
+  }
+
+  static List<String> _entities(Object? v) => [
+    if (v is Map)
+      for (final g in v.values)
+        for (final e in (g as List? ?? []))
+          if (e is Map && e['nome'] is String) e['nome'] as String,
+  ];
+}
+
 class Unlabeled {
   final List<VoiceSession> sessions;
   Unlabeled.fromJson(Json j) : sessions = _list(j['sessions'], VoiceSession.fromJson);
