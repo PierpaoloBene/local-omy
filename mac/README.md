@@ -281,6 +281,11 @@ che gira sul Mac con la GPU (MPS) a circa 25 volte il tempo reale.
   numeri valgono solo dentro la sessione.
 - Nel markdown ogni paragrafo porta nome e orario: `**18:26 · Io** …`. Le frasi che non
   cadono in nessun turno restano senza nome.
+- Il parlante si assegna parola per parola: ogni parola prende il turno con cui si
+  sovrappone di più, e una riga di whisper si spezza dove cambia la voce (nelle trascrizioni
+  vecchie, senza parole, resta l'assegnazione dell'intera riga). I vuoti brevi (fino a 1 s)
+  prendono il turno più vicino, e i lampi di una o due parole (meno di 0,7 s) tra due pezzi
+  della stessa voce vengono uniti a quella voce.
 
 Una volta sola:
 1. Accetta le condizioni del modello su

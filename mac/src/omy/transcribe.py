@@ -78,7 +78,8 @@ CONF_MIN = 0.65
 UNCLEAR = archive_tr("[incomprensibile]", "[unintelligible]")
 # Bumped when the above changes: older transcripts are redone (plan()).
 # 4: "conf" per line. 5: "conf" actually saved (4 computed it and dropped it),
-# non-speech tokens suppressed, English windows checked against Italian.
+# non-speech tokens suppressed, English windows checked against Italian,
+# "words" per line (text and ms from the line start, for word-level speakers).
 PIPELINE = 5
 # Silence longer than this starts a new paragraph in the day markdown, and so
 # does a paragraph that has run this long without one.
@@ -91,6 +92,16 @@ HALLUCINATIONS = {
     "grazie", "grazie a tutti", "grazie per la visione", "gracias", "merci", "you", "",
 }
 ISOLATED = timedelta(seconds=30)
+# Word-level speakers. Measured on the archive: 20% of whisper lines hold 2+
+# speakers (>1 s each) and a whole line given to one turn put 14.6% of speech
+# time on the wrong speaker; 56% of pyannote turns are shorter than 1 s.
+# So each word takes the turn it overlaps most; a word in no turn takes the
+# nearest one within NEAREST_S; a blip of at most MIN_RUN_WORDS words and
+# under MIN_RUN_S between two runs of the same other speaker is a pyannote
+# fragment and joins them.
+NEAREST_S = 1.0
+MIN_RUN_S = 0.7
+MIN_RUN_WORDS = 2
 # Lines that are only a sound annotation ("*risate*", "[Musica]", "(applausi)"):
 # whisper's guesses at non-speech, mostly wrong ("*Risola*"). Never shown.
 NONSPEECH = re.compile(r"^[\s\-]*(?:[*\[(][^*\[\]()]*[*\])][\s.,!?\-]*)+$")
@@ -188,9 +199,36 @@ def _run_whisper(wav: Path, language: str = LANGUAGE) -> list[dict]:
     lang = data.get("result", {}).get("language")
     return [
         {"from": it["offsets"]["from"], "to": it["offsets"]["to"], "text": it["text"].strip(), "language": lang,
-         "conf": _confidence(it.get("tokens", []))}
+         "conf": _confidence(it.get("tokens", [])), "words": _words(it.get("tokens", []))}
         for it in data["transcription"] if it["text"].strip()
     ]
+
+
+def _words(tokens: list[dict]) -> list[list]:
+    """[text, from_ms, to_ms, p] per word of a line, from whisper's tokens
+    (same time origin as the line). A token starting with a space begins a
+    word, the others continue it (punctuation stays attached); special tokens
+    ("[_BEG_]", "[_TT_123]") are not text. p is the mean token probability."""
+    words: list[dict] = []
+    new_word = True
+    for t in tokens:
+        text = t["text"]
+        if text.startswith("[_"):
+            continue
+        if text.startswith(" "):
+            new_word = True
+        if not text.strip():
+            continue
+        if new_word:
+            words.append({"text": "", "from": t["offsets"]["from"], "ps": []})
+            new_word = False
+        w = words[-1]
+        w["text"] += text.strip()
+        w["to"] = t["offsets"]["to"]
+        if "p" in t:
+            w["ps"].append(t["p"])
+    return [[w["text"], w["from"], w["to"], round(sum(w["ps"]) / len(w["ps"]), 3) if w["ps"] else None]
+            for w in words]
 
 
 def _confidence(tokens: list[dict]) -> float | None:
@@ -224,7 +262,8 @@ def transcribe_wav(wav: Path) -> list[dict]:
                 if _mean_conf(again) > _mean_conf(found):
                     found = again
             for it in found:
-                items.append({**it, "from": offset_ms + it["from"], "to": offset_ms + it["to"]})
+                words = [[w[0], offset_ms + w[1], offset_ms + w[2], w[3]] for w in it.get("words", [])]
+                items.append({**it, "from": offset_ms + it["from"], "to": offset_ms + it["to"], "words": words})
         return items
     finally:
         for p in temp:
@@ -248,6 +287,8 @@ def _speech_item(start: datetime, it: dict) -> dict:
     }
     if it.get("conf") is not None:
         item["conf"] = it["conf"]
+    if it.get("words"):
+        item["words"] = [[w[0], w[1] - it["from"], w[2] - it["from"], w[3]] for w in it["words"]]
     return item
 
 
@@ -362,7 +403,8 @@ def _clean(speech: list[dict]) -> list[dict]:
             continue
         text = _unloop(it["text"])
         if text != it["text"]:
-            it = {**it, "text": text}
+            it = {k: v for k, v in it.items() if k != "words"}
+            it["text"] = text
         if out and _norm(it["text"]) == _norm(out[-1]["text"]):
             out[-1] = {**out[-1], "end": it["end"]}
             continue
@@ -382,7 +424,8 @@ def _clean(speech: list[dict]) -> list[dict]:
             if kept and kept[-1].get("unclear"):
                 kept[-1] = {**kept[-1], "end": it["end"]}
                 continue
-            it = {**it, "text": UNCLEAR, "unclear": True}
+            it = {k: v for k, v in it.items() if k != "words"}
+            it.update(text=UNCLEAR, unclear=True)
         kept.append(it)
     return kept
 
@@ -408,14 +451,81 @@ def _speaker_of(turns: list[dict], start: datetime, end: datetime) -> dict | Non
     return best
 
 
+def _word_turn(turns: list[dict], start: datetime, end: datetime) -> dict | None:
+    """Turn of one word: the one it overlaps most, else the nearest within NEAREST_S."""
+    best = _speaker_of(turns, start, end)
+    if best:
+        return best
+    near, gap = None, timedelta(seconds=NEAREST_S)
+    for x in turns:
+        d = max(_t(x["start"]) - end, start - _t(x["end"]))
+        if d <= gap:
+            near, gap = x, d
+    return near
+
+
+def _name(turn: dict | None) -> str | None:
+    return turn and turn["speaker"]
+
+
+def _smooth(labels: list[dict | None], spans: list[tuple[datetime, datetime]]) -> list[dict | None]:
+    """Relabel short blips (under MIN_RUN_S, at most MIN_RUN_WORDS words)
+    sitting between two runs of the same other speaker: pyannote fragments."""
+    runs: list[list[int]] = []  # [first, last+1] word indexes
+    for i, lab in enumerate(labels):
+        if runs and _name(labels[runs[-1][0]]) == _name(lab):
+            runs[-1][1] = i + 1
+        else:
+            runs.append([i, i + 1])
+    out = list(labels)
+    for k in range(1, len(runs) - 1):
+        (a, b), before, after = runs[k], runs[k - 1], runs[k + 1]
+        y = out[before[0]]
+        if (_name(y) is not None and _name(y) == _name(out[after[0]]) and _name(y) != _name(out[a])
+                and b - a <= MIN_RUN_WORDS
+                and (spans[b - 1][1] - spans[a][0]).total_seconds() < MIN_RUN_S):
+            out[a:b] = [y] * (b - a)
+    return out
+
+
+def _split_words(it: dict, turns: list[dict]) -> list[tuple[dict | None, dict]]:
+    """(turn, item) for an item with words: one pair per run of words of the
+    same speaker. The words must agree with the text (whisper's, untouched by
+    _clean), else whole-line attribution."""
+    words = it.get("words")
+    if not words or not turns or " ".join(w[0] for w in words) != " ".join(it["text"].split()):
+        return [(_speaker_of(turns, _t(it["start"]), _t(it["end"])), it)]
+    origin = _t(it["start"])
+    spans = [(origin + timedelta(milliseconds=w[1]), origin + timedelta(milliseconds=w[2])) for w in words]
+    labels = _smooth([_word_turn(turns, s, e) for s, e in spans], spans)
+    out: list[tuple[dict | None, dict]] = []
+    i = 0
+    while i < len(words):
+        j = i
+        while j < len(words) and _name(labels[j]) == _name(labels[i]):
+            j += 1
+        if i == 0 and j == len(words):
+            out.append((labels[0], it))
+        else:
+            ps = [w[3] for w in words[i:j] if w[3] is not None]
+            part = {k: v for k, v in it.items() if k != "words"}
+            part.update(start=_iso(spans[i][0]), end=_iso(spans[j - 1][1]),
+                        text=" ".join(w[0] for w in words[i:j]))
+            if ps:
+                part["conf"] = round(sum(ps) / len(ps), 3)
+            out.append((labels[i], part))
+        i = j
+    return out
+
+
 def _paragraphs(speech: list[dict], turns: list[dict]) -> list[tuple[dict | None, list[dict]]]:
     """(turn of its first item, items) of the cleaned speech: a new paragraph
-    at each change of speaker, after BLOCK_GAP of silence, or after BLOCK_MAX."""
+    at each change of speaker (inside a line too, when it has words), after
+    BLOCK_GAP of silence, or after BLOCK_MAX."""
     out: list[tuple[dict | None, list[dict]]] = []
     block_start = prev_end = None
-    for it in speech:
+    for turn, it in (p for line in speech for p in _split_words(line, turns)):
         start, end = _t(it["start"]), _t(it["end"])
-        turn = _speaker_of(turns, start, end)
         name = turn and turn["speaker"]
         if (not out or start - prev_end > BLOCK_GAP or start - block_start > BLOCK_MAX
                 or name != (out[-1][0] and out[-1][0]["speaker"])):

@@ -62,7 +62,8 @@ CLUSTERS = VOICES / "clusters"
 PEOPLE = VOICES / "people.json"
 PEOPLE_DIR = VOICES / "people"
 # 2: cluster embeddings saved, turns carry the cluster label.
-VERSION = 2
+# 3: exclusive turns (one voice at a time).
+VERSION = 3
 
 _pipeline = None
 
@@ -104,8 +105,11 @@ def diarize_wav(wav: Path) -> dict:
         rate = w.getframerate()
         x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768
     out = _load()({"waveform": torch.from_numpy(x)[None], "sample_rate": rate})
-    d = out.speaker_diarization
-    labels = d.labels()
+    # The exclusive version has one voice at a time (overlaps go to the most
+    # likely speaker): made by pyannote for aligning a transcript to it, which
+    # is what the turns are used for. The overlapping one is the fallback.
+    d = getattr(out, "exclusive_speaker_diarization", None) or out.speaker_diarization
+    labels = out.speaker_diarization.labels()
     turns = [(seg.start, seg.end, label) for seg, _, label in d.itertracks(yield_label=True)]
     emb = {}
     if out.speaker_embeddings is not None:
