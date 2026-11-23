@@ -200,3 +200,82 @@ def resolve(text: str, reference: datetime, prefer: str | None = None) -> date |
     if not parsed or abs((parsed.date() - today).days) > MAX_DAYS:
         return None
     return parsed.date()
+
+
+# --- ranges in a QUESTION ("cosa ho detto ieri?", "la settimana scorsa", "dal 3 al 10 novembre") ---
+
+def _month_range(year: int, month: int) -> tuple[date, date]:
+    return date(year, month, 1), date(year, month, calendar.monthrange(year, month)[1])
+
+
+def _recent_date(month: int, day: int, today: date, year: int | None = None) -> date | None:
+    """The most recent day/month that is not after today (or in the given year)."""
+    try:
+        if year is not None:
+            return date(year, month, day)
+        d = date(today.year, month, day)
+        return d if d <= today else date(today.year - 1, month, day)
+    except ValueError:
+        return None
+
+
+def question_range(text: str, now: datetime) -> tuple[str, str, str] | None:
+    """A day range said in a question -> (day_from, day_to, matched_text) as YYYY-MM-DD, or None.
+
+    Choices: "questa settimana" = Monday..today, "questo mese" = 1st..today, "quest'anno" = Jan 1..today,
+    "negli ultimi N giorni" = the N days ending today; a weekday is its most recent occurrence, today
+    included ("lunedì scorso" never today); "a ottobre" is the whole of the most recent October (the
+    current month if it is that one); "il 3 novembre" is its most recent occurrence (today included).
+    matched_text is the matched part of the accent-folded question."""
+    t = " ".join(fold(text).replace(",", " ").replace("?", " ").split())
+    today = now.date()
+    month_re = "|".join(MONTHS)
+
+    def out(a: date, b: date, m: re.Match) -> tuple[str, str, str]:
+        return a.isoformat(), b.isoformat(), m.group(0)
+
+    if m := re.search(rf"\bdal (\d{{1,2}})(?: ({month_re}))? al (\d{{1,2}}) ({month_re})(?: (\d{{4}}))?\b", t):
+        m2 = MONTHS.index(m[4]) + 1
+        m1 = MONTHS.index(m[2]) + 1 if m[2] else m2
+        end = _recent_date(m2, int(m[3]), today, int(m[5]) if m[5] else None)
+        if end:
+            start = _recent_date(m1, int(m[1]), end, end.year)
+            if start and start <= end:
+                return out(start, end, m)
+    if m := re.search(r"\bnegli ultimi (\w+) giorni\b", t):
+        n = _num(m[1])
+        if n:
+            return out(today - timedelta(days=n - 1), today, m)
+    if m := re.search(rf"\b(\d{{1,2}}) ({month_re})(?: (\d{{4}}))?\b", t):
+        d = _recent_date(MONTHS.index(m[2]) + 1, int(m[1]), today, int(m[3]) if m[3] else None)
+        if d:
+            return out(d, d, m)
+    if m := re.search(r"\b(?:l )?altro ieri\b", t):
+        return out(today - timedelta(days=2), today - timedelta(days=2), m)
+    if m := re.search(r"\bieri\b", t):
+        return out(today - timedelta(days=1), today - timedelta(days=1), m)
+    if m := re.search(r"\b(?:oggi|stamattina|stamani|stasera|stanotte)\b", t):
+        return out(today, today, m)
+    monday = today - timedelta(days=today.weekday())
+    if m := re.search(r"\bsettimana scorsa\b|\bscorsa settimana\b", t):
+        return out(monday - timedelta(days=7), monday - timedelta(days=1), m)
+    if m := re.search(r"\bquesta settimana\b", t):
+        return out(monday, today, m)
+    if m := re.search(r"\bmese scorso\b|\bscorso mese\b", t):
+        y, mo = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
+        return out(*_month_range(y, mo), m)
+    if m := re.search(r"\bquesto mese\b", t):
+        return out(today.replace(day=1), today, m)
+    if m := re.search(r"\bquest anno\b|\bquesto anno\b", t):
+        return out(date(today.year, 1, 1), today, m)
+    if m := re.search(rf"\b({'|'.join(_DAYS)})( scors[oa])?\b", t):
+        back = (today.weekday() - _DAYS.index(m[1])) % 7
+        if m[2] and back == 0:
+            back = 7
+        d = today - timedelta(days=back)
+        return out(d, d, m)
+    if m := re.search(rf"\b(?:a|ad|in|di|nel)\s+({month_re})(?: (\d{{4}}))?\b", t):
+        mo = MONTHS.index(m[1]) + 1
+        y = int(m[2]) if m[2] else (today.year if mo <= today.month else today.year - 1)
+        return out(*_month_range(y, mo), m)
+    return None

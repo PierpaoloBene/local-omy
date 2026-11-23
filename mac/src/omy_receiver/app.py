@@ -38,7 +38,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.requests import ClientDisconnect
 
 from . import features
@@ -66,6 +66,10 @@ MAX_NAME = 80
 MAX_QUERY = 100
 MAX_CONVERSATIONS = 5000
 MAX_JSON_BODY = 4096
+MAX_ASK_BODY = 64 * 1024
+MAX_QUESTION = 500
+MAX_ASK_HISTORY = 8  # messages = 4 turns
+MAX_ASK_CONTENT = 4000
 
 log = logging.getLogger("uvicorn.error")
 
@@ -538,6 +542,75 @@ def create_app(config: Config) -> FastAPI:
             return {"worker": worker.read_status(), "jobs": jobs.summary(), "models": models.state()}
 
         return await asyncio.to_thread(read)
+
+    # A question to the second brain: server-sent events, see omy.brain.ask. POST, so the
+    # question stays out of the access log.
+    @app.post("/v1/ask")
+    async def ask_endpoint(request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        try:
+            body = b""
+            async for chunk in request.stream():
+                body += chunk
+                if len(body) > MAX_ASK_BODY:
+                    raise ValueError("body too large")
+            doc = json.loads(body or b"{}")
+            if not isinstance(doc, dict):
+                raise ValueError
+            question = doc.get("question")
+            if not isinstance(question, str) or not 1 <= len(question.strip()) <= MAX_QUESTION:
+                raise ValueError
+            history = doc.get("history", [])
+            if not isinstance(history, list) or len(history) > MAX_ASK_HISTORY:
+                raise ValueError
+            for h in history:
+                if (not isinstance(h, dict) or h.get("role") not in ("user", "assistant")
+                        or not isinstance(h.get("content"), str) or len(h["content"]) > MAX_ASK_CONTENT):
+                    raise ValueError
+            raw_now = doc.get("now")
+            now = datetime.now(LOCAL_TZ)
+            if raw_now is not None:
+                if not isinstance(raw_now, str):
+                    raise ValueError
+                now = datetime.fromisoformat(raw_now)
+                if now.tzinfo is None:
+                    now = now.replace(tzinfo=LOCAL_TZ)
+        except (ValueError, TypeError):
+            return _error(400, "invalid question")
+
+        async def events():
+            from omy.brain import ask
+            gen = ask.answer(question.strip(), history, now)
+            try:
+                async for ev in gen:
+                    if await request.is_disconnected():
+                        break
+                    yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            finally:
+                await gen.aclose()
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # The note (sidecar JSON) of a session, for the note view of the app.
+    @app.get("/v1/brain/note/{session}")
+    async def brain_note(session: str, request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        if not SEGMENT_ID.fullmatch(session):
+            return _error(400, "invalid session")
+
+        def read():
+            from omy.brain import organize
+            path = organize.note_path(session)
+            return json.loads(path.read_text(encoding="utf-8")) if path else None
+
+        try:
+            doc = await asyncio.to_thread(read)
+        except (OSError, ValueError):
+            doc = None
+        return _error(404, "no note") if doc is None else JSONResponse(doc)
 
     @app.get("/v1/people")
     async def people_list(request: Request):
