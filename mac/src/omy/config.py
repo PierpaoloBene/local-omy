@@ -20,6 +20,7 @@ ARCHIVE = Path(os.environ.get("OMY_ARCHIVE", "~/OmiArchive")).expanduser()
 # mac/src/omy/config.py -> repo root. The project is installed editable by uv.
 REPO = Path(__file__).resolve().parents[3]
 IPHONE_SRC = REPO / "iphone" / "src"
+IPHONE_APP = REPO / "iphone" / "app"
 IPHONE_BUILD = REPO / "iphone" / "build"
 
 

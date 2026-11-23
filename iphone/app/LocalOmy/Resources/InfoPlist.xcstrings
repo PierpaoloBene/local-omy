@@ -1,0 +1,24 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSBluetoothAlwaysUsageDescription" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "local-omy uses Bluetooth to receive the audio from your Omi pendant." } },
+        "it" : { "stringUnit" : { "state" : "translated", "value" : "local-omy usa il Bluetooth per ricevere l'audio dal ciondolo Omi." } }
+      }
+    },
+    "NSLocationAlwaysAndWhenInUseUsageDescription" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "local-omy records where each recording was made, also in background, using visits and significant changes to save battery. The position goes only to your Mac." } },
+        "it" : { "stringUnit" : { "state" : "translated", "value" : "local-omy salva dove è stata fatta ogni registrazione, anche in background, con le visite e i cambi di posizione di iOS per risparmiare batteria. La posizione va solo al tuo Mac." } }
+      }
+    },
+    "NSLocationWhenInUseUsageDescription" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "local-omy records where each recording was made. The position goes only to your Mac." } },
+        "it" : { "stringUnit" : { "state" : "translated", "value" : "local-omy salva dove è stata fatta ogni registrazione. La posizione va solo al tuo Mac." } }
+      }
+    }
+  },
+  "version" : "1.0"
+}
