@@ -504,7 +504,7 @@ def create_app(config: Config) -> FastAPI:
     def fallback_transcribe() -> dict:
         if transcribing and transcribing[0].poll() is None:
             return {"started": False, "running": True}
-        log_path = Path("~/Library/Logs/local-omy-periodic.log").expanduser()
+        log_path = Path("~/Library/Logs/local-omy-worker.log").expanduser()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         logfile = open(log_path, "ab")
         try:

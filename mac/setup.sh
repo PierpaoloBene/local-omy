@@ -18,7 +18,7 @@ need flutter "brew install --cask flutter"
 uv sync --frozen --quiet
 
 # What omy can fix on its own; the rest needs you (printed at the end).
-for item in brew token receiver periodic tailscale models; do
+for item in brew token receiver worker tailscale models; do
     if ! uv run --quiet omy --json setup check | python3 -c "
 import json, sys
 sys.exit(0 if next(c for c in json.load(sys.stdin)['checks'] if c['id'] == '$item')['ok'] else 1)"; then

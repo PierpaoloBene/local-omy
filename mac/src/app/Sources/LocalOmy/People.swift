@@ -411,7 +411,7 @@ private func localTime(_ iso: String) -> String {
 }
 
 private extension ISO8601DateFormatter {
-    static let withFraction: ISO8601DateFormatter = {
+    nonisolated(unsafe) static let withFraction: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
