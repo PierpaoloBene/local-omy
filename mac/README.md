@@ -114,7 +114,7 @@ uv run omy setup check            # cosa manca
 uv run omy setup fix token        # crea ~/.config/local-omy/token (600), mai sovrascritto
 uv run omy setup token            # stampa il token, da inserire nell'app iPhone
 uv run omy setup fix receiver     # installa/aggiorna il LaunchAgent del ricevitore
-uv run omy setup fix periodic     # installa/aggiorna il LaunchAgent del job orario
+uv run omy setup fix worker       # installa il LaunchAgent del worker (sostituisce e rimuove il vecchio job orario)
 uv run omy setup fix tailscale    # tailscale serve --bg http://127.0.0.1:8787
 uv run omy setup fix models       # modelli di trascrizione
 ```
@@ -512,6 +512,69 @@ all'avvio, quando torna in primo piano, dopo ogni modifica e ogni 5 minuti, quin
 modifica fatta sul Mac arriva all'iPhone entro 5 minuti. Sul telefono i valori sono nelle
 preferenze dell'app, e quelli che servono al codice nativo (posizione, chiamate) anche in
 `Documents/features.json`.
+
+## Second brain: organizzatore notturno e vault
+
+Le trascrizioni diventano note strutturate in `~/OmiArchive/brain/`, un vault apribile con
+Obsidian. Tutto gira sul Mac.
+
+**Una sola coda di lavori.** Il LaunchAgent `worker` (`omy worker`) sostituisce il vecchio job
+orario `periodic`. Esegue un lavoro alla volta, in quest'ordine di priorità: `transcribe`
+(whisper) → `diarize` (pyannote) → `render` (vault dopo un cambio di nome) → `organize`
+(27B) → `index`. La coda sta in `~/OmiArchive/cache/jobs.sqlite`; lo stato in
+`cache/worker.json`, anche da `GET /v1/brain/status`. Ogni 5 minuti cerca sessioni chiuse; il
+pulsante "Trascrivi ora" dell'app lo sveglia subito. Si occupa anche del rinnovo notturno
+dell'app iPhone.
+
+**Memoria (16 GB).** Il worker è l'unico che carica i modelli (`omy/models.py`), mai due
+pesanti insieme:
+
+| Stato | In memoria |
+|---|---|
+| giorno, a riposo | modello chat 4B (~3,7 GB) |
+| trascrizione | whisper + 4B |
+| diarizzazione | solo pyannote (~7,6 GB) |
+| notte, organizzazione | solo il 27B (~10,5 GB) |
+
+Una domanda dalla scheda "Chiedi" interrompe subito organizzazione o diarizzazione (si perde
+al massimo una parte, che torna in coda), carica il 4B e risponde; il lavoro riprende dopo 5
+minuti senza domande (`chat_idle_min` in `config.toml`).
+
+**Quando organizza.** Solo con la coda di trascrizione vuota, tra le 01:00 e le 07:00
+(`organize_window`) e con il Mac in carica. A mano:
+
+```bash
+uv run omy organize --since 2026-11-01          # subito, salta le note già aggiornate
+uv run omy organize --since 2026-11-01 --force  # rifà anche quelle
+uv run omy jobs                                 # stato della coda
+```
+
+**Modelli** (in `~/OmiArchive/models/brain/`, runtime llama.cpp ≥ build 12359):
+- organizzatore: Qwen3.8-27B GSQ-RCO IQ2_XS con testa MTP (ISTA-DASLab, 8,8 GB),
+  `--spec-type draft-mtp --spec-draft-n-max 4`: prefill ~72 tok/s, decode ~16,5 tok/s,
+  ~16 min per una giornata di ~16k token;
+- chat: Qwen3.5-4B Q4_0 (in valutazione con Qwen3.8-4B-Distill);
+- embedding e reranker: Qwen3-Embedding-0.6B e Qwen3-Reranker-0.6B Q8 (Fase 2).
+
+Misure e scelte in `tools/brainbench/RESULTS.md`; interfacce in `omy/brain/INTERFACES.md`.
+
+**Come lavora l'organizzatore** (`omy/brain/organize.py`): una nota per sessione; le sessioni
+lunghe sono divise in parti da 2–4k token, unite in codice, con un riassunto finale. Output
+vincolato a uno schema JSON; le date relative ("martedì scorso") le risolve il codice rispetto
+all'ora della registrazione; la confidenza viene dai logprob dei token (sotto 0,40 l'elemento
+va in `da-rivedere.md` con ⚠️). Ogni parte viene salvata appena fatta: un'interruzione
+riprende da lì. Una sessione già organizzata non viene rifatta finché il testo non cambia.
+
+**Vault** (`omy/brain/vault.py`):
+```
+note/AAAA/MM/GG/HHMM-<titolo>-<id8>.md + .json   la nota e il suo sidecar (fonte di verità)
+persone/ luoghi/ organizzazioni/ progetti/        pagine entità con le menzioni nel tempo
+giorni/AAAA-MM-GG.md  impegni.md  da-rivedere.md
+```
+I nomi che dai alle voci si propagano a note e pagine, anche all'indietro, senza rifare il
+modello. Il testo generato sta tra `<!-- omy:begin … -->` e `<!-- omy:end … -->`: fuori puoi
+scrivere quello che vuoi, e un blocco modificato a mano non viene sovrascritto. Le spunte in
+`impegni.md` (o nella nota) segnano un impegno come fatto.
 
 ## Output per altre app
 
