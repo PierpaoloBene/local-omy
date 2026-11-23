@@ -1,0 +1,97 @@
+# Questions on the fake data (brain/fixtures.py), with what a correct answer cites.
+#   sessions:  the answer must cite at least one of these sessions
+#   channels:  every cited paragraph must be in these channels
+#   not_found: the right answer is "I found nothing"
+# The same format, on your real data, goes in eval/questions.local.toml (not in git).
+
+today = "2026-10-29"
+
+[[q]]
+id = "anna-ristrutturazione"
+ask = "Ho parlato con Rosa Linda della ristrutturazione?"
+sessions = ["20261020T170000Z-aaaa0001"]
+channels = ["me", "said"]
+
+[[q]]
+id = "detto-banche"
+ask = "Ho mai detto di non fidarmi delle banche?"
+sessions = ["20261027T090000Z-dddd0004"]
+channels = ["me"]
+
+[[q]]
+id = "giorno-marco-atlante"
+ask = "Che giorno ho parlato con Marco del progetto Atlante?"
+sessions = ["20261022T080000Z-bbbb0002"]
+channels = ["me", "said"]
+
+[[q]]
+id = "podcast-ia"
+ask = "Cosa ho sentito in quel podcast sull'intelligenza artificiale?"
+sessions = ["20261023T190000Z-cccc0003"]
+channels = ["heard"]
+
+[[q]]
+id = "anna-astronomia"
+ask = "Ho parlato con Rosa Linda di astronomia?"
+not_found = true
+
+[[q]]
+id = "promesse-settimana-scorsa"
+ask = "Cosa ho promesso la settimana scorsa e a chi?"
+sessions = ["20261020T170000Z-aaaa0001"]
+channels = ["me", "said"]
+
+[[q]]
+id = "vacanze"
+ask = "Dove pensavamo di andare in vacanza con Rosa Linda?"
+sessions = ["20261028T180000Z-eeee0005"]
+channels = ["me", "said"]
+
+[[q]]
+id = "contratto-fornitore"
+ask = "Chi mi deve mandare il contratto del fornitore, e entro quando?"
+sessions = ["20261022T080000Z-bbbb0002"]
+channels = ["me", "said"]
+
+[[q]]
+id = "contratto-locazione"
+ask = "Ho il contratto di locazione di quest'anno? Me lo mandi?"
+documents = ["contratto-testo.pdf", "scansione.png"]
+
+[[q]]
+id = "assicurazione-auto"
+ask = "Quando scade l'assicurazione della macchina e quanto costa?"
+documents = ["polizza-rca-2026.txt"]
+
+[[q]]
+id = "tiroide"
+ask = "Com'era la tiroide nelle ultime analisi?"
+documents = ["esami-maggio.md"]
+
+[[q]]
+id = "luce"
+ask = "Quanto devo pagare di luce, e entro quando?"
+documents = ["bolletta-enel-ottobre.html"]
+
+[[q]]
+id = "affitto"
+ask = "Quanto pago di affitto all'anno?"
+documents = ["contratto-testo.pdf", "scansione.png"]
+
+[[q]]
+id = "passaporto"
+ask = "Ho una copia del mio passaporto?"
+not_found = true
+
+[[q]]
+id = "atlante-ditta"
+ask = "Che ditta ci ha mandato l'offerta per Atlante, e Marco cosa doveva girarmi?"
+sessions = ["20261022T080000Z-bbbb0002"]
+documents_too = ["offerta-atlante.txt"]
+channels = ["me", "said"]
+
+[[q]]
+id = "gianni-bagno"
+ask = "Chi è Gianni?"
+sessions = ["20261020T170000Z-aaaa0001"]
+channels = ["me", "said"]
