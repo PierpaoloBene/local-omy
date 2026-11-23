@@ -18,6 +18,12 @@ from omy.diarize import load_people, my_name
 ANON_RE = re.compile(r"^(persona|sconosciut[oa]|person|unknown|speaker|stranger)\b(\s+\d+)?$", re.I)
 
 
+def my_aliases() -> list[str]:
+    """Other names the user goes by (config.toml `my_aliases`, comma separated): treated as "me"."""
+    from omy.config import load_config
+    return [a.strip() for a in load_config().get("my_aliases", "").split(",") if a.strip()]
+
+
 def unpageable(person: str | None, name: str | None, me: str | None = None) -> bool:
     """True for the user and for unnamed per-session labels ("Persona 2", "Unknown 1"): they get no
     persone page and are shown as plain text."""
@@ -26,7 +32,7 @@ def unpageable(person: str | None, name: str | None, me: str | None = None) -> b
     n = (name or "").strip()
     if not n or ANON_RE.match(n):
         return True
-    return n.casefold() in {"io", "me", (me or my_name()).casefold()}
+    return n.casefold() in {"io", "me", (me or my_name()).casefold(), *(a.casefold() for a in my_aliases())}
 
 
 def current_name(person: str | None, fallback: str | None, people: dict | None = None,

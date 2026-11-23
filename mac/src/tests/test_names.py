@@ -55,3 +55,11 @@ def test_chi_verso_chi(archive):
     it = SC["impegni_e_todo"][0]
     assert n.chi(it) == "Rosalinda"
     assert n.verso_chi(it) == diarize.my_name()
+
+
+def test_my_aliases_are_the_user(monkeypatch):
+    from omy.brain import names
+    monkeypatch.setattr("omy.config.load_config", lambda: {"my_aliases": "Pierino, Pier "})
+    assert names.my_aliases() == ["Pierino", "Pier"]
+    assert names.unpageable(None, "pierino", me="Io")
+    assert not names.unpageable(None, "Marco", me="Io")

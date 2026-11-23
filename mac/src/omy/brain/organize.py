@@ -433,7 +433,8 @@ class Checker:
         from omy import diarize
         self.s = s
         self.my = diarize.my_name()
-        self.names: dict[str, str] = {_fold(self.my): "me", "io": "me"}
+        from omy.brain.names import my_aliases
+        self.names: dict[str, str] = {_fold(self.my): "me", "io": "me", **{_fold(a): "me" for a in my_aliases()}}
         self.canon: dict[str, str] = {"me": self.my}
         for p in s.participants():
             if p["person"]:
