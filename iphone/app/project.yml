@@ -1,0 +1,64 @@
+name: LocalOmy
+options:
+  bundleIdPrefix: com.pierpaolobene
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+packages:
+  OmyKit:
+    path: Packages/OmyKit
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "27.0"
+    CODE_SIGN_STYLE: Automatic
+    # `omy iphone install` passes DEVELOPMENT_TEAM and LOCAL_OMY_BUNDLE_ID on the command line.
+    DEVELOPMENT_TEAM: ""
+    LOCAL_OMY_BUNDLE_ID: com.pierpaolobene.local-omy
+targets:
+  LocalOmy:
+    type: application
+    platform: iOS
+    sources:
+      - path: LocalOmy
+    dependencies:
+      - package: OmyKit
+    settings:
+      base:
+        PRODUCT_NAME: LocalOmy
+        PRODUCT_BUNDLE_IDENTIFIER: $(LOCAL_OMY_BUNDLE_ID)
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        MARKETING_VERSION: "2.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: LocalOmy/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: local-omy
+        CFBundleName: local-omy
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, it]
+        LSRequiresIPhoneOS: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen: {}
+        UIBackgroundModes: [bluetooth-central]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSBluetoothAlwaysUsageDescription: local-omy uses Bluetooth to receive the audio from your Omi pendant.
+        NSLocationWhenInUseUsageDescription: local-omy records where each recording was made. The position goes only to your Mac.
+        NSLocationAlwaysAndWhenInUseUsageDescription: local-omy records where each recording was made, also in background, using visits and significant changes to save battery. The position goes only to your Mac.
+schemes:
+  LocalOmy:
+    build:
+      targets:
+        LocalOmy: all
+    run:
+      config: Debug
+    archive:
+      config: Release

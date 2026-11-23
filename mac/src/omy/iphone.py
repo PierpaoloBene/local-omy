@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from omy.config import (
-    ARCHIVE, IPHONE_BUILD, IPHONE_SRC, iphone_bundle_id, load_config, load_state, save_config, save_state,
+    ARCHIVE, IPHONE_APP, IPHONE_BUILD, IPHONE_SRC, iphone_bundle_id, load_config, load_state, save_config, save_state,
 )
 from omy_receiver.l10n import tr
 
@@ -154,21 +154,32 @@ def _drop_cached_profiles(team: str) -> None:
 def build(team: str, udid: str | None) -> Path:
     """With udid, build for that phone and register it in the team (needs the
     phone unlocked). Without, build generically: the profile covers the devices
-    already registered, so this works with the phone locked or away."""
-    run(["flutter", "build", "ios", "--release", "--config-only"], "flutter build", cwd=IPHONE_SRC)
+    already registered, so this works with the phone locked or away.
+
+    The native app (iphone/app, XcodeGen) is built when its project.yml exists,
+    else the old Flutter app (iphone/src)."""
+    native = (IPHONE_APP / "project.yml").exists()
+    if native:
+        run(["xcodegen", "generate"], "xcodegen", cwd=IPHONE_APP)
+        project = ["-project", str(IPHONE_APP / "LocalOmy.xcodeproj"), "-scheme", "LocalOmy"]
+        cwd, product = IPHONE_APP, "LocalOmy.app"
+    else:
+        run(["flutter", "build", "ios", "--release", "--config-only"], "flutter build", cwd=IPHONE_SRC)
+        project = ["-workspace", "ios/Runner.xcworkspace", "-scheme", "Runner"]
+        cwd, product = IPHONE_SRC, "Runner.app"
     destination = ["-destination", f"id={udid}", "-allowProvisioningDeviceRegistration"] if udid \
         else ["-destination", "generic/platform=iOS"]
     # The team and the bundle id are passed on the command line, never written to the project.
-    # The bundle id as LOCAL_OMY_BUNDLE_ID, read by the Runner target only: PRODUCT_BUNDLE_IDENTIFIER
+    # The bundle id as LOCAL_OMY_BUNDLE_ID, read by the app target only: PRODUCT_BUNDLE_IDENTIFIER
     # on the command line would go to the plugin frameworks too, and iOS refuses duplicates.
     run([
-        "xcodebuild", "-workspace", "ios/Runner.xcworkspace", "-scheme", "Runner",
+        "xcodebuild", *project,
         "-configuration", "Release", *destination,
         "-derivedDataPath", str(DERIVED), "-allowProvisioningUpdates", "-quiet",
         f"DEVELOPMENT_TEAM={team}", "CODE_SIGN_STYLE=Automatic", f"LOCAL_OMY_BUNDLE_ID={iphone_bundle_id(team)}",
         "build",
-    ], "xcodebuild", cwd=IPHONE_SRC)
-    built = DERIVED / "Build" / "Products" / "Release-iphoneos" / "Runner.app"
+    ], "xcodebuild", cwd=cwd)
+    built = DERIVED / "Build" / "Products" / "Release-iphoneos" / product
     if APP.exists():
         shutil.rmtree(APP)
     shutil.copytree(built, APP, symlinks=True)
