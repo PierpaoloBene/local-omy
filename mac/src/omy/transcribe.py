@@ -77,8 +77,9 @@ FALLBACK_LANGUAGE = "it"
 CONF_MIN = 0.65
 UNCLEAR = archive_tr("[incomprensibile]", "[unintelligible]")
 # Bumped when the above changes: older transcripts are redone (plan()).
-# 4: "conf" per line.
-PIPELINE = 4
+# 4: "conf" per line. 5: "conf" actually saved (4 computed it and dropped it),
+# non-speech tokens suppressed, English windows checked against Italian.
+PIPELINE = 5
 # Silence longer than this starts a new paragraph in the day markdown, and so
 # does a paragraph that has run this long without one.
 BLOCK_GAP = timedelta(minutes=2)
@@ -90,6 +91,16 @@ HALLUCINATIONS = {
     "grazie", "grazie a tutti", "grazie per la visione", "gracias", "merci", "you", "",
 }
 ISOLATED = timedelta(seconds=30)
+# Lines that are only a sound annotation ("*risate*", "[Musica]", "(applausi)"):
+# whisper's guesses at non-speech, mostly wrong ("*Risola*"). Never shown.
+NONSPEECH = re.compile(r"^[\s\-]*(?:[*\[(][^*\[\]()]*[*\])][\s.,!?\-]*)+$")
+# Credits whisper learned from subtitled videos, anywhere in a line.
+CREDITS = re.compile(r"sottotitoli (?:creati|e revisione|a cura)|amara\.org|qtss", re.I)
+# A phrase of up to LOOP_WORDS words said more than LOOP_MAX times in a row
+# inside one line is a whisper loop ("no, no, no…" x50): cut to LOOP_MAX.
+LOOP_WORDS = 10
+LOOP_MAX = 3
+_LOOP = re.compile(r"((?:\w[\w']*[^\w\n]*){1,%d}?)\1{%d,}" % (LOOP_WORDS, LOOP_MAX), re.I)
 # Of the lines of DAY.jsonl: bumped when a field changes meaning or goes away.
 EXPORT_VERSION = 1
 # How far back --pending looks.
@@ -162,6 +173,8 @@ def _run_whisper(wav: Path, language: str = LANGUAGE) -> list[dict]:
         # No text context between windows: stops the repetition loops
         # ("Grazie a tutti." x18) that whisper produces on noise.
         "-mc", "0",
+        # No "*risate*", "[Musica]": sound annotations, mostly invented.
+        "-sns",
         "--vad", "-vm", str(MODELS_DIR / VAD_MODEL), *VAD_ARGS,
         "-np", "-ojf", "-of", str(base), "-f", str(wav),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
@@ -204,12 +217,38 @@ def transcribe_wav(wav: Path) -> list[dict]:
             found = _run_whisper(piece)
             if LANGUAGE == "auto" and found and found[0]["language"] not in LANGUAGES:
                 found = _run_whisper(piece, FALLBACK_LANGUAGE)
+            elif LANGUAGE == "auto" and found and found[0]["language"] != FALLBACK_LANGUAGE:
+                # Italian heard as English comes out translated ("ti pesa in
+                # culo will be sent"): keep whichever reading whisper is surer of.
+                again = _run_whisper(piece, FALLBACK_LANGUAGE)
+                if _mean_conf(again) > _mean_conf(found):
+                    found = again
             for it in found:
                 items.append({**it, "from": offset_ms + it["from"], "to": offset_ms + it["to"]})
         return items
     finally:
         for p in temp:
             p.unlink(missing_ok=True)
+
+
+def _mean_conf(items: list[dict]) -> float:
+    """Mean confidence of items, weighted by their text length; 0 if none."""
+    pairs = [(it["conf"], len(it["text"])) for it in items if it.get("conf") is not None]
+    total = sum(n for _, n in pairs)
+    return sum(c * n for c, n in pairs) / total if total else 0.0
+
+
+def _speech_item(start: datetime, it: dict) -> dict:
+    """A whisper item (offsets in ms from start) as a session JSON speech item."""
+    item = {
+        "start": _iso(start + timedelta(milliseconds=it["from"])),
+        "end": _iso(start + timedelta(milliseconds=it["to"])),
+        "language": it["language"],
+        "text": it["text"],
+    }
+    if it.get("conf") is not None:
+        item["conf"] = it["conf"]
+    return item
 
 
 def _iso(t: datetime) -> str:
@@ -258,13 +297,8 @@ def transcribe_session(session: Session, prior: dict | None = None,
         decoder.close()
         if decoder.position_ms > chunk_start_ms:
             log(f"  whisper {work.id} +{chunk_start_ms // 60000} min")
-            for it in transcribe_wav(wav):
-                speech.append({
-                    "start": _iso(work.start + timedelta(milliseconds=chunk_start_ms + it["from"])),
-                    "end": _iso(work.start + timedelta(milliseconds=chunk_start_ms + it["to"])),
-                    "language": it["language"],
-                    "text": it["text"],
-                })
+            chunk_start = work.start + timedelta(milliseconds=chunk_start_ms)
+            speech += [_speech_item(chunk_start, it) for it in transcribe_wav(wav)]
             if on_progress:
                 on_progress(decoder.position_ms)
         wav.unlink(missing_ok=True)
@@ -312,12 +346,23 @@ def _norm(text: str) -> str:
     return " ".join(re.sub(r"[^\w]+", " ", text.lower()).split())
 
 
+def _unloop(text: str) -> str:
+    """text with phrases repeated more than LOOP_MAX times in a row cut to LOOP_MAX."""
+    return _LOOP.sub(lambda m: m.group(1) * LOOP_MAX, text)
+
+
 def _clean(speech: list[dict]) -> list[dict]:
     """Speech fit to read: whisper's repetition loops (the same line over and
-    over) collapsed to one line, stock phrases alone in silence dropped, lines
+    over, or a phrase over and over inside a line) collapsed, sound annotations
+    and subtitle credits dropped, stock phrases alone in silence dropped, lines
     below CONF_MIN replaced by UNCLEAR (consecutive ones by one)."""
     out: list[dict] = []
     for it in speech:
+        if NONSPEECH.match(it["text"]) or CREDITS.search(it["text"]):
+            continue
+        text = _unloop(it["text"])
+        if text != it["text"]:
+            it = {**it, "text": text}
         if out and _norm(it["text"]) == _norm(out[-1]["text"]):
             out[-1] = {**out[-1], "end": it["end"]}
             continue
@@ -411,6 +456,7 @@ def _record(doc: dict, turn: dict | None, items: list[dict], clusters: dict,
         "place": fix and {"name": places.name_of(fix, place_list), "lat": round(fix.lat, 5),
                           "lon": round(fix.lon, 5), "acc": round(fix.acc)},
         "language": max(set(langs), key=langs.count) if langs else None,
+        "conf": round(_mean_conf(items), 3) if any(it.get("conf") is not None for it in items) else None,
         "text": " ".join(it["text"] for it in items),
     }
 

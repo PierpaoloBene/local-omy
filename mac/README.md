@@ -246,6 +246,10 @@ cambia, le sessioni trascritte con la versione precedente vengono rifatte.
 
 Il markdown viene ripulito, mentre i JSON restano grezzi:
 - una frase ripetuta più volte di fila (un loop di whisper) compare una volta sola;
+- dentro una frase, un pezzo ripetuto più di 3 volte di fila ("no, no, no…" × 50) viene
+  tagliato a 3;
+- le righe fatte solo di annotazioni di suoni ("*risate*", "[Musica]") e i crediti dei
+  sottotitoli ("Sottotitoli creati dalla comunità Amara.org") vengono tolti;
 - le frasi tipiche che whisper inventa sul rumore ("Thank you.", "Grazie per la visione."…)
   vengono tolte se nei 30 s prima e dopo non c'è altro parlato;
 - le frasi di cui whisper è poco sicuro (probabilità media dei token sotto 0,65, campo
@@ -543,6 +547,7 @@ Ogni riga è completa: non serve incrociarla con altri file.
 | `via` | `{"kind": "call"\|"media", "app"}` se la voce veniva da una chiamata (Teams, Zoom, iPhone…) o da un media sul Mac (YouTube nel browser, Spotify…), altrimenti `null`. Una TV nella stanza non lascia traccia |
 | `place` | posizione del telefono a inizio paragrafo, con `name` se cade in un luogo di `places.json` (altrimenti `null`); `null` se non c'è posizione o la funzione Posizione è spenta |
 | `language` | `it` o `en`, la lingua prevalente del paragrafo |
+| `conf` | 0–1, quanto whisper è sicuro del testo (probabilità media dei token, pesata sulla lunghezza delle frasi). Sotto 0,65 il testo è spesso inventato; le frasi sotto soglia sono già `[incomprensibile]`. `null` per le trascrizioni fatte prima della pipeline 5 |
 | `text` | il testo |
 
 **Aggiornamenti.** Il file di un giorno viene riscritto per intero, in modo atomico, ogni
