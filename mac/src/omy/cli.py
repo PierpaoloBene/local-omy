@@ -44,6 +44,21 @@ def periodic() -> dict:
     return result
 
 
+def organize(since: date, force: bool = False, now: bool = False) -> dict:
+    """Queue an organize job for every transcribed session since this day."""
+    from omy import jobs
+    from omy.sessions import recorded_days, sessions_for_day
+    queued = []
+    for day in (d for d in recorded_days() if d >= since):
+        for session in sessions_for_day(day):
+            if transcribe._load_doc(session) is not None:
+                jobs.enqueue("organize", session.id, force=force)
+                queued.append(session.id)
+    if now:
+        jobs.wake()
+    return {"queued": len(queued), "sessions": queued, "force": force}
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="omy", description=__doc__)
     p.add_argument("--json", action="store_true", help="print the result as JSON")
@@ -143,7 +158,19 @@ def main() -> int:
     fes.add_argument("key", choices=list(features.FEATURES))
     fes.add_argument("state", choices=["on", "off"])
 
-    sub.add_parser("periodic", help="hourly job run by the LaunchAgent")
+    sub.add_parser("worker", help="run the worker: job queue, models, scans (LaunchAgent)")
+    job = sub.add_parser("job", help="run one queued job in this process (what the worker spawns)") \
+        .add_subparsers(dest="action", required=True)
+    for name in ("transcribe", "diarize"):
+        job.add_parser(name, help=f"{name} one session").add_argument("session")
+    og = sub.add_parser("organize", help="queue the second-brain notes of the sessions since a day")
+    og.add_argument("--since", type=date.fromisoformat, required=True, help="YYYY-MM-DD (local day)")
+    og.add_argument("--force", action="store_true",
+                    help="redo notes that are up to date, whatever the time of day and the power")
+    og.add_argument("--now", action="store_true", help="wake the worker now")
+    sub.add_parser("jobs", help="the job queue and the worker")
+
+    sub.add_parser("periodic", help="DEPRECATED, the worker replaces it: hourly job run by the LaunchAgent")
 
     args = p.parse_args()
     # Transcripts, caches and config are private, like the raw archive.
@@ -233,6 +260,18 @@ def _run(args: argparse.Namespace) -> dict:
             {"key": k, "device": dev, "name": name, "description": what, **features.load(ARCHIVE)[k]}
             for k in features.FEATURES for dev, name, what in [features.described(k)]
         ]}
+    elif args.cmd == "worker":
+        from omy import worker
+        worker.main()
+        result = {}
+    elif args.cmd == "job":
+        result = transcribe.transcribe_job(args.session) if args.action == "transcribe" \
+            else transcribe.diarize_job(args.session)
+    elif args.cmd == "organize":
+        result = organize(args.since, args.force, args.now)
+    elif args.cmd == "jobs":
+        from omy import jobs, models, worker
+        result = {"worker": worker.read_status(), "jobs": jobs.summary(), "models": models.state()}
     elif args.cmd == "battery":
         result = battery.battery(args.days)
     elif args.cmd == "people":

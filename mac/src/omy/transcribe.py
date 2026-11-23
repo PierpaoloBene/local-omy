@@ -610,3 +610,70 @@ def _to_diarize(days: list[date], still_open: list[str]) -> list[Session]:
 
 def pending_days() -> list[date]:
     return recorded_days()[-PENDING_DAYS:]
+
+
+# --- one session at a time, for the worker (omy job transcribe|diarize ID) ---------
+
+def find_session(session_id: str) -> Session:
+    """The session with this id: days near the one in the id first."""
+    days = recorded_days()
+    try:
+        stamp = datetime.strptime(session_id[:8], "%Y%m%d").date()
+        near = [d for d in days if abs((d - stamp).days) <= 1]
+    except ValueError:
+        near = []
+    for day in near + [d for d in days if d not in near]:
+        for session in sessions_for_day(day):
+            if session.id == session_id:
+                return session
+    raise TranscribeError(f"no session {session_id}")
+
+
+def transcribe_job(session_id: str) -> dict:
+    """Transcribe (or complete) one closed session and rebuild its day, with
+    the same progress file and locks as transcribe()."""
+    missing = [n for n, ok in models_status().items() if not ok]
+    if missing:
+        raise TranscribeError(f"missing models {missing}: run omy setup models")
+    session = find_session(session_id)
+    CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock = (CACHE_DIR / ".transcribe.lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise TranscribeError("another transcription is running")
+    with lock:
+        todo, still_open = plan([session.day])
+        mine = next(((s, prior) for s, prior in todo if s.id == session_id), None)
+        if mine is None:
+            return {"transcribed": [], "open": session_id in still_open, "days": []}
+        session, prior = mine
+        segs = remaining(session, prior)
+        state = {"pid": os.getpid(), "started": _iso(datetime.now(timezone.utc)), "sessions_total": 1,
+                 "sessions_done": 0, "minutes_total": round(_minutes(segs), 1), "minutes_done": 0.0,
+                 "session": session.id, "day": session.day.isoformat()}
+
+        def save(**changes) -> None:
+            state.update(changes)
+            _write_atomic(PROGRESS, json.dumps(state) + "\n")
+
+        save()
+        log(f"{session.day} session {session.id}: "
+            + (f"{len(segs)} new segments" if prior else f"{len(segs)} segments") + f", {_minutes(segs):.0f} min")
+        try:
+            transcribe_session(session, prior, lambda ms: save(minutes_done=round(ms / 60000, 1)))
+            render_day(session.day)
+        finally:
+            PROGRESS.unlink(missing_ok=True)
+    return {"transcribed": [session.id], "open": False, "days": [session.day.isoformat()]}
+
+
+def diarize_job(session_id: str) -> dict:
+    """Name the voices of one transcribed session and rebuild its day."""
+    from omy import diarize
+    session = find_session(session_id)
+    if _load_doc(session) is None:
+        raise TranscribeError(f"session {session_id} is not transcribed yet")
+    diarize.diarize_session(session)
+    render_day(session.day)
+    return {"diarized": [session.id], "days": [session.day.isoformat()]}

@@ -251,3 +251,17 @@ def renew(force: bool = False) -> dict:
         # Reinstalling would kill the app for nothing.
         raise IphoneError(f"Xcode did not issue a newer profile (expires {new.isoformat()}); not installing")
     return {"renewed": True, **install(app)}
+
+
+def renew_or_notify() -> dict:
+    """renew(), the way the hourly job and the worker use it: failures are
+    expected at night (phone locked or away), so only speak up when the app
+    is about to stop launching."""
+    try:
+        return renew()
+    except IphoneError as e:
+        days_left = status().get("days_left")
+        if days_left is not None and days_left < URGENT_BELOW_DAYS:
+            notify(tr(f"Rinnovo dell'app iPhone non riuscito, scade tra {days_left:.1f} giorni: {e}",
+                      f"Renewing the iPhone app failed, it expires in {days_left:.1f} days: {e}"))
+        return {"renewed": False, "error": str(e)}

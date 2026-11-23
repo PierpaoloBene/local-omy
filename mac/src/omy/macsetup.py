@@ -20,7 +20,7 @@ from omy_receiver.l10n import tr
 MAC_SRC = REPO / "mac" / "src"
 TOKEN_FILE = Path(os.environ.get("OMY_TOKEN_FILE", CONFIG_DIR / "token"))
 AGENTS_DIR = Path("~/Library/LaunchAgents").expanduser()
-AGENTS = ("receiver", "periodic")
+AGENTS = ("receiver", "periodic", "worker")
 RECEIVER_URL = "http://127.0.0.1:8787"
 # PATH for the LaunchAgents: Homebrew (flutter, pod, whisper-cli), uv, Xcode tools.
 AGENT_PATH = ":".join([
@@ -49,7 +49,10 @@ def _plist_path(name: str) -> Path:
 
 def _render_agent(name: str) -> str:
     uv = shutil.which("uv") or str(Path("~/.local/bin/uv").expanduser())
-    template = (MAC_SRC / "launchd" / f"{name}.plist").read_text()
+    template_path = MAC_SRC / "launchd" / f"{name}.plist"
+    if not template_path.exists():
+        template_path = MAC_SRC / "launchd" / f"com.pierpaolobene.local-omy.{name}.plist"
+    template = template_path.read_text()
     return (template.replace("__LABEL__", _label(name)).replace("__UV__", uv).replace("__MAC_DIR__", str(MAC_SRC))
             .replace("__HOME__", str(Path.home())).replace("__PATH__", AGENT_PATH))
 
@@ -87,6 +90,17 @@ def install_agent(name: str) -> None:
             return
         time.sleep(0.5)
     raise SetupError(f"launchctl bootstrap {name} failed: {r.stderr.strip()}")
+
+
+def retire_agent(name: str = "periodic") -> bool:
+    """Stop a LaunchAgent and delete its plist (the worker replaces periodic).
+    Returns whether there was a plist. Not run by anything: `omy setup` leaves
+    the decision to the user."""
+    _run(["launchctl", "bootout", f"gui/{os.getuid()}/{_label(name)}"])
+    path = _plist_path(name)
+    existed = path.exists()
+    path.unlink(missing_ok=True)
+    return existed
 
 
 # --- Tailscale ----------------------------------------------------------------
@@ -148,7 +162,11 @@ def checks() -> list[dict]:
     add("token", tr("Token del ricevitore", "Receiver token"), ok, detail)
 
     for name, label in (("receiver", tr("Ricevitore (LaunchAgent)", "Receiver (LaunchAgent)")),
-                        ("periodic", tr("Job orario (LaunchAgent)", "Hourly job (LaunchAgent)"))):
+                        ("worker", tr("Worker (LaunchAgent)", "Worker (LaunchAgent)")),
+                        ("periodic", tr("Job orario (LaunchAgent, sostituito dal worker)",
+                                        "Hourly job (LaunchAgent, replaced by the worker)"))):
+        if name == "periodic" and not _plist_path(name).exists():
+            continue  # retired: the worker replaces it
         a = agent_info(name)
         ok = a["loaded"] and a["up_to_date"] and (a["running"] or name == "periodic")
         detail = tr("non installato", "not installed") if not a["loaded"] \
