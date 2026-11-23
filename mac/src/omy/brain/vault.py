@@ -48,6 +48,7 @@ WARN = "⚠️ "
 
 BLOCK = re.compile(r"<!-- omy:begin (?P<n>[\w-]+) h=(?P<h>[0-9a-f]{8}) -->\n(?P<c>.*?)<!-- omy:end (?P=n) -->", re.S)
 TICKED = re.compile(r"^\s*- \[[xX]\] .*\^(c[0-9a-f]{8}(?:-\d+)?)\s*$", re.M)
+UNTICKED = re.compile(r"^\s*- \[ \] .*\^(c[0-9a-f]{8}(?:-\d+)?)\s*$", re.M)
 CHECKBOX = re.compile(r"^(\s*- )\[[xX]\]", re.M)
 KEY = re.compile(r"[A-Za-z_][\w-]*:")
 
@@ -214,7 +215,11 @@ def impegno_ids(sc: dict) -> list[str]:
     seen: Counter = Counter()
     out = []
     for it in sc.get("impegni_e_todo") or []:
-        base = "c" + hashlib.sha1(f"{sc.get('id')}|{(it.get('cosa') or '').casefold().strip()}".encode()).hexdigest()[:8]
+        uid = it.get("uid")
+        if isinstance(uid, str) and re.fullmatch(r"c?[0-9a-f]{8}", uid):  # stable, set by the organizer
+            base = uid if uid.startswith("c") else "c" + uid
+        else:  # sidecars from before uid
+            base = "c" + hashlib.sha1(f"{sc.get('id')}|{(it.get('cosa') or '').casefold().strip()}".encode()).hexdigest()[:8]
         seen[base] += 1
         out.append(base if seen[base] == 1 else f"{base}-{seen[base]}")
     return out
@@ -362,19 +367,34 @@ class _Vault:
     # -- ticks
 
     def sync_ticks(self, sids=None) -> None:
-        """The ticked commitments of impegni.md and of the notes' files become stato "fatto" in the sidecars."""
+        """The ticks of impegni.md and of the notes' files become stato in the sidecars: ticked ->
+        "fatto", unticked -> "aperto". Per id the most recently modified file that shows it wins
+        (impegni.md on a tie), so a tick or an untick made in either place sticks."""
         sids = list(self.all()) if sids is None else [s for s in sids if s in self.all()]
-        checked = set(TICKED.findall(_read(BRAIN / "impegni.md") or ""))
-        for sid in sids:
-            checked |= set(TICKED.findall(_read(self.all()[sid][0].with_suffix(".md")) or ""))
-        if not checked:
+        files = [BRAIN / "impegni.md"] + [self.all()[sid][0].with_suffix(".md") for sid in sids]
+        state: dict[str, tuple[int, bool]] = {}  # id -> (mtime_ns, ticked)
+        for f in files:
+            text = _read(f)
+            if not text:
+                continue
+            m = f.stat().st_mtime_ns
+            for iid in UNTICKED.findall(text):
+                if iid not in state or m > state[iid][0]:
+                    state[iid] = (m, False)
+            for iid in TICKED.findall(text):
+                if iid not in state or m > state[iid][0] or (m == state[iid][0]):
+                    state[iid] = (m, True)
+        if not state:
             return
         for sid in sids:
             sc = self.all()[sid][1]
             changed = False
             for it, iid in zip(sc.get("impegni_e_todo") or [], impegno_ids(sc)):
-                if iid in checked and it.get("stato") != "fatto":
-                    it["stato"] = "fatto"
+                if iid not in state:
+                    continue
+                want = "fatto" if state[iid][1] else "aperto"
+                if (it.get("stato") == "fatto") != (want == "fatto"):
+                    it["stato"] = want
                     changed = True
             if changed:
                 self.save_sidecar(sid, sc)
