@@ -6,6 +6,7 @@ import '../recording/recorder.dart';
 import '../services/ble_service.dart';
 import '../settings.dart';
 import '../upload/uploader.dart';
+import 'ask_page.dart';
 import 'home_page.dart';
 import 'people_page.dart';
 import 'places_page.dart';
@@ -31,7 +32,7 @@ class TabRetap extends ChangeNotifier {
   void fire() => notifyListeners();
 }
 
-/// The four tabs, each with its own navigation stack, as on iOS.
+/// The five tabs, each with its own navigation stack, as on iOS.
 class AppShell extends StatefulWidget {
   final BleService ble;
   final Recorder recorder;
@@ -56,8 +57,8 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   final _controller = CupertinoTabController();
-  final _shown = List.generate(4, (_) => TabShown());
-  final _navigators = List.generate(4, (_) => GlobalKey<NavigatorState>());
+  final _shown = List.generate(5, (_) => TabShown());
+  final _navigators = List.generate(5, (_) => GlobalKey<NavigatorState>());
   int _last = 0;
 
   @override
@@ -120,6 +121,11 @@ class _AppShellState extends State<AppShell> {
             activeIcon: Icon(CupertinoIcons.map_pin_ellipse),
             label: tr('Luoghi', 'Places'),
           ),
+          BottomNavigationBarItem(
+            icon: Icon(CupertinoIcons.chat_bubble_2),
+            activeIcon: Icon(CupertinoIcons.chat_bubble_2_fill),
+            label: tr('Chiedi', 'Ask'),
+          ),
         ],
       ),
       tabBuilder: (context, i) => CupertinoTabView(
@@ -136,7 +142,8 @@ class _AppShellState extends State<AppShell> {
           ),
           1 => TranscriptsPage(api: widget.api, shown: _shown[1]),
           2 => PeoplePage(api: widget.api, features: widget.features, shown: _shown[2]),
-          _ => PlacesPage(api: widget.api, features: widget.features, shown: _shown[3]),
+          3 => PlacesPage(api: widget.api, features: widget.features, shown: _shown[3]),
+          _ => AskPage(api: widget.api, shown: _shown[4]),
         },
       ),
     );
