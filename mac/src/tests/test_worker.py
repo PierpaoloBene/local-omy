@@ -42,9 +42,15 @@ class FakeModels:
         self.loaded = None
         self.chat_file = True
         self.on_release = None
+        self.companions = []
 
     def ensure(self, role):
         self.calls.append(("ensure", role))
+        if role == "embed":  # a companion: next to whatever is loaded
+            self.companions = ["embed"]
+            return f"http://fake/{role}"
+        if role == "organizer":
+            self.companions = []
         self.loaded = role
         return f"http://fake/{role}"
 
@@ -58,6 +64,7 @@ class FakeModels:
     def release_all(self):
         self.calls.append(("release_all",))
         self.loaded = None
+        self.companions = []
 
     def abort(self, role=None):
         self.calls.append(("abort", role))
@@ -75,8 +82,9 @@ def env(archive, monkeypatch):
     monkeypatch.setattr(models, "release", fm.release)
     monkeypatch.setattr(models, "release_all", fm.release_all)
     monkeypatch.setattr(models, "abort", fm.abort)
-    monkeypatch.setattr(models, "available", lambda role: fm.chat_file)
-    monkeypatch.setattr(models, "state", lambda: {"loaded": fm.loaded, "pid": None, "port": None})
+    monkeypatch.setattr(models, "available", lambda role: role == "chat" and fm.chat_file)
+    monkeypatch.setattr(models, "state", lambda: {"loaded": fm.loaded, "pid": None, "port": None,
+                                                       "companions": list(fm.companions)})
     monkeypatch.setattr(models, "chat_idle", lambda: 300.0)
     monkeypatch.setattr(worker, "in_window", lambda *a, **k: True)
     monkeypatch.setattr(worker, "on_ac", lambda: True)
@@ -104,7 +112,7 @@ def env(archive, monkeypatch):
         monkeypatch.setitem(sys.modules, f"omy.brain.{name}", mod)
         monkeypatch.setattr(brain, name, mod, raising=False)
     index = types.ModuleType("omy.brain.index")
-    index.update = lambda: vault_calls.append(("index",))
+    index.update = lambda sessions=None: vault_calls.append(("index", sessions))
     monkeypatch.setitem(sys.modules, "omy.brain.index", index)
     monkeypatch.setattr(brain, "index", index, raising=False)
 
@@ -128,10 +136,11 @@ def test_runs_by_priority(env):
     orig = env.w.run_job
     env.w.run_job = lambda job: (order.append(job.kind), orig(job))
     drain(env.w)
-    assert order == ["transcribe", "diarize", "render", "organize", "index"]
+    # transcribe and diarize queue an index job of their session, render one for 'all'
+    assert order == ["transcribe", "diarize", "render", "organize", "index", "index", "index", "index"]
     assert env.ran == [("transcribe", "t1"), ("diarize", "d1")]
     assert jobs.summary()["queued"] == 0
-    assert ("people", None) in env.vault and ("index",) in env.vault
+    assert ("people", None) in env.vault and ("index", None) in env.vault
     assert env.organized == [("o1", "http://fake/organizer")]
 
 
@@ -206,7 +215,7 @@ def test_batch_is_finalized_when_no_organize_is_left(env):
     env.w.step()  # finalize, then the index job it queued
     after = [c for c in env.vault if c[0] not in ("note",)]
     assert after[:3] == [("links", ["a", "b"]), ("entities", ["a", "b"]), ("indexes",)]
-    assert ("index",) in env.vault
+    assert ("index", ["a", "b"]) in env.vault
     assert env.w.batch() == []
 
 
@@ -304,6 +313,7 @@ def test_chat_unloaded_before_diarize_and_reloaded_after(env):
     env.w.step()
     assert env.fm.calls.index(("release_all",)) > env.fm.calls.index(("ensure", "chat"))
     assert env.fm.loaded is None
+    env.w.step()  # the index job of d1
     env.w.step()  # nothing left: chat again
     assert env.fm.loaded == "chat"
 

@@ -42,7 +42,7 @@ def fake(tmp_path, monkeypatch, archive):
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("OMY_LLAMA_SERVER", str(binary))
     specs = {}
-    for role in ("organizer", "chat"):
+    for role in ("organizer", "chat", "embed"):
         gguf = tmp_path / f"{role}.gguf"
         gguf.write_text("x")
         specs[role] = {"path": gguf, "port": free_port(), "args": ["-c", "128"]}
@@ -160,3 +160,48 @@ def test_check_preempt(archive, monkeypatch):
     assert not models.chat_active()
     jobs.touch_demand("chat")
     assert models.chat_active()
+
+
+def test_default_embed_spec():
+    e = models.MODELS["embed"]
+    assert e["port"] == 8092 and e.get("companion")
+    assert e["path"].name == "Qwen3-Embedding-0.6B-Q8_0.gguf"
+    assert " ".join(e["args"]) == "-ngl all -c 2048 -ub 1024 -b 1024 --embedding --pooling last -np 2"
+
+
+def test_embed_is_a_companion_of_chat(fake):
+    models.ensure("chat")
+    chat_pid = models.state()["pid"]
+    base = models.ensure("embed")
+    assert base.endswith(str(fake["embed"]["port"]))
+    st = models.state()
+    assert st["loaded"] == "chat" and st["pid"] == chat_pid and st["companions"] == ["embed"]
+    assert models.ensure("embed") == base  # already up
+    models.ensure("chat")
+    assert models.state()["companions"] == ["embed"]
+    models.release("embed")
+    st = models.state()
+    assert st["loaded"] == "chat" and st["companions"] == []
+
+
+def test_organizer_stops_embed_and_embed_stops_organizer(fake):
+    models.ensure("chat")
+    models.ensure("embed")
+    epid = models._comp_state()["embed"]["pid"]
+    models.ensure("organizer")
+    st = models.state()
+    assert st["loaded"] == "organizer" and st["companions"] == []
+    time.sleep(0.1)
+    with pytest.raises(OSError):
+        os.kill(epid, 0)
+    models.ensure("embed")  # never together: the organizer goes
+    st = models.state()
+    assert st["loaded"] is None and st["companions"] == ["embed"]
+
+
+def test_release_all_stops_both(fake):
+    models.ensure("chat")
+    models.ensure("embed")
+    models.release_all()
+    st = models.state()
+    assert st["loaded"] is None and st["companions"] == []

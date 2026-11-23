@@ -44,7 +44,17 @@ MODELS: dict[str, dict] = {
         "port": 8091,
         "args": ["-ngl", "all", "-fa", "on", "-c", "8192", "-np", "1", "--no-mmproj", "--jinja"],
     },
+    # A companion: lives next to "chat" (about 0.7 GB), never next to the organizer or during diarize.
+    "embed": {
+        "path": ARCHIVE / "models" / "brain" / "Qwen3-Embedding-0.6B-Q8_0.gguf",
+        "port": 8092,
+        "args": ["-ngl", "all", "-c", "2048", "-ub", "1024", "-b", "1024", "--embedding", "--pooling", "last",
+                 "-np", "2"],
+        "companion": True,
+    },
 }
+COMPANIONS = ("embed",)
+COMP_STATE = STATE.with_name("models-embed.json")
 HEALTH_TIMEOUT = 180.0
 CHAT_WAIT = 60.0
 CHAT_POLL = 0.2
@@ -66,6 +76,7 @@ _heavy_started: float = 0.0
 # What abort() acts on without the mutex: the server being started or running
 # (role, pid), and when each role was last aborted (monotonic).
 _active: tuple[str, int] | None = None
+_comp_procs: dict[str, subprocess.Popen] = {}
 _aborted: dict[str, float] = {}
 
 
@@ -143,13 +154,47 @@ def _write_state(state: dict) -> None:
 
 def state() -> dict:
     """{"loaded": role|None, "pid", "port", "since"}: what is serving now."""
+    comps = companions()
     try:
         st = json.loads(STATE.read_text())
     except (FileNotFoundError, ValueError):
-        return {"loaded": None, "pid": None, "port": None}
+        return {"loaded": None, "pid": None, "port": None, "companions": comps}
     if not _alive(st.get("pid")):
-        return {"loaded": None, "pid": None, "port": None}
-    return {"loaded": st.get("role"), "pid": st["pid"], "port": st.get("port"), "since": st.get("since")}
+        return {"loaded": None, "pid": None, "port": None, "companions": comps}
+    return {"loaded": st.get("role"), "pid": st["pid"], "port": st.get("port"), "since": st.get("since"),
+            "companions": comps}
+
+
+def _comp_state() -> dict:
+    """role -> {"pid", "port", "since"} of the companions recorded alive."""
+    try:
+        data = json.loads(COMP_STATE.read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+    return {r: v for r, v in data.items() if isinstance(v, dict) and _alive(v.get("pid"))}
+
+
+def _write_comp_state(data: dict) -> None:
+    COMP_STATE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = COMP_STATE.with_name(f".{COMP_STATE.name}.{os.getpid()}")
+    tmp.write_text(json.dumps(data) + "\n")
+    os.replace(tmp, COMP_STATE)
+
+
+def companions() -> list[str]:
+    """The companion roles (e.g. "embed") whose server is running now."""
+    return sorted(_comp_state())
+
+
+def _stop_companions(only: str | None = None) -> None:
+    for role, v in _comp_state().items():
+        if only is not None and role != only:
+            continue
+        proc = _comp_procs.pop(role, None)
+        _stop_pid(proc.pid if proc is not None else v["pid"], proc)
+        log(f"stopped llama-server {role} (pid {v['pid']})")
+    left = {r: v for r, v in _comp_state().items() if only is not None and r != only}
+    _write_comp_state(left)
 
 
 def _healthy(role: str) -> bool:
@@ -217,6 +262,8 @@ def kill_orphans() -> list[int]:
                     _stop_pid(pid)
                     killed.append(pid)
         _write_state({"role": None, "pid": None, "port": None})
+        _write_comp_state({})
+        _comp_procs.clear()
     return killed
 
 
@@ -237,12 +284,18 @@ def ensure(role: str) -> str:
     entered = time.monotonic()
     if role not in MODELS:
         raise ModelError(f"unknown role {role!r}")
+    if role in COMPANIONS:
+        return _ensure_companion(role)
     with _mutex, _FileLock():
         st = state()
         if st["loaded"] == role and _healthy(role):
+            if role == "organizer":
+                _stop_companions()
             return base_url(role)
         if st["loaded"] is not None or _proc is not None:
             _stop()
+        if role == "organizer":  # the memory is all for it
+            _stop_companions()
         path = model_path(role)
         if not path.is_file():
             raise ModelError(f"model for {role} not found: {path}")
@@ -277,6 +330,44 @@ def ensure(role: str) -> str:
         return base_url(role)
 
 
+def _ensure_companion(role: str) -> str:
+    """Start a companion next to the chat model. The organizer is stopped
+    first (never together)."""
+    with _mutex, _FileLock():
+        st = state()
+        if role in st["companions"] and _healthy(role):
+            return base_url(role)
+        if role in st["companions"]:
+            _stop_companions(role)
+        if st["loaded"] == "organizer" or (_proc is not None and not st["loaded"] and _active
+                                            and _active[0] == "organizer"):
+            _stop()
+        path = model_path(role)
+        if not path.is_file():
+            raise ModelError(f"model for {role} not found: {path}")
+        cmd = _command(role)
+        log(f"starting {role}: {' '.join(cmd)}")
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with LOG.open("ab") as out:
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+        _comp_procs[role] = proc
+        deadline = time.monotonic() + HEALTH_TIMEOUT
+        while not _healthy(role):
+            if proc.poll() is not None:
+                _comp_procs.pop(role, None)
+                raise ModelError(f"llama-server {role} exited with code {proc.returncode}")
+            if time.monotonic() > deadline:
+                _stop_pid(proc.pid, proc)
+                _comp_procs.pop(role, None)
+                raise ModelError(f"llama-server {role} not ready after {HEALTH_TIMEOUT:.0f} s")
+            time.sleep(0.25)
+        data = _comp_state()
+        data[role] = {"pid": proc.pid, "port": MODELS[role]["port"], "since": time.time()}
+        _write_comp_state(data)
+        log(f"{role} ready on port {MODELS[role]['port']}")
+        return base_url(role)
+
+
 def abort(role: str | None = None) -> bool:
     """Kill the llama-server of this role (any, if None), running or still
     loading, WITHOUT the mutex or the file lock: they may be held by the very
@@ -286,6 +377,16 @@ def abort(role: str | None = None) -> bool:
     now = time.monotonic()
     for r in (MODELS if role is None else [role]):
         _aborted[r] = now
+    killed = False
+    for r, v in _comp_state().items():
+        if role is None or role == r:
+            try:
+                os.kill(v["pid"], signal.SIGKILL)
+                killed = True
+            except (ProcessLookupError, PermissionError):
+                pass
+    if role in COMPANIONS:
+        return killed
     pid = None
     active = _active
     if active is not None and (role is None or active[0] == role):
@@ -298,17 +399,20 @@ def abort(role: str | None = None) -> bool:
         except (OSError, ValueError):
             pass
     if not pid or not _alive(pid):
-        return False
+        return killed
     try:
         os.kill(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
-        return False
+        return killed
     return True
 
 
 def release(role: str) -> None:
     """Stop the llama-server of this role, if it is the one running."""
     with _mutex, _FileLock():
+        if role in COMPANIONS:
+            _stop_companions(role)
+            return
         st = state()
         if st["loaded"] == role or (_proc is not None and not st["loaded"]):
             _stop()
@@ -316,6 +420,7 @@ def release(role: str) -> None:
 
 def release_all() -> None:
     with _mutex, _FileLock():
+        _stop_companions()
         if state()["loaded"] is not None or _proc is not None:
             _stop()
 
