@@ -208,15 +208,49 @@ def _month_range(year: int, month: int) -> tuple[date, date]:
     return date(year, month, 1), date(year, month, calendar.monthrange(year, month)[1])
 
 
+UPCOMING_DAYS = 60  # a day/month this close ahead is a question about something upcoming
+
+
 def _recent_date(month: int, day: int, today: date, year: int | None = None) -> date | None:
-    """The most recent day/month that is not after today (or in the given year)."""
+    """The day/month to use for a question: the upcoming occurrence when it is within UPCOMING_DAYS
+    (today included), else the most recent one not after today (or the date in the given year)."""
     try:
         if year is not None:
             return date(year, month, day)
-        d = date(today.year, month, day)
-        return d if d <= today else date(today.year - 1, month, day)
+        cands = []
+        for y in (today.year, today.year + 1):
+            try:
+                cands.append(date(y, month, day))
+            except ValueError:
+                pass
+        up = next((c for c in cands if c >= today), None)
+        if up and (up - today).days <= UPCOMING_DAYS:
+            return up
+        past = [c for c in [date(today.year - 1, month, day) if _valid(today.year - 1, month, day) else None] + cands
+                if c and c <= today]
+        return max(past) if past else None
     except ValueError:
         return None
+
+
+def _valid(y: int, m: int, d: int) -> bool:
+    try:
+        date(y, m, d)
+        return True
+    except ValueError:
+        return False
+
+
+def _month_year(mo: int, today: date) -> int:
+    """Year of a bare month in a question: the upcoming one if it starts within UPCOMING_DAYS, else the
+    most recent (the current month is the current year)."""
+    if mo == today.month:
+        return today.year
+    ahead = (mo - today.month) % 12
+    first = date(today.year + (1 if mo < today.month else 0), mo, 1)
+    if (first - today).days <= UPCOMING_DAYS and ahead:
+        return first.year
+    return today.year if mo < today.month else today.year - 1
 
 
 def question_range(text: str, now: datetime) -> tuple[str, str, str] | None:
@@ -226,6 +260,7 @@ def question_range(text: str, now: datetime) -> tuple[str, str, str] | None:
     "negli ultimi N giorni" = the N days ending today; a weekday is its most recent occurrence, today
     included ("lunedì scorso" never today); "a ottobre" is the whole of the most recent October (the
     current month if it is that one); "il 3 novembre" is its most recent occurrence (today included).
+    Exception: a day/month, or a month, starting within UPCOMING_DAYS ahead is its upcoming occurrence.
     matched_text is the matched part of the accent-folded question."""
     t = " ".join(fold(text).replace(",", " ").replace("?", " ").split())
     today = now.date()
@@ -239,8 +274,12 @@ def question_range(text: str, now: datetime) -> tuple[str, str, str] | None:
         m1 = MONTHS.index(m[2]) + 1 if m[2] else m2
         end = _recent_date(m2, int(m[3]), today, int(m[5]) if m[5] else None)
         if end:
-            start = _recent_date(m1, int(m[1]), end, end.year)
-            if start and start <= end:
+            start = None
+            for y in (end.year, end.year - 1):  # "dal 28 dicembre al 3 gennaio": the start is the year before
+                if _valid(y, m1, int(m[1])) and date(y, m1, int(m[1])) <= end:
+                    start = date(y, m1, int(m[1]))
+                    break
+            if start:
                 return out(start, end, m)
     if m := re.search(r"\bnegli ultimi (\w+) giorni\b", t):
         n = _num(m[1])
@@ -276,6 +315,6 @@ def question_range(text: str, now: datetime) -> tuple[str, str, str] | None:
         return out(d, d, m)
     if m := re.search(rf"\b(?:a|ad|in|di|nel)\s+({month_re})(?: (\d{{4}}))?\b", t):
         mo = MONTHS.index(m[1]) + 1
-        y = int(m[2]) if m[2] else (today.year if mo <= today.month else today.year - 1)
+        y = int(m[2]) if m[2] else _month_year(mo, today)
         return out(*_month_range(y, mo), m)
     return None

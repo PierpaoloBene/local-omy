@@ -162,7 +162,7 @@ def state() -> dict:
     if not _alive(st.get("pid")):
         return {"loaded": None, "pid": None, "port": None, "companions": comps}
     return {"loaded": st.get("role"), "pid": st["pid"], "port": st.get("port"), "since": st.get("since"),
-            "companions": comps}
+            "starting": st.get("starting"), "companions": comps}
 
 
 def _comp_state() -> dict:
@@ -438,6 +438,12 @@ def request_chat() -> str:
         time.sleep(CHAT_POLL)
         jobs.touch_demand("chat")
     return base_url("chat")
+
+
+def loading_or_demanded() -> bool:
+    """Whether the chat/embed servers are being loaded or a question is pending: a query embedding is
+    worth waiting for. Otherwise nobody is going to load the embedding companion soon."""
+    return state().get("starting") in ("chat", "embed") or chat_active()
 
 
 def chat_active(now: float | None = None) -> bool:

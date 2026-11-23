@@ -49,6 +49,29 @@ def test_unavailable_server(monkeypatch):
 
 def test_query_without_companion(monkeypatch):
     monkeypatch.setattr(models, "state", lambda: {"loaded": "chat", "companions": []})
+    monkeypatch.setattr(models, "chat_active", lambda: True)  # a question is pending: it waits
     monkeypatch.setattr(embed, "QUERY_WAIT", 0.3)
     with pytest.raises(embed.EmbedError):
         embed.embed(["x"], True)
+
+
+def test_query_falls_back_at_once_when_nothing_is_loading(monkeypatch):
+    import time
+    monkeypatch.setattr(models, "state", lambda: {"loaded": None, "starting": None, "companions": []})
+    monkeypatch.setattr(models, "chat_active", lambda: False)
+    monkeypatch.setattr(embed, "QUERY_WAIT", 5.0)
+    t0 = time.monotonic()
+    with pytest.raises(embed.EmbedError):
+        embed.embed(["x"], True)
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_query_waits_while_the_worker_loads(monkeypatch, server):
+    import time
+    t0 = time.monotonic()
+    monkeypatch.setattr(models, "state", lambda: {
+        "loaded": None, "starting": "chat",
+        "companions": ["embed"] if time.monotonic() - t0 > 0.5 else []})
+    monkeypatch.setattr(models, "chat_active", lambda: False)
+    assert embed.embed(["x"], True).shape[0] == 1
+    assert time.monotonic() - t0 >= 0.5
