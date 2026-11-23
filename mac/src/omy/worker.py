@@ -116,7 +116,8 @@ class Worker:
         self.scan_due = True
         self.last_scan = 0.0
         self.last_iphone = 0.0
-        self.chat_retry_at = 0.0
+        self.retry_at: dict[str, float] = {}  # per role: an embed failure must not block chat reloads
+        self.job_lock = threading.Lock()      # the job start vs the guard loading companions
         self.wake_seen = jobs.wake_time()
         self.state = "starting"
         self.last_error: str | None = None
@@ -240,17 +241,25 @@ class Worker:
     def idle(self) -> None:
         """Nothing to run: keep the chat model and the embedding companion loaded, if there are."""
         self.state = "idle"
-        if time.time() < self.chat_retry_at:
-            return
-        for role in ("chat", "embed"):
-            if not models.available(role) or self._is_loaded(role):
-                continue
-            try:
-                models.ensure(role)
-            except models.ModelError as e:
-                log(f"{role} model: {e}")
-                self.chat_retry_at = time.time() + CHAT_RETRY
+        self.load_roles(("chat", "embed"))
+
+    def load_roles(self, roles) -> None:
+        """Load the roles that are available and not loaded yet, each with its own retry timestamp.
+        Never while an unpreempted diarize/organize runs: the check shares job_lock with the job start."""
+        with self.job_lock:
+            job = self.current
+            if job is not None and job.kind in HEAVY and not self.preempted:
                 return
+            for role in roles:
+                if time.time() < self.retry_at.get(role, 0.0):
+                    continue
+                if not models.available(role) or self._is_loaded(role):
+                    continue
+                try:
+                    models.ensure(role)
+                except models.ModelError as e:
+                    log(f"{role} model: {e}")
+                    self.retry_at[role] = time.time() + CHAT_RETRY
 
     @staticmethod
     def _is_loaded(role: str) -> bool:
@@ -258,7 +267,8 @@ class Worker:
         return st["loaded"] == role or role in st.get("companions", [])
 
     def run_job(self, job: jobs.Job) -> None:
-        self.current, self.preempted = job, False
+        with self.job_lock:
+            self.current, self.preempted = job, False
         self.state = "running"
         heavy = job.kind in HEAVY
         if heavy:
@@ -433,15 +443,8 @@ class Worker:
                 if proc is None:
                     return  # not spawned yet: run_subprocess sees `preempted`
                 self.stop_proc(proc)
-        if time.time() >= self.chat_retry_at:
-            for role in ("chat", "embed"):  # the question's search needs the embedding companion too
-                if models.available(role) and not self._is_loaded(role):
-                    try:
-                        models.ensure(role)
-                    except models.ModelError as e:
-                        log(f"{role} model: {e}")
-                        self.chat_retry_at = time.time() + CHAT_RETRY
-                        break
+        # the question's query embedding is needed first: embed, then chat (they coexist)
+        self.load_roles(("embed", "chat"))
 
     def stop_proc(self, proc) -> None:
         """terminate, wait up to PROC_STOP_WAIT, then kill."""

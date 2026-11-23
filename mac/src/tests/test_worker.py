@@ -432,3 +432,40 @@ def test_receiver_transcribe_wakes_the_worker(archive):
     st = c.get("/v1/brain/status", headers=auth).json()
     assert set(st) == {"worker", "jobs", "models"} and st["jobs"]["queued"] == 1
     assert st["models"]["loaded"] is None
+
+
+def test_guard_loads_embed_before_chat(env, monkeypatch):
+    monkeypatch.setattr(models, "available", lambda role: True)
+    jobs.touch_demand("chat")
+    env.w.guard_once()
+    assert [c for c in env.fm.calls if c[0] == "ensure"] == [("ensure", "embed"), ("ensure", "chat")]
+
+
+def test_retry_timestamps_are_per_role(env, monkeypatch):
+    monkeypatch.setattr(models, "available", lambda role: True)
+    real = env.fm.ensure
+
+    def ensure(role):
+        if role == "embed":
+            raise models.ModelError("no embed")
+        return real(role)
+
+    monkeypatch.setattr(models, "ensure", ensure)
+    jobs.touch_demand("chat")
+    env.w.guard_once()
+    assert env.fm.loaded == "chat" and "embed" in env.w.retry_at and "chat" not in env.w.retry_at
+    env.fm.loaded = None  # chat lost: the embed failure must not block its reload
+    env.w.guard_once()
+    assert env.fm.loaded == "chat"
+
+
+def test_companions_never_loaded_during_unpreempted_heavy_job(env, monkeypatch):
+    monkeypatch.setattr(models, "available", lambda role: True)
+    for kind in ("diarize", "organize"):
+        env.w.current, env.w.preempted = types.SimpleNamespace(kind=kind), False
+        env.w.load_roles(("embed", "chat"))
+        env.w.idle()
+        assert env.fm.calls == []
+    env.w.preempted = True  # a question preempted it: embed and chat may come
+    env.w.load_roles(("embed", "chat"))
+    assert ("ensure", "embed") in env.fm.calls

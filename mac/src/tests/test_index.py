@@ -115,7 +115,7 @@ def test_incremental_no_reembed(env):
     index.update()
     n = env.embedded_texts
     v = index.update()
-    assert env.embedded_texts == n and v["rebuilt"] == 0 and v["version"] == 2
+    assert env.embedded_texts == n and v["rebuilt"] == 0 and v["version"] == 1 and not v["changed"]
     assert [c["id"] for c in chunks()] == [c["id"] for c in chunks()]
 
 
@@ -259,6 +259,10 @@ def test_matrix_reloaded_on_version_change(env, archive):
     n = index._loads[0]
     index.search("trasloco")
     assert index._loads[0] == n  # cached
+    index.update()  # nothing changed: no version bump, no reload
+    index.search("trasloco")
+    assert index._loads[0] == n
+    write_note(SID1, "2026-11-21", riassunto="altro testo del trasloco")
     index.update()  # version bump
     index.search("trasloco")
     assert index._loads[0] == n + 1
@@ -269,3 +273,32 @@ def test_matrix_reloaded_on_version_change(env, archive):
 
 def test_search_without_index(archive):
     assert index.search("x") == []
+
+
+def test_search_ignores_rows_newer_than_the_cached_view(env):
+    index.update()
+    index.search("trasloco")  # loads the view
+    with sqlite3.connect(index.INDEX_PATH) as db:  # a concurrent update: the live DB is ahead of the view
+        cur = db.execute("INSERT INTO chunks(kind, session, day, start, t, row_id, persons, title, field, text, "
+                         "source_hash) VALUES ('nota', 'zz', '2026-11-25', NULL, 0, NULL, '[]', 't', 'punto', "
+                         "'zebra nuova', 'h')")
+        db.execute("INSERT INTO chunks_fts(rowid, text, title) VALUES (?, 'zebra nuova', 't')", (cur.lastrowid,))
+    assert all(h["session"] != "zz" for h in index.search("zebra"))  # no KeyError either
+    assert index.search("trasloco")
+
+
+def test_person_text_filter_uses_word_boundaries(env, archive):
+    write_rows(archive, "2026-11-23", [
+        row("20261123T100000Z-cccc0003", 0, "2026-11-23T10:00:00+01:00", "Altro", None, "Annalisa porta il giardino."),
+        row("20261123T110000Z-dddd0004", 0, "2026-11-23T11:00:00+01:00", "Altro", None, "Ieri Anna ha visto il giardino."),
+    ])
+    index.update()
+    sessions = {h["session"] for h in index.search("giardino", persons=["p_anna"], k=20)}
+    assert "20261123T100000Z-cccc0003" not in sessions
+    assert "20261123T110000Z-dddd0004" in sessions
+
+
+def test_unchanged_update_keeps_the_version(env):
+    index.update()
+    assert index.update()["version"] == 1
+    assert index.update()["version"] == 1

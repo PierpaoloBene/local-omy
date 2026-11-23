@@ -168,13 +168,18 @@ Risposta `text/event-stream`, un evento JSON per riga `data: {...}`:
 {"type":"error","message":"…"}
 ```
 `Citation = {"n": 1, "kind": "nota"|"testo", "session": "<id>", "day": "2026-11-21", "time": "18:22",
-"t": 512.0, "row_id": "<session>/<n>", "title": "…", "snippet": "≤ 200 caratteri"}`.
+"session_day": "2026-11-21", "t": 512.0, "row_id": "<session>/<n>", "title": "…", "snippet": "≤ 200 caratteri"}`.
+`session_day` = giorno locale di INIZIO della sessione (`data` del sidecar, altrimenti il giorno della prima riga
+JSONL della sessione; `day` come ripiego): può differire da `day` (giorno del chunk) per sessioni a cavallo di
+mezzanotte. L'iPhone lo usa per trovare la conversazione (`conversations(day: session_day)`).
 Pipeline: date relative della domanda risolte in codice (`omy.brain.dates`: oggi, ieri, settimana scorsa, martedì,
 a ottobre, il 3 novembre…) → filtro giorni; nomi di persone noti (people.json, my_aliases, fuzzy) → filtro/boost
 persone; `index.search` (k=8, contesto ≤ ~1.200 token) → se nessun hit sopra soglia: risposta "Non ho trovato nulla
 nell'archivio su questo." senza modello; altrimenti `models.request_chat()` + llama-server streaming con prompt
 `prompts/ask.md` (risposta breve, italiano, solo dalle fonti, cita [n], se le fonti non bastano lo dice).
-Ogni domanda aggiorna la domanda chat (prelazione, §7). Log di ogni domanda con i timings in
+Ogni domanda aggiorna la domanda chat (prelazione, §7) subito all'inizio di `answer()`, prima del retrieval; il
+guard del worker carica `embed` PRIMA di `chat` (la query ha bisogno dell'embedding; convivono), e `embed._base(query=True)`
+attende (max 10 s) solo se il worker sta caricando chat/embed o c'è una domanda pendente, altrimenti BM25 subito. Log di ogni domanda con i timings in
 `ARCHIVE/cache/ask-log.jsonl` (senza testo della risposta).
 
 `GET /v1/brain/note/{session}`: il sidecar JSON della nota (404 se non c'è) per la vista nota nell'app.

@@ -382,8 +382,9 @@ def update(sessions: list[str] | None = None) -> dict:
         stats["embedded"], stats["pending"] = embedded, pending
         if embedded:
             changed = True
-        with db:
-            db.execute("UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key='version'")
+        if changed:
+            with db:
+                db.execute("UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key='version'")
         stats["version"] = int(_meta(db, "version") or 0)
         stats["changed"] = changed
     return stats
@@ -461,12 +462,14 @@ def search(query: str, *, day_from: str | None = None, day_to: str | None = None
         allowed: set[int] | None = None
         if day_from or day_to or persons:
             pnames = _person_names(persons) if persons else []
+            pat = (re.compile("|".join(rf"(?<!\w){re.escape(n)}(?!\w)" for n in dict.fromkeys(pnames)))
+                   if pnames else None)
             allowed = set()
             for cid, c in rows.items():
                 if (day_from and (c["day"] or "") < day_from) or (day_to and (c["day"] or "") > day_to):
                     continue
                 if persons and not (set(persons) & set(c["persons"])
-                                    or any(n in _fold(c["text"]) for n in pnames)):
+                                    or (pat and pat.search(_fold(c["text"])))):
                     continue
                 allowed.add(cid)
 
@@ -482,7 +485,8 @@ def search(query: str, *, day_from: str | None = None, day_to: str | None = None
             except sqlite3.OperationalError as e:
                 log(f"fts query failed: {e}")
                 found = []
-            lists.append([i for i in found if allowed is None or i in allowed][:TOP])
+            # the FTS reads the live DB, `rows` is the cached view: ids newer than the view are skipped
+            lists.append([i for i in found if i in rows and (allowed is None or i in allowed)][:TOP])
             lexical.update(lists[-1])
 
         if len(view["ids"]):
@@ -498,13 +502,15 @@ def search(query: str, *, day_from: str | None = None, day_to: str | None = None
                     mask = np.fromiter((int(i) in allowed for i in ids), dtype=bool, count=len(ids))
                     scores = np.where(mask, scores, -np.inf)
                 order = np.argsort(-scores)[:TOP]
-                lists.append([int(ids[i]) for i in order if np.isfinite(scores[i])])
-                cos.update({int(ids[i]): float(scores[i]) for i in order if np.isfinite(scores[i])})
+                order = [i for i in order if np.isfinite(scores[i]) and int(ids[i]) in rows]
+                lists.append([int(ids[i]) for i in order])
+                cos.update({int(ids[i]): float(scores[i]) for i in order})
 
         fused: dict[int, float] = {}
         for lst in lists:
             for rank, cid in enumerate(lst):
                 fused[cid] = fused.get(cid, 0.0) + 1.0 / (RRF_K + rank + 1)
-        best = sorted(fused, key=lambda i: (-fused[i], rows[i]["kind"] != "nota", i))[:k]
+        best = sorted((i for i in fused if i in rows),
+                      key=lambda i: (-fused[i], rows[i]["kind"] != "nota", i))[:k]
         return [{**rows[i], "persons": list(rows[i]["persons"]), "score": fused[i],
                  "lexical": i in lexical, "cos": cos.get(i)} for i in best]

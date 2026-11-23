@@ -35,7 +35,8 @@ def _base(query: bool) -> str:
             return models.ensure("embed")  # the worker's index job: load it (stops the organizer)
         deadline = time.monotonic() + QUERY_WAIT
         while "embed" not in models.state().get("companions", []):
-            if time.monotonic() > deadline:
+            # wait only if the worker is loading chat/embed or a question is pending: else BM25 right away
+            if time.monotonic() > deadline or not models.loading_or_demanded():
                 raise EmbedError("the embedding server is not loaded")
             time.sleep(0.2)
         return models.base_url("embed")

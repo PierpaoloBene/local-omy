@@ -27,12 +27,13 @@ import json
 import re
 import threading
 import time
+import unicodedata
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator
 
-from omy import models
+from omy import jobs, models
 from omy.brain import dates
 from omy.config import ARCHIVE
 
@@ -61,36 +62,81 @@ def _index():
 
 # --- people -----------------------------------------------------------------------
 
-def detect_persons(question: str) -> list[str]:
-    """Person ids ("me" included) named in the question: exact first name / full name, else fuzzy."""
+_FUZZY_STOP = {"marzo", "anno", "anni", "luce", "caro", "cara", "sara", "saro", "sarai", "sarebbe", "ecc", "come",
+               "cosa", "cose", "detto", "ieri", "oggi", "domani", "quando", "dove", "mamma", "papa", "casa",
+               "pasta", "mare", "carta", "forse", "tutto", "tutti", "ancora", "sempre", "mese", "mesi", "giorno",
+               "giorni", "sera", "notte", "mattina", "settimana", "scorso", "scorsa"} | \
+    {dates.fold(w) for w in (*dates.MONTHS, *dates.WEEKDAYS)}
+
+
+def _strict(text: str) -> str:
+    """Casefolded, accents kept ("sarà" is not "sara")."""
+    return unicodedata.normalize("NFC", text.casefold())
+
+
+def person_groups(question: str) -> tuple[list[str], list[str]]:
+    """(sure, ambiguous) person ids ("me" included) named in the question.
+
+    Exact: a full name or first name, on word boundaries and with the accents. Fuzzy (organize.FUZZY): only
+    tokens capitalized in the question, not at a sentence start, and not a month/weekday/common word.
+    A first name shared by two people is ambiguous (both listed there, none in sure)."""
     from omy import diarize
     from omy.brain import organize
     from omy.brain.names import my_aliases
-    names: dict[str, str] = {organize._fold(diarize.my_name()): "me", **{organize._fold(a): "me" for a in my_aliases()}}
+    names: dict[str, set[str]] = {}
+
+    def add(n: str, pid: str) -> None:
+        for key in {_strict(n), organize._fold(n)}:  # a name with accents is also found without them
+            if key:
+                names.setdefault(key, set()).add(pid)
+
+    add(diarize.my_name(), "me")
+    for a in my_aliases():
+        add(a, "me")
     for pid, p in diarize.load_people().items():
         if p.get("name"):
-            full = organize._fold(organize.APP_SUFFIX.sub("", p["name"]))
-            names[full] = pid
+            full = organize.APP_SUFFIX.sub("", p["name"]).strip()
+            add(full, pid)
             if full.split():
-                names.setdefault(full.split()[0], pid)
-    words = re.findall(r"\w+", organize._fold(question))
-    text = " ".join(words)
-    found: list[str] = []
-    for n, pid in names.items():
-        if n and re.search(rf"(?<!\w){re.escape(n)}(?!\w)", text) and pid not in found:
-            found.append(pid)
-    for w in words:
-        if len(w) < 4:
+                add(full.split()[0], pid)
+    toks = [(m.group(), m.start()) for m in re.finditer(r"\w+", question)]
+    text = " ".join(_strict(w) for w, _ in toks)
+    sure: list[str] = []
+    maybe: list[str] = []
+    shared: list[set[str]] = []
+    for n, pids in names.items():
+        if re.search(rf"(?<!\w){re.escape(n)}(?!\w)", text):
+            if len(pids) == 1:
+                (pid,) = pids
+                if pid not in sure:
+                    sure.append(pid)
+            else:
+                shared.append(pids)
+    for pids in shared:
+        if not pids & set(sure):  # "Marco Rossi" settles the "marco" shared with Marco Bianchi
+            maybe += [p for p in sorted(pids) if p not in maybe]
+    fuzzy_names = {organize._fold(n): pids for n, pids in names.items() if len(organize._fold(n)) >= 4}
+    for w, pos in toks:
+        wf = organize._fold(w)
+        if len(wf) < 4 or not w[0].isupper() or wf in _FUZZY_STOP:
             continue
-        best = [(organize._lev_ratio(w, n), pid) for n, pid in names.items()
-                if len(n) >= 4 and n[0] == w[0] and n != w]
+        if pos == 0 or re.search(r"[.!?:]\s*$|\n\s*$", question[:pos]):
+            continue  # a sentence start is always capitalized: no evidence
+        best = [(organize._lev_ratio(wf, n), pid) for n, pids in fuzzy_names.items() for pid in pids
+                if n[0] == wf[0] and n != wf]
         best = [b for b in best if b[0] >= organize.FUZZY]
         if best:
             top = max(r for r, _ in best)
             winners = {pid for r, pid in best if r == top}
-            if len(winners) == 1 and (pid := winners.pop()) not in found:
-                found.append(pid)
-    return found
+            if len(winners) == 1 and (pid := winners.pop()) not in sure:
+                sure.append(pid)
+    return sure, [p for p in maybe if p not in sure]
+
+
+def detect_persons(question: str) -> list[str]:
+    """Person ids ("me" included) named in the question, ambiguous first names included."""
+    sure, maybe = person_groups(question)
+    return sure + maybe
 
 
 # --- context ---------------------------------------------------------------------
@@ -114,7 +160,7 @@ def relevant(hits: list[dict]) -> bool:
     return any(h.get("lexical") or (h.get("cos") or 0) >= COS_MIN for h in hits)
 
 
-def build_context(hits: list[dict]) -> tuple[str, list[dict]]:
+def build_context(hits: list[dict], session_days: dict[str, str] | None = None) -> tuple[str, list[dict]]:
     """Numbered sources within the budget and the citations of those that fit."""
     lines, cites, used = [], [], 0
     for hit in hits:
@@ -128,6 +174,7 @@ def build_context(hits: list[dict]) -> tuple[str, list[dict]]:
         used += len(line)
         lines.append(line)
         cites.append({"n": n, "kind": hit.get("kind"), "session": hit.get("session"), "day": hit.get("day"),
+                      "session_day": (session_days or {}).get(hit.get("session")) or hit.get("day"),
                       "time": hhmm, "t": hit.get("t"), "row_id": hit.get("row_id"), "title": title,
                       "snippet": text[:SNIPPET]})
     return "\n".join(lines), cites
@@ -183,14 +230,15 @@ class ThinkFilter:
         return out
 
 
-def _stream_llama(base_url: str, messages: list[dict], put, stop: threading.Event) -> None:
+def _stream_llama(base_url: str, messages: list[dict], put, stop: threading.Event, holder: dict) -> None:
     """Runs in a thread: put(piece) for each content delta, put(_DONE) or put(exception) at the end."""
     body = {"messages": messages, "stream": True, "temperature": 0.2, "max_tokens": 300, "cache_prompt": True,
             "chat_template_kwargs": {"enable_thinking": False}}
     try:
         req = urllib.request.Request(base_url.rstrip("/") + "/v1/chat/completions", json.dumps(body).encode(),
                                      {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as resp:
+        resp = holder["resp"] = urllib.request.urlopen(req, timeout=LLM_TIMEOUT)
+        with resp:
             for raw in resp:
                 if stop.is_set():
                     return
@@ -224,27 +272,49 @@ def _log(question: str, n_hits: int, not_found: bool, timings: dict) -> None:
 
 # --- the pipeline -----------------------------------------------------------------------
 
-def _search(question: str, history: list[dict], rng, persons: list[str]) -> list[dict]:
+def _prev_question(question: str, history: list[dict]) -> str | None:
+    """The previous user question, when the new one is a short follow-up ("e a Marco?")."""
+    if len(question.split()) >= SHORT_QUESTION_WORDS:
+        return None
+    prev = [h["content"] for h in history if h.get("role") == "user" and isinstance(h.get("content"), str)]
+    return prev[-1].strip() if prev else None
+
+
+def _search(question: str, history: list[dict], rng, persons: list[str], maybe: list[str] | None = None) -> list[dict]:
+    """persons filter the search; `maybe` (an ambiguous first name) only boosts."""
     index = _index()
-    query = question
-    if len(question.split()) < SHORT_QUESTION_WORDS:
-        prev = [h["content"] for h in history if h.get("role") == "user" and isinstance(h.get("content"), str)]
-        if prev:
-            query = f"{prev[-1].strip()} {question}"
+    prev = _prev_question(question, history)
+    query = f"{prev} {question}" if prev else question
     day_from, day_to = (rng[0], rng[1]) if rng else (None, None)
     kw = {"day_from": day_from, "day_to": day_to, "k": K}
     filt = [p for p in persons if p != "me"]
+    boost = filt + [p for p in (maybe or []) if p != "me" and p not in filt]
     hits = index.search(query, persons=filt or None, **kw)
-    if filt and len(hits) < 2:
-        hits = index.search(query, persons=None, **kw)
+    if boost and (len(hits) < 2 if filt else True):
+        if filt:
+            hits = index.search(query, persons=None, **kw)
 
         def involves(h) -> bool:
-            try:
-                return bool(set(filt) & set(json.loads(h.get("persons") or "[]")))
-            except (ValueError, TypeError):
-                return False
+            return bool(set(boost) & set(h.get("persons") or []))
         hits = sorted(hits, key=lambda h: not involves(h))  # stable: boost
     return hits
+
+
+def _session_days(sessions: list[str]) -> dict[str, str]:
+    """session -> its local start day: the sidecar's `data`, else the day of its first JSONL row."""
+    index = _index()
+    out: dict[str, str] = {}
+    for sid in dict.fromkeys(s for s in sessions if s):
+        try:
+            day = (index._read_sidecars([sid]).get(sid) or {}).get("data")
+            if not day:
+                rows = index._read_rows([sid]).get(sid) or []
+                day = rows[0]["start"][:10] if rows else None
+        except Exception:  # noqa: BLE001 - a missing day only costs the iPhone a lookup
+            day = None
+        if day:
+            out[sid] = str(day)
+    return out
 
 
 async def answer(question: str, history: list[dict], now: datetime) -> AsyncIterator[dict]:
@@ -253,11 +323,19 @@ async def answer(question: str, history: list[dict], now: datetime) -> AsyncIter
     timings = {"wait_model_ms": 0, "retrieval_ms": 0, "ttft_ms": 0, "total_ms": 0}
     n_hits, not_found = 0, False
     stop = threading.Event()
+    holder: dict = {}  # the HTTP response of the reader thread: closing it stops llama-server's generation
     try:
+        try:  # the question reaches the worker before anything else: it may have to stop the organizer
+            await asyncio.to_thread(jobs.touch_demand, "chat")
+        except Exception:  # noqa: BLE001 - request_chat renews it anyway
+            pass
         yield {"type": "status", "stage": "searching"}
-        rng = dates.question_range(question, now)
-        persons = await asyncio.to_thread(detect_persons, question)
-        hits = await asyncio.to_thread(_search, question, history, rng, persons)
+        prev = _prev_question(question, history)
+        rng = dates.question_range(question, now) or (dates.question_range(f"{prev} {question}", now) if prev else None)
+        persons, maybe = await asyncio.to_thread(person_groups, question)
+        if prev and not persons and not maybe:
+            persons, maybe = await asyncio.to_thread(person_groups, f"{prev} {question}")
+        hits = await asyncio.to_thread(_search, question, history, rng, persons, maybe)
         timings["retrieval_ms"] = ms(t0, time.monotonic())
         n_hits = len(hits)
         if not relevant(hits):
@@ -267,7 +345,8 @@ async def answer(question: str, history: list[dict], now: datetime) -> AsyncIter
             timings["total_ms"] = ms(t0, time.monotonic())
             yield {"type": "done", "not_found": True, "used": [], "timings": timings}
             return
-        sources, cites = build_context(hits)
+        session_days = await asyncio.to_thread(_session_days, [h.get("session") for h in hits])
+        sources, cites = build_context(hits, session_days)
         yield {"type": "citations", "items": cites}
         msgs = build_messages(question, history, sources, now)
 
@@ -280,8 +359,13 @@ async def answer(question: str, history: list[dict], now: datetime) -> AsyncIter
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
-        threading.Thread(target=_stream_llama, daemon=True, args=(
-            base_url, msgs, lambda x: loop.call_soon_threadsafe(queue.put_nowait, x), stop)).start()
+
+        def put(x) -> None:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, x)
+            except RuntimeError:  # the loop is closed: the client left
+                pass
+        threading.Thread(target=_stream_llama, daemon=True, args=(base_url, msgs, put, stop, holder)).start()
         think, full, first = ThinkFilter(), "", True
         while True:
             item = await queue.get()
@@ -308,4 +392,10 @@ async def answer(question: str, history: list[dict], now: datetime) -> AsyncIter
         yield {"type": "error", "message": f"{type(e).__name__}: {e}"[:200]}
     finally:
         stop.set()  # the client left or we are done: let the reader thread go
+        resp = holder.get("resp")
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
         _log(question, n_hits, not_found, timings)

@@ -2,6 +2,7 @@ from datetime import date, datetime
 
 import pytest
 
+from omy.brain import dates
 from omy.brain.dates import resolve
 
 REF = datetime(2026, 11, 23, 10, 0)  # a Monday
@@ -56,3 +57,26 @@ def test_bare_month():
     assert resolve("agosto", REF, prefer="future") == date(2027, 8, 1)
     assert resolve("dicembre", REF, prefer="future") == date(2026, 12, 1)
     assert resolve("dicembre", REF, prefer="past") == date(2025, 12, 1)
+
+
+# --- question_range: upcoming vs past, cross-year ---------------------------------------
+
+@pytest.mark.parametrize("now,text,want", [
+    ("2026-11-23", "il 3 dicembre", ("2026-12-03", "2026-12-03")),     # upcoming within 60 days
+    ("2026-11-23", "a dicembre", ("2026-12-01", "2026-12-31")),
+    ("2026-11-23", "a gennaio", ("2027-01-01", "2027-01-31")),         # starts in 39 days
+    ("2026-11-23", "a marzo", ("2026-03-01", "2026-03-31")),           # far ahead: the most recent past one
+    ("2026-11-23", "il 3 gennaio", ("2027-01-03", "2027-01-03")),      # 41 days ahead, next year
+    ("2026-11-23", "il 3 marzo", ("2026-03-03", "2026-03-03")),        # far ahead: the most recent past one
+    ("2026-11-23", "il 3 novembre", ("2026-11-03", "2026-11-03")),
+    ("2026-11-23", "il 23 novembre", ("2026-11-23", "2026-11-23")),
+    ("2026-01-05", "il 3 dicembre", ("2025-12-03", "2025-12-03")),
+    ("2026-01-05", "a dicembre", ("2025-12-01", "2025-12-31")),
+    ("2026-01-05", "a febbraio", ("2026-02-01", "2026-02-28")),
+    ("2026-01-05", "dal 28 dicembre al 3 gennaio", ("2025-12-28", "2026-01-03")),
+    ("2026-11-23", "dal 28 dicembre al 3 gennaio", ("2026-12-28", "2027-01-03")),
+    ("2026-11-23", "dal 3 al 10 novembre", ("2026-11-03", "2026-11-10")),
+])
+def test_question_range_upcoming_and_cross_year(now, text, want):
+    got = dates.question_range(text, datetime.fromisoformat(now + "T10:00:00"))
+    assert got is not None and got[:2] == want

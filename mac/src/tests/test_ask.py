@@ -35,10 +35,10 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
     ("venerdì", ("2026-11-20", "2026-11-20")),
     ("domenica scorsa", ("2026-11-22", "2026-11-22")),
     ("ad ottobre", ("2026-10-01", "2026-10-31")),
-    ("a dicembre", ("2025-12-01", "2025-12-31")),
+    ("a dicembre", ("2026-12-01", "2026-12-31")),
     ("a novembre", ("2026-11-01", "2026-11-30")),
     ("il 3 novembre", ("2026-11-03", "2026-11-03")),
-    ("il 3 dicembre", ("2025-12-03", "2025-12-03")),
+    ("il 3 dicembre", ("2026-12-03", "2026-12-03")),
     ("dal 3 al 10 novembre", ("2026-11-03", "2026-11-10")),
     ("dal 28 ottobre al 2 novembre", ("2026-10-28", "2026-11-02")),
     ("negli ultimi 3 giorni", ("2026-11-21", "2026-11-23")),
@@ -62,7 +62,7 @@ def test_question_range_matched_text():
 
 def hit(i, score=0.03, **kw):
     h = {"id": i, "kind": "nota", "session": SESSION, "day": "2026-11-21", "start": "2026-11-21T18:22:10+01:00",
-         "t": 512.0, "row_id": f"{SESSION}/{i}", "persons": '["me"]', "title": "Cena da Marco", "field": "punto",
+         "t": 512.0, "row_id": f"{SESSION}/{i}", "persons": ["me"], "title": "Cena da Marco", "field": "punto",
          "text": f"Hai promesso a Marco di portare il vino {i}.", "score": score}
     h.update(kw)
     return h
@@ -155,7 +155,8 @@ def test_event_order_and_citations(world):
     assert [e.get("stage") for e in ev if e["type"] == "status"] == ["searching", "waking", "answering"]
     cites = ev[1]["items"]
     assert [c["n"] for c in cites] == [1, 2]
-    assert cites[0] == {"n": 1, "kind": "nota", "session": SESSION, "day": "2026-11-21", "time": "18:22", "t": 512.0,
+    assert cites[0] == {"n": 1, "kind": "nota", "session": SESSION, "day": "2026-11-21", "session_day": "2026-11-21", "time": "18:22",
+                        "t": 512.0,
                         "row_id": f"{SESSION}/1", "title": "Cena da Marco",
                         "snippet": "Hai promesso a Marco di portare il vino 1."}
     assert "".join(e["text"] for e in ev if e["type"] == "delta") == "Hai promesso il vino a Marco [1]."
@@ -258,7 +259,7 @@ def test_person_filter_and_fuzzy(world, archive):
 
 def test_person_filter_retry_and_boost(world, archive):
     write_people(archive, {"aabbccddeeff": {"name": "Rosalinda"}})
-    a, b = hit(1), hit(2, persons='["me", "aabbccddeeff"]')
+    a, b = hit(1), hit(2, persons=["me", "aabbccddeeff"])
     world.index.hits, world.index.by_persons = [a, b], [a]  # one hit with the filter: retry without
     with FakeLlama(["x"]) as llama:
         world.llama = llama
@@ -362,3 +363,109 @@ def test_relevant_needs_lexical_or_close_vector():
     assert ask.relevant([near, {"score": 0.016, "lexical": True, "cos": None}])
     assert ask.relevant([{"score": 0.016, "lexical": False, "cos": 0.62}])
     assert not ask.relevant([])
+
+
+# --- review fixes ------------------------------------------------------------------------
+
+def test_demand_is_touched_before_retrieval(world, monkeypatch):
+    order = []
+    monkeypatch.setattr(ask.jobs, "touch_demand", lambda role="chat", at=None: order.append(("touch", role)))
+    real = world.index.search
+    world.index.search = lambda *a, **k: order.append(("search",)) or real(*a, **k)
+    world.index.hits = []
+    run("Cosa ho detto?")
+    assert order[0] == ("touch", "chat") and ("search",) in order
+
+
+def test_citation_session_day_from_sidecar_or_first_row(world):
+    world.index._read_sidecars = lambda s: {SESSION: {"data": "2026-11-20"}}
+    with FakeLlama(["x [1]"]) as llama:
+        world.llama = llama
+        ev = run("Cosa ho detto?")
+    assert {c["session_day"] for c in ev[1]["items"]} == {"2026-11-20"}
+    world.index._read_sidecars = lambda s: {}
+    world.index._read_rows = lambda s: {SESSION: [{"start": "2026-11-19T23:50:00+01:00"}]}
+    with FakeLlama(["x [1]"]) as llama:
+        world.llama = llama
+        ev = run("Cosa ho detto?")
+    assert {c["session_day"] for c in ev[1]["items"]} == {"2026-11-19"}
+
+
+PEOPLE = {"a1": {"name": "Sara"}, "a2": {"name": "Marco Rossi"}, "a3": {"name": "Marco Bianchi"},
+          "a4": {"name": "Marzio"}, "a5": {"name": "Rosalinda"}, "a6": {"name": "Anna"}}
+
+
+@pytest.mark.parametrize("q,sure,maybe", [
+    ("Cosa ho detto a Sara?", ["a1"], []),
+    ("Cosa sarà domani?", [], []),                       # the accent: "sarà" is not Sara
+    ("Cosa ho fatto a marzo?", [], []),                  # a month is not Marzio
+    ("Cosa ho fatto a Marzo?", [], []),
+    ("Cosa ho detto a Rosolinda?", ["a5"], []),          # capitalized, mid-sentence: fuzzy
+    ("Rosolinda cosa ha detto?", [], []),                # sentence start: no fuzzy evidence
+    ("cosa ha detto rosolinda?", [], []),                # not capitalized: no fuzzy
+    ("Annalisa cosa ha detto?", [], []),                 # exact respects word boundaries
+    ("Cosa ho detto a Marco?", [], ["a2", "a3"]),        # ambiguous first name
+    ("Cosa ho detto a Marco Rossi?", ["a2"], []),
+])
+def test_person_groups(archive, q, sure, maybe):
+    write_people(archive, PEOPLE)
+    assert ask.person_groups(q) == (sure, maybe)
+
+
+def test_ambiguous_first_name_does_not_filter_but_boosts(world, archive):
+    write_people(archive, PEOPLE)
+    a, b = hit(1), hit(2, persons=["a3"])
+    world.index.hits = [a, b]
+    with FakeLlama(["x"]) as llama:
+        world.llama = llama
+        ev = run("Cosa ho detto a Marco ieri?")
+    assert [c["persons"] for c in world.index.calls] == [None]
+    assert [c["row_id"] for c in ev[1]["items"]] == [f"{SESSION}/2", f"{SESSION}/1"]
+
+
+def test_short_followup_inherits_range_and_person(world, archive):
+    write_people(archive, {"aabbccddeeff": {"name": "Rosalinda"}})
+    world.index.by_persons = world.index.hits
+    hist = [{"role": "user", "content": "Cosa ho detto a Rosalinda ieri?"}, {"role": "assistant", "content": "Boh"}]
+    with FakeLlama(["x"]) as llama:
+        world.llama = llama
+        run("e poi?", hist)
+    c = world.index.calls[0]
+    assert c["persons"] == ["aabbccddeeff"] and c["day_from"] == c["day_to"] == "2026-11-22"
+
+
+def test_close_response_and_late_put_on_client_exit(world, monkeypatch):
+    closed, outcome = threading.Event(), {}
+
+    class Resp:
+        def close(self):
+            closed.set()
+
+    def fake_stream(base_url, messages, put, stop, holder):
+        import time
+        holder["resp"] = Resp()
+        put("ciao")
+        stop.wait(5)
+        time.sleep(0.5)  # the loop is closed by now
+        try:
+            put("late")
+        except Exception as e:  # noqa: BLE001
+            outcome["error"] = e
+        outcome["done"] = True
+
+    monkeypatch.setattr(ask, "_stream_llama", fake_stream)
+    world.llama = SimpleNamespace(url="http://x")
+
+    async def go():
+        gen = ask.answer("Cosa ho detto?", [], NOW)
+        async for ev in gen:
+            if ev["type"] == "delta":
+                break
+        await gen.aclose()
+
+    asyncio.run(go())
+    assert closed.is_set()
+    deadline = __import__("time").time() + 5
+    while "done" not in outcome and __import__("time").time() < deadline:
+        __import__("time").sleep(0.05)
+    assert outcome.get("done") and "error" not in outcome
