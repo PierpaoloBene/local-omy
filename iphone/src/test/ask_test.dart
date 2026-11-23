@@ -20,7 +20,7 @@ class FakeAsk extends MacApi {
   FakeAsk(Settings s) : super(s);
 
   @override
-  Stream<AskEvent> ask(String question, List<AskTurn> history) {
+  Stream<AskEvent> ask(String question, List<AskTurn> history, {Duration idle = MacApi.askIdle}) {
     asked.add(question);
     return events.stream;
   }
@@ -115,14 +115,33 @@ void main() {
     expect(n.puntiChiave, ['uno']);
     expect(n.impegni.single, contains('chiamare'));
     expect(n.entita, ['Marco']);
-    final ev = await api.ask('Ciao?', [for (var i = 0; i < 6; i++) AskTurn('user', '$i')]).toList();
+    final ev = await api.ask('Ciao?', [for (var i = 0; i < 10; i++) AskTurn('user', '$i')]).toList();
     expect((ev.single as AskDelta).text, 'x');
     final body = jsonDecode(seen.body) as Map;
     expect(seen.url.path, '/v1/ask');
     expect(body['question'], 'Ciao?');
-    expect((body['history'] as List).length, 4);
+    expect((body['history'] as List).length, 8);
     expect(body['now'], matches(RegExp(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$')));
     expect(seen.headers['Authorization'], startsWith('Bearer '));
+  });
+
+  test('Citation tolerates nulls; one bad citation does not drop the event', () {
+    final c = Citation.fromJson({'n': 2.0, 'session': null, 'day': null, 't': null});
+    expect((c.n, c.session, c.day, c.t), (2, '', '', 0.0));
+    expect(Citation.fromJson({...cite(1), 'session_day': '2026-11-20'}).sessionDay, '2026-11-20');
+    expect(Citation.fromJson(cite(1)).sessionDay, '2026-11-21');
+    final e = AskEvent.fromJson({
+      'type': 'citations',
+      'items': [cite(1), 'garbage', {'n': 'x'}, cite(3)],
+    }) as AskCitations;
+    expect(e.items.map((c) => c.n), [1, 3]);
+  });
+
+  test('SSE: an idle byte stream times out', () async {
+    final ctl = StreamController<List<int>>();
+    final stream = parseAskStream(ctl.stream.timeout(const Duration(milliseconds: 20)));
+    await expectLater(stream.toList(), throwsA(isA<TimeoutException>()));
+    await ctl.close();
   });
 
   testWidgets('streaming text, chips, timing, and a new chat', (tester) async {

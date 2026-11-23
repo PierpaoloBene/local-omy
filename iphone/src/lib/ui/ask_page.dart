@@ -135,6 +135,16 @@ class _AskPageState extends State<AskPage> {
         );
   }
 
+  /// The days before and after [day] (yyyy-MM-dd).
+  static List<String> _neighbours(String day) {
+    final d = DateTime.tryParse(day);
+    if (d == null) return const [];
+    String f(DateTime x) =>
+        '${x.year.toString().padLeft(4, '0')}-${x.month.toString().padLeft(2, '0')}-${x.day.toString().padLeft(2, '0')}';
+    final u = DateTime.utc(d.year, d.month, d.day);
+    return [f(u.subtract(const Duration(days: 1))), f(u.add(const Duration(days: 1)))];
+  }
+
   void _clear() {
     _sub?.cancel();
     setState(() {
@@ -146,10 +156,19 @@ class _AskPageState extends State<AskPage> {
   /// The conversation of a source, open at the paragraph.
   Future<void> _open(Citation c) async {
     try {
-      final list = await widget.api.conversations(day: c.day);
-      final i = list.conversations.indexWhere((x) => x.session == c.session);
+      // The day of the session (it may cross midnight), then its neighbours.
+      final days = [c.sessionDay, ..._neighbours(c.sessionDay)];
+      if (c.day != c.sessionDay && !days.contains(c.day)) days.insert(1, c.day);
+      ConversationList? list;
+      var i = -1;
+      for (final d in days) {
+        if (d.isEmpty) continue;
+        list = await widget.api.conversations(day: d);
+        i = list.conversations.indexWhere((x) => x.session == c.session);
+        if (i >= 0) break;
+      }
       if (!mounted) return;
-      if (i < 0) {
+      if (list == null || i < 0) {
         await showMessage(context, tr('Conversazione non trovata', 'Conversation not found'));
         return;
       }

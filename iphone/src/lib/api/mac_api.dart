@@ -3,6 +3,7 @@
 /// phone: pages keep it in memory while open.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -55,6 +56,8 @@ class MacApi {
   static const _read = Duration(seconds: 30);
   // A change rewrites every day with that person or place.
   static const _change = Duration(minutes: 5);
+  /// No byte for this long in an answer: the Mac is stuck.
+  static const askIdle = Duration(seconds: 90);
   static const _audio = MethodChannel('local_omy/audio');
 
   final Settings _settings;
@@ -120,8 +123,8 @@ class MacApi {
   }
 
   /// Asks the archive: the answer streams as events (status, citations,
-  /// text, done). [history]: the last turns of the chat (at most 4 are sent).
-  Stream<AskEvent> ask(String question, List<AskTurn> history) async* {
+  /// text, done). [history]: the last turns of the chat (at most 8 are sent).
+  Stream<AskEvent> ask(String question, List<AskTurn> history, {Duration idle = askIdle}) async* {
     final base = _settings.macUrl, token = _settings.token;
     if (base == null || token == null) throw MacError(_notConfigured);
     final req = http.Request('POST', Uri.parse('$base/v1/ask'))
@@ -130,7 +133,7 @@ class MacApi {
       ..headers['Accept'] = 'text/event-stream'
       ..body = jsonEncode({
         'question': question,
-        'history': [for (final t in history.length > 4 ? history.sublist(history.length - 4) : history) t.toJson()],
+        'history': [for (final t in history.length > 8 ? history.sublist(history.length - 8) : history) t.toJson()],
         'now': isoWithOffset(DateTime.now()),
       });
     final http.StreamedResponse res;
@@ -145,7 +148,9 @@ class MacApi {
     }
     if (res.statusCode != 200) throw MacError(_statusError(res.statusCode));
     try {
-      yield* parseAskStream(res.stream);
+      yield* parseAskStream(res.stream.timeout(idle));
+    } on TimeoutException {
+      throw MacError(tr('Il Mac ha smesso di rispondere', 'The Mac stopped answering'));
     } on http.ClientException {
       throw MacError(_unreachable);
     }

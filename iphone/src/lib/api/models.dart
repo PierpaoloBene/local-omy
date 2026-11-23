@@ -324,13 +324,15 @@ class ConversationList {
 /// A source of an answer from POST /v1/ask: a note or a passage of text.
 class Citation {
   final int n;
-  final String kind, session, day, time, rowId, title, snippet;
+  final String kind, session, day, sessionDay, time, rowId, title, snippet;
   final double t;
   Citation.fromJson(Json j)
-    : n = (j['n'] as num).toInt(),
+    : n = (j['n'] as num? ?? 0).toInt(),
       kind = j['kind'] as String? ?? 'testo',
-      session = j['session'] as String,
-      day = j['day'] as String,
+      session = j['session'] as String? ?? '',
+      day = j['day'] as String? ?? '',
+      // The day the session started (it may cross midnight); old Macs omit it.
+      sessionDay = (j['session_day'] as String?) ?? (j['day'] as String? ?? ''),
       time = j['time'] as String? ?? '',
       t = (j['t'] as num? ?? 0).toDouble(),
       rowId = j['row_id'] as String? ?? '',
@@ -345,6 +347,14 @@ class AskTurn {
   Json toJson() => {'role': role, 'content': content};
 }
 
+Citation? _citation(Object? i) {
+  try {
+    return Citation.fromJson(i as Json);
+  } catch (_) {
+    return null;
+  }
+}
+
 /// What the Mac streams while it answers (text/event-stream).
 sealed class AskEvent {
   const AskEvent();
@@ -352,7 +362,10 @@ sealed class AskEvent {
   /// Null for events of a type this app doesn't know (newer Mac).
   static AskEvent? fromJson(Json j) => switch (j['type']) {
     'status' => AskStatus(j['stage'] as String? ?? ''),
-    'citations' => AskCitations(_list(j['items'], Citation.fromJson)),
+    'citations' => AskCitations([
+      for (final i in (j['items'] as List? ?? const []))
+        if (_citation(i) case final c?) c,
+    ]),
     'delta' => AskDelta(j['text'] as String? ?? ''),
     'done' => AskDone(
       notFound: j['not_found'] == true,
