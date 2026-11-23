@@ -180,6 +180,10 @@ def main() -> int:
                     help="also redo notes that are up to date (without it they are skipped)")
     og.add_argument("--now", action="store_true", help="wake the worker now")
     sub.add_parser("jobs", help="the job queue and the worker")
+    ix = sub.add_parser("index", help="queue the rebuild of the search index and wake the worker")
+    ix.add_argument("--all", action="store_true", required=True, help="every session")
+    br = sub.add_parser("brain", help="the second brain").add_subparsers(dest="action", required=True)
+    br.add_parser("status", help="notes, last note, index, vault path, night window")
 
     sub.add_parser("periodic", help="DEPRECATED, the worker replaces it: hourly job run by the LaunchAgent")
 
@@ -280,6 +284,13 @@ def _run(args: argparse.Namespace) -> dict:
             else transcribe.diarize_job(args.session)
     elif args.cmd == "organize":
         result = organize(args.since, args.force, args.now)
+    elif args.cmd == "index":
+        from omy import jobs
+        jobs.enqueue("index", "all")
+        jobs.wake()
+        result = {"queued": True}
+    elif args.cmd == "brain":
+        result = status.brain_status()
     elif args.cmd == "jobs":
         from omy import jobs, models, worker
         result = {"worker": worker.read_status(), "jobs": jobs.summary(), "models": models.state()}

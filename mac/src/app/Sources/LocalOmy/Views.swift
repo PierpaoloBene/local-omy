@@ -1,40 +1,83 @@
 import SwiftUI
 
-struct MainWindow: View {
-    let model: AppModel
+enum Pane: String, CaseIterable, Identifiable {
+    case status, brain, conversations, people, places, iphone, settings
+    var id: String { rawValue }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let err = model.refreshError {
-                Label(tr("Stato non aggiornato", "Status not up to date") + (model.refreshedAt.map { tr(" dalle ", " since ") + $0.formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(L10n.locale)) } ?? "")
-                      + ": \(err)", systemImage: "exclamationmark.octagon")
-                    .foregroundStyle(.red)
-                    .lineLimit(3)
-                    .textSelection(.enabled)
-            }
-            tabs
-        }
-        .padding()
-        .toolbar {
-            Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                .help(tr("Aggiorna", "Refresh"))
+    var title: String {
+        switch self {
+        case .status: tr("Stato", "Status")
+        case .brain: "Second brain"
+        case .conversations: tr("Conversazioni", "Conversations")
+        case .people: tr("Persone", "People")
+        case .places: tr("Luoghi", "Places")
+        case .iphone: "iPhone"
+        case .settings: tr("Impostazioni", "Settings")
         }
     }
 
-    private var tabs: some View {
-        TabView {
-            StatusTab(model: model).tabItem { Label(tr("Stato", "Status"), systemImage: "gauge") }
-            SetupTab(model: model).tabItem { Label(tr("Impostazioni", "Settings"), systemImage: "gearshape") }
-            IPhoneTab(model: model).tabItem { Label("iPhone", systemImage: "iphone") }
-            TranscriptsTab(model: model).tabItem { Label(tr("Conversazioni", "Conversations"), systemImage: "text.bubble") }
-            PeopleTab(model: model).tabItem { Label(tr("Persone", "People"), systemImage: "person.2") }
-            PlacesTab(model: model).tabItem { Label(tr("Luoghi", "Places"), systemImage: "mappin.and.ellipse") }
+    var symbol: String {
+        switch self {
+        case .status: "gauge"
+        case .brain: "brain"
+        case .conversations: "text.bubble"
+        case .people: "person.2"
+        case .places: "mappin.and.ellipse"
+        case .iphone: "iphone"
+        case .settings: "gearshape"
+        }
+    }
+}
+
+struct MainWindow: View {
+    let model: AppModel
+    @State private var selection: Pane? = .status
+
+    var body: some View {
+        NavigationSplitView {
+            List(Pane.allCases, selection: $selection) { section in
+                Label(section.title, systemImage: section.symbol).tag(section)
+            }
+            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
+        } detail: {
+            VStack(alignment: .leading, spacing: 8) {
+                if let err = model.refreshError {
+                    Label(tr("Stato non aggiornato", "Status not up to date") + (model.refreshedAt.map { tr(" dalle ", " since ") + $0.formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(L10n.locale)) } ?? "")
+                          + ": \(err)", systemImage: "exclamationmark.octagon")
+                        .foregroundStyle(.red)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                        .padding(.horizontal)
+                }
+                detail
+            }
+            .navigationTitle((selection ?? .status).title)
+        }
+        .tint(.indigo)
+        .toolbar {
+            ToolbarItem {
+                Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                    .help(tr("Aggiorna", "Refresh"))
+            }
+        }
+    }
+
+    @ViewBuilder private var detail: some View {
+        switch selection ?? .status {
+        case .status: StatusTab(model: model)
+        case .brain: BrainTab(model: model)
+        case .conversations: TranscriptsTab(model: model).padding()
+        case .people: PeopleTab(model: model).padding()
+        case .places: PlacesTab(model: model).padding()
+        case .iphone: IPhoneTab(model: model)
+        case .settings: SetupTab(model: model)
         }
     }
 }
 
 // MARK: - Shared pieces
 
+/// A label/value line of a grouped Form, with an optional status dot.
 struct Row: View {
     let title: String
     let value: String
@@ -42,10 +85,13 @@ struct Row: View {
     var level: Level?
 
     var body: some View {
-        GridRow {
-            Circle().fill(level?.color ?? .clear).frame(width: 9, height: 9)
-            Text(title).foregroundStyle(.secondary)
-            Text(value).textSelection(.enabled)
+        LabeledContent {
+            Text(value).textSelection(.enabled).multilineTextAlignment(.trailing)
+        } label: {
+            HStack(spacing: 8) {
+                Circle().fill(level?.color ?? .clear).frame(width: 9, height: 9)
+                Text(title)
+            }
         }
     }
 }
@@ -102,7 +148,7 @@ private func tail(_ path: String, lines: Int) -> String {
         .split(separator: "\n", omittingEmptySubsequences: false).suffix(lines).joined(separator: "\n")
 }
 
-private let isoParser = ISO8601DateFormatter()
+nonisolated(unsafe) private let isoParser = ISO8601DateFormatter()
 
 /// "3 nov 2026, 10:48" ("Nov 3, 2026, 10:48 AM") in the local time zone,
 /// from an ISO 8601 timestamp.
@@ -119,7 +165,7 @@ func longDay(_ day: String) -> String {
     return d.formatted(.dateTime.weekday(.wide).day().month(.wide).locale(L10n.locale))
 }
 
-private func ago(_ minutes: Double?) -> String {
+func ago(_ minutes: Double?) -> String {
     guard let m = minutes else { return "—" }
     if m < 1 { return tr("meno di un minuto fa", "less than a minute ago") }
     if m < 120 { return tr("\(Int(m)) min fa", "\(Int(m)) min ago") }
@@ -133,15 +179,15 @@ struct StatusTab: View {
     @State private var logName = "receiver"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        Form {
             if let s = model.status {
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                Section(tr("Ricezione", "Receiving")) {
                     Row(title: tr("Ricevitore", "Receiver"), value: s.receiver.running ? tr("attivo", "running") + " (pid \(s.receiver.pid ?? 0))" : tr("fermo", "stopped"),
                         level: s.receiver.running ? .ok : .error)
                     Row(title: "Tailscale", value: s.tailscale.url ?? tr("serve non attivo", "serve not running"),
                         level: s.tailscale.serving ? .ok : .warning)
                     ForEach(s.tailscale.iphones, id: \.name) { p in
-                        Row(title: "  \(p.name)", value: p.online ? tr("online sul tailnet", "online on the tailnet") : "offline",
+                        Row(title: p.name, value: p.online ? tr("online sul tailnet", "online on the tailnet") : "offline",
                             level: p.online ? .ok : .warning)
                     }
                     Row(title: tr("Ultimo segmento", "Last segment"), value: ago(s.archive.minutesSinceLast),
@@ -149,34 +195,45 @@ struct StatusTab: View {
                     Row(title: tr("Ultimo upload", "Last upload"), value: uploadText(s.upload))
                     Row(title: tr("Oggi", "Today"), value: tr("\(s.archive.todaySegments) segmenti, \(s.archive.todaySessions) sessioni, \(Int(s.archive.todayMinutes)) min registrati",
                                                    "\(s.archive.todaySegments) segments, \(s.archive.todaySessions) sessions, \(Int(s.archive.todayMinutes)) min recorded"))
+                }
+                Section(tr("Elaborazione", "Processing")) {
                     Row(title: tr("Trascrizione", "Transcription"), value: transcriptionText(s.transcripts),
                         level: model.progress != nil || s.transcripts.pendingSessions == 0 ? .ok : .unknown)
+                    Row(title: "Worker", value: workerText(s.worker), level: s.worker.running ? .ok : .warning)
+                }
+                Section(tr("Dispositivi", "Devices")) {
                     Row(title: tr("App iPhone", "iPhone app"), value: iphoneText(s.iphone), level: iphoneLevel(s.iphone))
                     Row(title: tr("Batteria ciondolo", "Pendant battery"), value: batteryText(s.battery))
                     Row(title: tr("Firmware ciondolo", "Pendant firmware"), value: s.firmware?.version.map { v in
                         tr("\(v), visto alle \(localDate(s.firmware?.at))", "\(v), seen at \(localDate(s.firmware?.at))")
                     } ?? tr("— (arriva con i prossimi segmenti)", "— (comes with the next segments)"))
-                    Row(title: tr("Job orario", "Hourly job"), value: s.periodic.loaded ? tr("installato", "installed") : tr("non installato (vedi Impostazioni)", "not installed (see Settings)"),
-                        level: s.periodic.loaded ? .ok : .warning)
+                }
+                Section("Log") {
+                    Picker("Log", selection: $logName) {
+                        Text(tr("Ricevitore", "Receiver")).tag("receiver")
+                        Text("Worker").tag("worker")
+                        Text(tr("Modelli", "Models")).tag("models")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    ScrollView {
+                        Text(tail(s.logs[logName] ?? "", lines: 40))
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(minHeight: 160)
                 }
             } else if model.refreshError == nil {
                 ProgressView()
             }
-
-            Picker("Log", selection: $logName) {
-                Text(tr("Ricevitore", "Receiver")).tag("receiver")
-                Text(tr("Job orario", "Hourly job")).tag("periodic")
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 260)
-            ScrollView {
-                Text(model.status.flatMap { tail($0.logs[logName] ?? "", lines: 40) } ?? "")
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            }
-            .background(.background.secondary)
         }
+        .formStyle(.grouped)
+    }
+
+    private func workerText(_ w: Status.Agent) -> String {
+        if !w.loaded { return tr("non installato (vedi Impostazioni)", "not installed (see Settings)") }
+        return w.running ? tr("attivo", "running") + " (pid \(w.pid ?? 0))" : tr("fermo", "stopped")
     }
 
     private func uploadText(_ u: Status.Upload) -> String {
@@ -230,51 +287,50 @@ struct SetupTab: View {
     let model: AppModel
 
     var body: some View {
-        ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+        Form {
+            Section(tr("Checklist", "Checklist")) {
                 ForEach(model.checks) { c in
-                    GridRow {
+                    HStack {
                         Image(systemName: c.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
                             .foregroundStyle(c.ok ? .green : .red)
                         VStack(alignment: .leading) {
                             Text(c.label)
                             Text(c.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
+                        Spacer()
                         if !c.ok {
                             Button(tr("Sistema", "Fix")) { model.perform(c.label, ["setup", "fix", c.id]) }
+                                .buttonStyle(.glassProminent)
                                 .disabled(model.task.running != nil)
-                        } else if c.id == "receiver" || c.id == "periodic" {
+                        } else if c.id == "receiver" || c.id == "worker" {
                             Button(tr("Reinstalla", "Reinstall")) { model.perform(c.label, ["setup", "fix", c.id]) }
+                                .buttonStyle(.glass)
                                 .disabled(model.task.running != nil)
                         }
                     }
                 }
             }
-
-            Divider()
-            Text(tr("Da inserire nell'app iPhone", "To enter in the iPhone app")).font(.headline)
-            HStack {
-                Button(tr("Copia URL", "Copy URL")) { model.copy(model.status?.tailscale.url ?? "") }
-                    .disabled(model.status?.tailscale.url == nil)
-                Button(tr("Copia token", "Copy token")) { model.copyToken() }
+            Section(tr("Da inserire nell'app iPhone", "To enter in the iPhone app")) {
+                HStack {
+                    Button(tr("Copia URL", "Copy URL")) { model.copy(model.status?.tailscale.url ?? "") }
+                        .disabled(model.status?.tailscale.url == nil)
+                    Button(tr("Copia token", "Copy token")) { model.copyToken() }
+                }
+                .buttonStyle(.glass)
                 Text(tr("Il token non viene mai mostrato: va negli appunti.", "The token is never shown: it goes to the clipboard."))
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Divider()
             FeaturesSection(model: model)
-            Divider()
-            Toggle(tr("Apri local-omy al login", "Open local-omy at login"), isOn: Binding(
-                get: { model.loginItem }, set: { model.setLoginItem($0) }))
-            if let err = model.lastError {
-                Label(err, systemImage: "xmark.octagon").foregroundStyle(.red)
+            Section {
+                Toggle(tr("Apri local-omy al login", "Open local-omy at login"), isOn: Binding(
+                    get: { model.loginItem }, set: { model.setLoginItem($0) }))
+                if let err = model.lastError {
+                    Label(err, systemImage: "xmark.octagon").foregroundStyle(.red)
+                }
             }
-
-            OperationLog(op: model.task)
-            Spacer()
+            Section { OperationLog(op: model.task) }
         }
-        .padding(.trailing, 12)
-        }
+        .formStyle(.grouped)
     }
 }
 
@@ -285,9 +341,9 @@ struct IPhoneTab: View {
     @State private var confirm: (name: String, args: [String])?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        Form {
             if let i = model.status?.iphone {
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                Section {
                     Row(title: "iPhone", value: i.device.map { "\($0.name ?? "?") (\($0.transport ?? "?"))" } ?? tr("non trovato", "not found"),
                         level: i.device?.paired == true ? .ok : .warning)
                     Row(title: "Team", value: i.teamId ?? "—")
@@ -300,19 +356,23 @@ struct IPhoneTab: View {
                     }
                 }
             }
-            Text(tr("Reinstallare chiude l'app sull'iPhone: va riaperta a mano. Telefono sbloccato e sulla stessa rete.",
-                     "Reinstalling closes the app on the iPhone: reopen it by hand. Phone unlocked and on the same network."))
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Button(tr("Compila e installa", "Build and install")) { confirm = (tr("Installazione", "Install"), ["iphone", "install"]) }
-                Button(tr("Rinnova ora", "Renew now")) { confirm = (tr("Rinnovo", "Renewal"), ["iphone", "renew", "--force"]) }
-                Button(tr("Reinstalla l'ultima build", "Reinstall the last build")) { confirm = (tr("Installazione", "Install"), ["iphone", "install", "--no-build"]) }
+            Section {
+                Text(tr("Reinstallare chiude l'app sull'iPhone: va riaperta a mano. Telefono sbloccato e sulla stessa rete.",
+                         "Reinstalling closes the app on the iPhone: reopen it by hand. Phone unlocked and on the same network."))
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button(tr("Compila e installa", "Build and install")) { confirm = (tr("Installazione", "Install"), ["iphone", "install"]) }
+                        .buttonStyle(.glassProminent)
+                    Button(tr("Rinnova ora", "Renew now")) { confirm = (tr("Rinnovo", "Renewal"), ["iphone", "renew", "--force"]) }
+                        .buttonStyle(.glass)
+                    Button(tr("Reinstalla l'ultima build", "Reinstall the last build")) { confirm = (tr("Installazione", "Install"), ["iphone", "install", "--no-build"]) }
+                        .buttonStyle(.glass)
+                }
+                .disabled(model.task.running != nil)
             }
-            .disabled(model.task.running != nil)
-            OperationLog(op: model.task)
-            Spacer()
+            Section { OperationLog(op: model.task) }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .formStyle(.grouped)
         .confirmationDialog(tr("L'app sull'iPhone verrà chiusa e andrà riaperta.", "The app on the iPhone will close and must be reopened."),
                             isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } })) {
             Button(tr("Procedi", "Continue")) {
@@ -350,6 +410,7 @@ struct TranscriptsTab: View {
         VStack(alignment: .leading) {
             HStack {
                 Button(tr("Trascrivi ora", "Transcribe now")) { model.transcribeNow() }
+                    .buttonStyle(.glassProminent)
                     .disabled(model.transcribing)
                 Button(tr("Apri nel Finder", "Show in Finder")) {
                     if let p = model.status?.transcripts.path { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }

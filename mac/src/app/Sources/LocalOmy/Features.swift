@@ -41,13 +41,12 @@ struct FeaturesSection: View {
     let model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(tr("Funzioni", "Features")).font(.headline)
+        Section(tr("Funzioni", "Features")) {
             Text(tr("Le stesse dell'app iPhone: una modifica arriva all'altro dispositivo alla prossima sincronizzazione (apertura dell'app, o entro 5 minuti).",
                      "The same as in the iPhone app: a change reaches the other device at the next sync (when the app opens, or within 5 minutes)."))
                 .font(.caption).foregroundStyle(.secondary)
             ForEach([("iphone", "iPhone"), ("mac", "Mac")], id: \.0) { device, title in
-                Text(title).font(.subheadline.bold()).padding(.top, 6)
+                Text(title).font(.subheadline.bold())
                 ForEach(model.features.filter { $0.device == device }) { f in
                     Toggle(isOn: Binding(get: { f.on }, set: { model.setFeature(f.key, $0) })) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -59,7 +58,7 @@ struct FeaturesSection: View {
             }
             Text(tr("Spegnere una funzione interrompe la raccolta, ma non cancella quello che c'è già.",
                      "Turning a feature off stops collecting, but does not delete what is already there."))
-                .font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

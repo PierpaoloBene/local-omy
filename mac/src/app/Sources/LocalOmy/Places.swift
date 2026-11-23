@@ -84,18 +84,50 @@ struct MapFocus: Hashable {
 
 private struct PlaceMap: View {
     let focus: MapFocus
+    @State private var position: MapCameraPosition = .automatic
+    @State private var span = 1.0
+
+    private var center: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: focus.lat, longitude: focus.lon) }
+    private var meters: Double { Double(max(focus.radius * 5, 400)) }
+
+    private func show(_ factor: Double) {
+        span = min(max(span * factor, 0.05), 40)
+        withAnimation {
+            position = .region(MKCoordinateRegion(center: center, latitudinalMeters: meters * span, longitudinalMeters: meters * 2 * span))
+        }
+    }
 
     var body: some View {
-        let c = CLLocationCoordinate2D(latitude: focus.lat, longitude: focus.lon)
-        let meters = Double(max(focus.radius * 5, 400))
-        Map(initialPosition: .region(MKCoordinateRegion(center: c, latitudinalMeters: meters, longitudinalMeters: meters * 2))) {
+        let c = center
+        Map(position: $position) {
             MapCircle(center: c, radius: CLLocationDistance(focus.radius))
                 .foregroundStyle(.indigo.opacity(0.15))
                 .stroke(.indigo, lineWidth: 1.5)
             Marker(focus.title, coordinate: c).tint(.indigo)
         }
         .id(focus)
+        .onAppear { span = 1; show(1) }
+        .overlay(alignment: .topTrailing) {
+            // The only glass here: floating controls over the map, in one container.
+            GlassEffectContainer(spacing: 8) {
+                VStack(spacing: 8) {
+                    control("plus", tr("Ingrandisci", "Zoom in")) { show(0.5) }
+                    control("minus", tr("Riduci", "Zoom out")) { show(2) }
+                    control("scope", tr("Ricentra", "Recenter")) { span = 1; show(1) }
+                }
+            }
+            .padding(10)
+        }
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func control(_ symbol: String, _ help: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
+        .modifier(FloatingGlass(shape: Circle()))
+        .help(help)
     }
 }
 

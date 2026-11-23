@@ -9,7 +9,7 @@ Ascolta **solo su 127.0.0.1**: la rete lo raggiunge esclusivamente tramite
 
 ## App per Mac
 
-`mac/src/app/` è un'app SwiftUI che vive nella barra dei menu. Non contiene logica propria:
+`mac/src/app/` è un'app SwiftUI per macOS 27 (Liquid Glass) che vive nella barra dei menu. Non contiene logica propria:
 ogni azione lancia `omy --json …` e ne mostra il log.
 
 ```bash
@@ -29,7 +29,7 @@ open mac/build/local-omy.app
 - **Stato:** ricevitore, `tailscale serve`, iPhone online sul tailnet, ultimo segmento
   ricevuto, ultimo upload e quanti segmenti restavano in coda sull'iPhone, registrato
   oggi, trascrizione (in corso o quante sessioni mancano), scadenza dell'app iPhone,
-  batteria del ciondolo, job orario, log.
+  batteria del ciondolo, worker, log (ricevitore, worker, modelli).
 - **Impostazioni:** la checklist di `omy setup check`. Ogni voce mancante ha il suo pulsante
   "Sistema" (`omy setup fix <voce>`). Ci sono anche:
   - "Copia URL" e "Copia token": il token va negli appunti e non viene mai mostrato;
@@ -37,7 +37,7 @@ open mac/build/local-omy.app
 - **iPhone:** scadenza della firma, "Compila e installa", "Rinnova ora", "Reinstalla
   l'ultima build". Ogni azione chiede conferma, perché chiude l'app sul telefono.
 - **Conversazioni:** giorni trascritti e "Trascrivi ora". Durante una trascrizione,
-  anche lanciata dal job orario o dal terminale, compare la barra di avanzamento. Il campo
+  anche lanciata dal worker o dal terminale, compare la barra di avanzamento. Il campo
   "Cerca" mostra i paragrafi trovati al posto dei giorni. Toccandone uno
   si apre il giorno su quel punto, con la parola evidenziata.
 - **Persone:** a sinistra le persone note (tu e quelle a cui hai dato un nome),
@@ -46,6 +46,14 @@ open mac/build/local-omy.app
   scegliendolo da "Chi è") la voce prende quel nome; "Chi è" → Sconosciuto per chi non
   conosci. Qui si etichettano anche i giorni passati, che l'iPhone non mostra più. Vedi
   "Dare un nome alle voci".
+
+- **Second brain:** stato del worker, lavoro in corso (tipo, sessione, da quando), modelli
+  caricati (chat, embed, organizer), coda per tipo, lavori falliti con l'errore, finestra
+  notturna e se il Mac è alla corrente, numero di note e ultima nota. Pulsanti "Organizza
+  ora…" (`omy organize --since D --now`, con conferma: carica il 27B e richiede tempo), "Apri
+  vault" (Obsidian se installato, altrimenti il Finder) e "Ricostruisci indice"
+  (`omy index --all`). Lo stato arriva da `omy brain status`, ogni 15 s solo mentre la
+  scheda o il popover sono visibili. Una sezione compatta è anche nel popover della barra.
 
 La trascrizione gira per conto suo: mentre lavora, Impostazioni, iPhone e l'aggiornamento
 dello stato restano utilizzabili. Le azioni di Impostazioni e iPhone, invece, vanno una alla volta.
@@ -172,7 +180,7 @@ dell'app installata da AltStore, che aggiunge un suffisso al bundle id:
 2. nella nuova app reinserisci URL e token;
 3. cancella la vecchia app.
 
-**Rinnovo automatico:** il LaunchAgent `periodic` lancia `omy periodic` ogni ora.
+**Rinnovo automatico:** il LaunchAgent `worker` controlla il rinnovo ogni ora.
 - Il rinnovo parte solo quando la firma scade entro 3 giorni e solo tra l'01 e le 08,
   perché reinstallare chiude l'app sull'iPhone e iOS non la riapre da sola. Se manca meno
   di un giorno, prova a qualsiasi ora.
@@ -183,8 +191,8 @@ dell'app installata da AltStore, che aggiunge un suffisso al bundle id:
 - `status` riporta `needs_reopen: true` finché sul Mac non arriva un segmento iniziato dopo
   l'installazione.
 
-Installalo **dopo** il primo `omy iphone install`, con `omy setup fix periodic` o dalla
-scheda Impostazioni. Log in `~/Library/Logs/local-omy-periodic.log`.
+Installalo **dopo** il primo `omy iphone install`, con `omy setup fix worker` o dalla
+scheda Impostazioni. Log in `~/Library/Logs/local-omy-worker.log`.
 
 ## Trascrizione locale
 
@@ -256,7 +264,7 @@ Il markdown viene ripulito, mentre i JSON restano grezzi:
 
 `uv run omy transcribe --pending --render` rigenera il markdown dai JSON senza ritrascrivere.
 
-Il job `periodic` trascrive ogni ora le sessioni appena chiuse. Un lock impedisce che due
+Il `worker` trascrive le sessioni appena chiuse. Un lock impedisce che due
 trascrizioni girino insieme.
 
 Mentre lavora, `~/OmiArchive/cache/transcribe-progress.json` registra pid, sessioni fatte
@@ -519,7 +527,7 @@ Le trascrizioni diventano note strutturate in `~/OmiArchive/brain/`, un vault ap
 Obsidian. Tutto gira sul Mac.
 
 **Una sola coda di lavori.** Il LaunchAgent `worker` (`omy worker`) sostituisce il vecchio job
-orario `periodic`. Esegue un lavoro alla volta, in quest'ordine di priorità: `transcribe`
+orario `periodic` (ritirato). Esegue un lavoro alla volta, in quest'ordine di priorità: `transcribe`
 (whisper) → `diarize` (pyannote) → `render` (vault dopo un cambio di nome) → `organize`
 (27B) → `index`. La coda sta in `~/OmiArchive/cache/jobs.sqlite`; lo stato in
 `cache/worker.json`, anche da `GET /v1/brain/status`. Ogni 5 minuti cerca sessioni chiuse; il
@@ -682,7 +690,7 @@ ricevitore esegue gli stessi comandi `omy` dell'app per Mac, come sottoprocessi:
 | `GET /v1/transcripts/DAY` | `omy transcripts day DAY`: riepilogo e paragrafi (il JSONL del giorno) |
 | `POST /v1/search` `{"q", "person"?, "type"?}` | `omy transcripts search Q`: al massimo 200 paragrafi, dal giorno più recente |
 | `GET /v1/conversations?person=&type=&before=&limit=` | `omy transcripts conversations`: le sessioni con una persona (id o `me`) o di un tipo (`room`, `meeting`, `call`, `media`), dalla più recente, a giorni interi finché sono almeno `limit` (100). Con `more`, `next` è il `before` della pagina dopo |
-| `POST /v1/transcribe` | `omy transcribe --pending`, in background (log in `local-omy-periodic.log`) |
+| `POST /v1/transcribe` | `omy transcribe --pending`, in background (log in `local-omy-worker.log`) |
 | `GET /v1/people`, `PUT`/`DELETE /v1/people/ID`, `POST /v1/people/ID/kind` `{"source"}` | `omy people list` (con `index`: per persona tipi, numero di conversazioni, luoghi), `rename`, `delete`, `kind` |
 | `GET /v1/voices/DAY`, `PUT /v1/voices/SESSION/LABEL` | `omy speakers list`, `rename` |
 | `GET /v1/unlabeled?hours=24` | `omy speakers todo --hours 24`: le sessioni iniziate nelle ultime 24 ore con voci da etichettare (senza `hours`: degli ultimi 14 giorni registrati) |

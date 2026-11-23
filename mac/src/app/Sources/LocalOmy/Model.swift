@@ -50,7 +50,9 @@ struct Status: Decodable {
     }
 
     let receiver: Agent
-    let periodic: Agent
+    let worker: Agent
+    /// Only while the retired hourly agent is still installed.
+    let periodic: Agent?
     let tailscale: Tailscale
     let archive: Archive
     let upload: Upload
@@ -153,6 +155,55 @@ final class Job {
     }
 }
 
+// Mirrors of `omy --json jobs` and `omy --json brain status` (all optional: the
+// worker may not have written anything yet).
+
+struct JobsInfo: Decodable {
+    struct Current: Decodable { let id: Int?; let kind: String; let key: String?; let started: Double? }
+    struct WorkerState: Decodable {
+        let state: String?
+        let job: Current?
+        let loaded: String?
+        let chatActive: Bool?
+        let lastError: String?
+        let heartbeat: Double?
+    }
+    struct Failed: Decodable, Identifiable {
+        let id: Int
+        let kind: String
+        let key: String?
+        let error: String?
+        let finished: Double?
+    }
+    struct Queue: Decodable {
+        let queued: Int
+        let byKind: [String: [String: Int]]
+        let failed: [Failed]
+    }
+    struct Models: Decodable { let loaded: String?; let companions: [String]? }
+
+    let worker: WorkerState
+    let jobs: Queue
+    let models: Models
+
+    /// Chat and organizer are the one big server (`loaded`); embed is a companion.
+    func isLoaded(_ role: String) -> Bool {
+        role == "embed" ? (models.companions ?? []).contains("embed") : models.loaded == role
+    }
+}
+
+struct BrainStatus: Decodable {
+    struct Note: Decodable { let id: String?; let titolo: String?; let data: String? }
+    struct Index: Decodable { let chunks: Int; let version: Int }
+    let notes: Int
+    let lastNote: Note?
+    let index: Index
+    let vault: String
+    let window: String
+    let inWindow: Bool
+    let onAc: Bool
+}
+
 private struct Checks: Decodable { let checks: [Check] }
 private struct Token: Decodable { let token: String }
 
@@ -174,11 +225,17 @@ final class AppModel {
     /// Progress of any running transcription, also one started by the
     /// hourly job or a terminal.
     var progress: TranscribeProgress?
+    /// The second brain, polled every 15 s only while a view showing it is visible.
+    var jobs: JobsInfo?
+    var brain: BrainStatus?
+    var brainError: String?
     /// Errors of short actions (token, login item).
     var lastError: String?
     var loginItem = SMAppService.mainApp.status == .enabled
 
     private var refreshing = false
+    private var brainRefreshing = false
+    private var brainWatchers = 0
     private var timers: [Timer] = []
     private let audio = AudioActivity(
         archive: ProcessInfo.processInfo.environment["OMY_ARCHIVE"] ?? "\(Omy.home)/OmiArchive")
@@ -188,6 +245,11 @@ final class AppModel {
         Task { await refresh() }
         timers.append(Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
+        })
+        timers.append(Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                if let self, self.brainWatchers > 0 { await self.refreshBrain() }
+            }
         })
         // Cheap: one small file read.
         timers.append(Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -211,6 +273,39 @@ final class AppModel {
             refreshError = error.localizedDescription
         }
         readProgress()
+    }
+
+    /// A view showing the second brain appeared / disappeared: it is polled only while one is visible.
+    func brainWatch(_ visible: Bool) {
+        brainWatchers = max(0, brainWatchers + (visible ? 1 : -1))
+        if visible { Task { await refreshBrain() } }
+    }
+
+    func refreshBrain() async {
+        guard !brainRefreshing else { return }
+        brainRefreshing = true
+        defer { brainRefreshing = false }
+        do {
+            async let j = Omy.decode(JobsInfo.self, ["jobs"])
+            async let b = Omy.decode(BrainStatus.self, ["brain", "status"])
+            (jobs, brain) = try await (j, b)
+            brainError = nil
+        } catch {
+            brainError = error.localizedDescription
+        }
+    }
+
+    /// The vault in Obsidian if it is installed, else in the Finder.
+    func openVault() {
+        let path = brain?.vault ?? "\(Omy.home)/OmiArchive/brain"
+        let ws = NSWorkspace.shared
+        if ws.urlForApplication(withBundleIdentifier: "md.obsidian") != nil,
+           let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+           let url = URL(string: "obsidian://open?path=\(encoded)") {
+            ws.open(url)
+        } else {
+            ws.open(URL(fileURLWithPath: path))
+        }
     }
 
     private func readProgress() {
@@ -269,7 +364,7 @@ final class AppModel {
         guard let s = status else { return refreshError == nil ? .unknown : .error }
         let days = s.iphone.daysLeft ?? 99
         if !s.receiver.running || days < 1 { return .error }
-        if !s.tailscale.serving || !s.periodic.loaded || s.iphone.needsReopen || days < 3
+        if !s.tailscale.serving || !s.worker.loaded || !s.worker.running || s.iphone.needsReopen || days < 3
             || checks.contains(where: { !$0.ok }) { return .warning }
         return .ok
     }
