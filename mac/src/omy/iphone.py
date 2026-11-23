@@ -151,16 +151,35 @@ def _drop_cached_profiles(team: str) -> None:
             path.unlink()
 
 
+XCODEGEN_FALLBACK = "/opt/homebrew/bin/xcodegen"
+
+
+def find_xcodegen() -> str:
+    """launchd's PATH is minimal and may lack Homebrew: fall back to its absolute path."""
+    found = shutil.which("xcodegen")
+    if found:
+        return found
+    if Path(XCODEGEN_FALLBACK).exists():
+        return XCODEGEN_FALLBACK
+    raise IphoneError("xcodegen not found (brew install xcodegen)")
+
+
+def use_native_app() -> bool:
+    """The native app is built only when config.toml says `iphone_app = "native"`, so that the nightly renewal
+    never switches the installed app silently."""
+    return (IPHONE_APP / "project.yml").exists() and load_config().get("iphone_app") == "native"
+
+
 def build(team: str, udid: str | None) -> Path:
     """With udid, build for that phone and register it in the team (needs the
     phone unlocked). Without, build generically: the profile covers the devices
     already registered, so this works with the phone locked or away.
 
-    The native app (iphone/app, XcodeGen) is built when its project.yml exists,
-    else the old Flutter app (iphone/src)."""
-    native = (IPHONE_APP / "project.yml").exists()
+    The native app (iphone/app, XcodeGen) is built only when config.toml has
+    iphone_app = "native" (and its project.yml exists), else the Flutter app (iphone/src)."""
+    native = use_native_app()
     if native:
-        run(["xcodegen", "generate"], "xcodegen", cwd=IPHONE_APP)
+        run([find_xcodegen(), "generate"], "xcodegen", cwd=IPHONE_APP)
         project = ["-project", str(IPHONE_APP / "LocalOmy.xcodeproj"), "-scheme", "LocalOmy"]
         cwd, product = IPHONE_APP, "LocalOmy.app"
     else:

@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// A segment being written: `{id}.part` plus `{id}.part.json` (the device id, needed to finish it after a crash).
 public struct OpenSegment: Sendable {
@@ -35,6 +36,7 @@ public struct QueuedSegment: Sendable, Hashable, Identifiable {
 public actor SegmentStore {
     public nonisolated let directory: URL
     private var begun: Set<SegmentID> = []
+    private static let log = Logger(subsystem: "local-omy", category: "segments")
 
     public init(directory: URL) {
         self.directory = directory
@@ -79,8 +81,13 @@ public actor SegmentStore {
                let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let s = o["device_id"] as? String {
                 device = s
             }
-            try finalize(id: id, deviceID: device, extras: extras, recovering: true)
-            n += 1
+            do {
+                try finalize(id: id, deviceID: device, extras: extras, recovering: true)
+                n += 1
+            } catch {
+                // One bad .part must not block the others (nor the leftover cleanup): it stays for the next launch.
+                Self.log.error("recover \(id.raw) failed: \(String(describing: error))")
+            }
         }
         for name in (try? fm.contentsOfDirectory(atPath: directory.path)) ?? [] {
             let p = directory.appendingPathComponent(name)

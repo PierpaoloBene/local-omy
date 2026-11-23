@@ -1,6 +1,7 @@
 import OmyKit
 import OSLog
 import SwiftUI
+import UIKit
 
 @main
 struct LocalOmyApp: App {
@@ -10,7 +11,8 @@ struct LocalOmyApp: App {
 
     init() {
         // Once: copy the Flutter app's settings and token (same bundle id, same container).
-        let report = Migration.fromFlutter(defaults: .standard, keychain: SystemKeychain())
+        let report = Migration.fromFlutter(defaults: .standard, keychain: SystemKeychain(),
+                                         protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)
         Logger(subsystem: "local-omy", category: "migration").info("\(String(describing: report))")
         _model = State(initialValue: AppModel())
     }

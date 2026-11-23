@@ -121,10 +121,14 @@ final class FakeKeychain: KeychainStore, @unchecked Sendable {
     private let lock = NSLock()
     private var items: [String: String] = [:]
     var failWrites = false
+    var failReads = false
     init(_ initial: [(service: String, account: String, value: String)] = []) {
         for i in initial { items["\(i.service)|\(i.account)"] = i.value }
     }
-    func read(service: String, account: String) -> String? { lock.withLock { items["\(service)|\(account)"] } }
+    func read(service: String, account: String) throws -> String? {
+        if failReads { throw KeychainError(status: -25308) }
+        return lock.withLock { items["\(service)|\(account)"] }
+    }
     func write(_ v: String, service: String, account: String) throws {
         if failWrites { throw KeychainError(status: -25308) }
         lock.withLock { items["\(service)|\(account)"] = v }

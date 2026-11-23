@@ -231,14 +231,17 @@ actor PlaceGeocoder {
 
     /// `.some(nil)`: Apple has no address; `nil`: the request failed.
     private static func reverse(lat: Double, lon: Double) async -> String?? {
-        let geocoder = CLGeocoder()
+        guard let request = MKReverseGeocodingRequest(location: CLLocation(latitude: lat, longitude: lon)) else { return nil }
+        request.preferredLocale = Locale(identifier: "it_IT")
         do {
-            let marks = try await geocoder.reverseGeocodeLocation(CLLocation(latitude: lat, longitude: lon), preferredLocale: Locale(identifier: "it_IT"))
-            let m = marks.first
-            let street = [m?.thoroughfare, m?.subThoroughfare].compactMap { $0 }.joined(separator: " ")
-            let parts = [street.isEmpty ? m?.name : street, m?.locality].compactMap { $0 }.filter { !$0.isEmpty }
+            let items = try await request.mapItems
+            let m = items.first
+            let street = m?.address?.shortAddress ?? m?.name
+            var city = m?.addressRepresentations?.cityName
+            if let c = city, let st = street, st.localizedCaseInsensitiveContains(c) { city = nil }
+            let parts = [street, city].compactMap { $0 }.filter { !$0.isEmpty }
             return .some(parts.isEmpty ? nil : parts.joined(separator: ", "))
-        } catch let e as CLError where e.code == .geocodeFoundNoResult {
+        } catch let e as MKError where e.code == .placemarkNotFound {
             return .some(nil)
         } catch {
             return nil

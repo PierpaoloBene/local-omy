@@ -6,7 +6,9 @@ import OSLog
 /// Writes every audio notification from the pendant into the current segment and rotates segments (PARITY §2):
 /// every 5 minutes (only on a frame whose byte 2 == 0, so fragments of one codec frame never end up in different
 /// segments), forced at 5 min 10 s of age by a 15 s timer (a stream that stopped while connected), on every BLE
-/// state other than streaming, in background and at termination.
+/// state other than streaming, at termination and after a write error. Going to background does not rotate: the
+/// open segment is only fsynced (`flush`). A segment is never opened before the codec is known: frames arriving
+/// earlier (e.g. after a CoreBluetooth restore relaunch) are dropped and counted.
 @MainActor @Observable
 final class Recorder {
     static let segmentLength: TimeInterval = 5 * 60
@@ -31,6 +33,7 @@ final class Recorder {
     @ObservationIgnored private var pending: [(Data, ContinuousClock.Instant)] = []
     @ObservationIgnored private var timer: Task<Void, Never>?
     @ObservationIgnored private var closing = 0
+    @ObservationIgnored private var droppedNoCodec = 0
 
     init(ble: BLEService, store: SegmentStore) {
         self.ble = ble
@@ -64,6 +67,18 @@ final class Recorder {
             write(frame, at: now, to: c)
             return
         }
+        guard let codecID = ble.codecID else {
+            // Never guess the codec: a segment with the wrong one cannot be decoded by the Mac.
+            droppedNoCodec += 1
+            if droppedNoCodec == 1 || droppedNoCodec % 500 == 0 {
+                Self.log.error("dropping audio, codec not known yet (\(self.droppedNoCodec) frames)")
+            }
+            return
+        }
+        if droppedNoCodec > 0 {
+            Self.log.info("codec known, \(self.droppedNoCodec) frames had been dropped")
+            droppedNoCodec = 0
+        }
         if pending.isEmpty && !opening {
             startInstant = now
             startDate = Date()
@@ -73,7 +88,7 @@ final class Recorder {
         opening = true
         recording = true
         let device = ble.deviceID ?? ""
-        let codec = UInt8(clamping: ble.codecID ?? 0)
+        let codec = UInt8(clamping: codecID)
         let begin = startDate
         Task {
             do {
@@ -98,10 +113,17 @@ final class Recorder {
         do {
             try seg.append(frame: frame, at: startDate.addingTimeInterval(secs))
         } catch {
+            guard current?.id == seg.id else { return }  // already being finished
+            // Finish the segment now (the store truncates a torn tail); the next frame opens a new one.
+            rotate()
             setError("Write failed: \(error)")
-            current = nil
-            recording = false
         }
+    }
+
+    /// fsync of the open segment's file (app going to background); keeps recording into the same segment.
+    func flush() {
+        guard let seg = current else { return }
+        do { try seg.writer.synchronize() } catch { setError("Flush failed: \(error)") }
     }
 
     /// Closes the current segment into the queue.
@@ -115,7 +137,7 @@ final class Recorder {
             do {
                 try await store.finish(seg, extras: ex, recovering: false)
             } catch {
-                setError("Closing segment \(seg.id) failed: \(error)")
+                setError("Closing segment \(seg.id.raw) failed: \(error)")
             }
             closing -= 1
             onSegmentClosed?()

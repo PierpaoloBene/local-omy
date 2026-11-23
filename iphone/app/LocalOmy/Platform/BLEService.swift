@@ -36,6 +36,14 @@ enum Omi {
 }
 
 private struct BLETimeout: Error {}
+private struct BLECodecUnavailable: Error {}
+
+/// A read in flight. The timeout of a read acts only if its own token is still the pending one, so a late timer of
+/// a previous connection cannot fail a read of the next one.
+private struct PendingRead {
+    let token: UUID
+    let cont: CheckedContinuation<Data, Error>
+}
 
 /// BLE link to the Omi pendant: scan, connect to the saved device, automatic reconnection (pending connect), codec,
 /// audio stream, battery, firmware. Frames are handed over as they arrive, 3-byte header included. Port of
@@ -76,7 +84,7 @@ final class BLEService: NSObject {
     @ObservationIgnored private var found: [UUID: ScanResult] = [:]
     @ObservationIgnored private var scanStop: Task<Void, Never>?
     @ObservationIgnored private var scanWaiters: [CheckedContinuation<Bool, Never>] = []
-    @ObservationIgnored private var reads: [CBUUID: CheckedContinuation<Data, Error>] = [:]
+    @ObservationIgnored private var reads: [CBUUID: PendingRead] = [:]
     @ObservationIgnored private var setupTask: Task<Void, Never>?
     @ObservationIgnored private var ticker: Task<Void, Never>?
     @ObservationIgnored private var discoverWaiter: CheckedContinuation<Void, Error>?
@@ -217,6 +225,7 @@ final class BLEService: NSObject {
 
     private func beginSetup(_ p: CBPeripheral) {
         setupTask?.cancel()
+        failReads()  // also resumes a discover still waiting from the previous setup
         setupTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -243,10 +252,11 @@ final class BLEService: NSObject {
             if peripheral === p { forget() }
             return
         }
-        if let codec = find(Omi.service, Omi.audioCodec) {
-            let v = try await read(codec, on: p)
-            codecID = v.first.map { Int($0) }
-        }
+        // The codec is read BEFORE subscribing to audio (as in Flutter); without it the stream is not started.
+        guard let codec = find(Omi.service, Omi.audioCodec) else { throw BLECodecUnavailable() }
+        let v = try await read(codec, on: p)
+        guard let first = v.first else { throw BLECodecUnavailable() }
+        codecID = Int(first)
         if let fw = find(Omi.deviceInfoService, Omi.firmwareRevision) {
             if let v = try? await read(fw, on: p) {
                 let s = String(decoding: v, as: UTF8.self).replacingOccurrences(of: "\u{0}", with: "")
@@ -273,12 +283,14 @@ final class BLEService: NSObject {
 
     private func read(_ c: CBCharacteristic, on p: CBPeripheral) async throws -> Data {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-            reads[c.uuid] = cont
+            let token = UUID()
+            reads[c.uuid] = PendingRead(token: token, cont: cont)
             p.readValue(for: c)
             let id = c.uuid
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(15))
-                self?.reads.removeValue(forKey: id)?.resume(throwing: BLETimeout())
+                guard let self, self.reads[id]?.token == token else { return }
+                self.reads.removeValue(forKey: id)?.cont.resume(throwing: BLETimeout())
             }
         }
     }
@@ -286,7 +298,7 @@ final class BLEService: NSObject {
     private func failReads() {
         let r = reads
         reads = [:]
-        for (_, c) in r { c.resume(throwing: CancellationError()) }
+        for (_, r) in r { r.cont.resume(throwing: CancellationError()) }
         discoverWaiter?.resume(throwing: CancellationError())
         discoverWaiter = nil
     }
@@ -314,15 +326,16 @@ extension BLEService: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
-        let ids = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []).map(\.identifier)
+        // Use the restored objects themselves (retained here, delegate set): retrieving them is not allowed before
+        // poweredOn.
+        nonisolated(unsafe) let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
         MainActor.assumeIsolated {
-            guard let p = central.retrievePeripherals(withIdentifiers: ids).first else { return }
+            guard let p = restored.first(where: { $0.identifier == wantedID }) ?? (wantedID == nil ? restored.first : nil) else { return }
             Self.log.info("restored \(p.identifier.uuidString)")
             if wantedID == nil {
                 wantedID = p.identifier
                 deviceID = p.identifier.uuidString
             }
-            guard p.identifier == wantedID else { return }
             peripheral = p
             p.delegate = self
         }
@@ -334,7 +347,7 @@ extension BLEService: CBCentralManagerDelegate, CBPeripheralDelegate {
             guard name.lowercased().contains("omi") else { return }
             found[p.identifier] = ScanResult(id: p.identifier.uuidString, name: name, rssi: RSSI.intValue)
             scanResults = found.values.sorted { $0.rssi > $1.rssi }
-            if p.identifier == wantedID { issueConnect() }
+            if p.identifier == wantedID, state != .streaming, p.state == .disconnected { issueConnect() }
         }
     }
 
@@ -386,14 +399,16 @@ extension BLEService: CBCentralManagerDelegate, CBPeripheralDelegate {
     nonisolated func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
         MainActor.assumeIsolated {
             let value = c.value ?? Data()
-            if let cont = reads.removeValue(forKey: c.uuid) {
-                if let error { cont.resume(throwing: error) } else { cont.resume(returning: value) }
+            if let pending = reads.removeValue(forKey: c.uuid) {
+                if let error { pending.cont.resume(throwing: error) } else { pending.cont.resume(returning: value) }
                 return
             }
             guard error == nil, !value.isEmpty else { return }
             if c.uuid == Omi.batteryLevel {
                 battery = Int(value[value.startIndex])
             } else if c.uuid == Omi.audioData {
+                // After a restore relaunch notifications can arrive before setup() has read the codec: not forwarded.
+                guard state == .streaming, codecID != nil else { return }
                 lastAudioAt = Date()
                 onAudio?(Data(value))
             }
