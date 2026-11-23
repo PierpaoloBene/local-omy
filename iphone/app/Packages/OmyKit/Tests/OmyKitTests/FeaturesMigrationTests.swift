@@ -99,14 +99,14 @@ import Testing
         let d = flutterDefaults()
         let kc = FakeKeychain([Self.flutter])
         let r = Migration.fromFlutter(defaults: d, keychain: kc)
-        #expect(r == MigrationReport(alreadyDone: false, deviceID: .copied, macURL: .copied, features: .copied, token: .copied))
+        #expect(r == MigrationReport(alreadyDone: false, deferred: false, deviceID: .copied, macURL: .copied, features: .copied, token: .copied))
         let s = SettingsStore(defaults: d, keychain: kc)
         #expect(s.deviceID == "AA:BB:CC" && s.macURL == "https://mac.tailnet.ts.net" && s.token == "old-token-xyz")
         #expect(Features(json: s.featuresJSON).on("calls") == false)
         // the old entries are still there (rollback)
         #expect(d.string(forKey: "flutter.device_id") == "AA:BB:CC")
-        #expect(kc.read(service: "flutter_secure_storage_service", account: "upload_token") == "old-token-xyz")
-        #expect(kc.read(service: "local-omy", account: "upload_token") == "old-token-xyz")
+        #expect((try? kc.read(service: "flutter_secure_storage_service", account: "upload_token")) == "old-token-xyz")
+        #expect((try? kc.read(service: "local-omy", account: "upload_token")) == "old-token-xyz")
     }
 
     @Test func runsOnlyOnce() {
@@ -125,13 +125,13 @@ import Testing
         let kc = FakeKeychain([Self.flutter, (service: "local-omy", account: "upload_token", value: "new-token")])
         let r = Migration.fromFlutter(defaults: d, keychain: kc)
         #expect(r.deviceID == .alreadyPresent && r.token == .alreadyPresent && r.macURL == .copied)
-        #expect(d.string(forKey: "deviceID") == "NEW-DEVICE" && kc.read(service: "local-omy", account: "upload_token") == "new-token")
+        #expect(d.string(forKey: "deviceID") == "NEW-DEVICE" && (try? kc.read(service: "local-omy", account: "upload_token")) == "new-token")
     }
 
     @Test func freshInstallHasNothingToMigrate() {
         let d = fakeDefaults()
         let r = Migration.fromFlutter(defaults: d, keychain: FakeKeychain())
-        #expect(r == MigrationReport(alreadyDone: false, deviceID: .missing, macURL: .missing, features: .missing, token: .missing))
+        #expect(r == MigrationReport(alreadyDone: false, deferred: false, deviceID: .missing, macURL: .missing, features: .missing, token: .missing))
         #expect(d.bool(forKey: Migration.doneKey))
         #expect(SettingsStore(defaults: d, keychain: FakeKeychain()).deviceID == nil)
     }
@@ -145,6 +145,26 @@ import Testing
         kc.failWrites = false
         let r = Migration.fromFlutter(defaults: d, keychain: kc)
         #expect(r.token == .copied && r.deviceID == .alreadyPresent && d.bool(forKey: Migration.doneKey))
+    }
+
+    @Test func skippedWhileProtectedDataUnavailable() {
+        let d = flutterDefaults()
+        let kc = FakeKeychain([Self.flutter])
+        let r = Migration.fromFlutter(defaults: d, keychain: kc, protectedDataAvailable: false)
+        #expect(r.deferred && !d.bool(forKey: Migration.doneKey) && d.string(forKey: "deviceID") == nil)
+        let r2 = Migration.fromFlutter(defaults: d, keychain: kc, protectedDataAvailable: true)
+        #expect(r2.token == .copied && d.bool(forKey: Migration.doneKey))
+    }
+
+    @Test func keychainReadFailureRetriesNextLaunch() {
+        let d = flutterDefaults()
+        let kc = FakeKeychain([Self.flutter])
+        kc.failReads = true
+        #expect(Migration.fromFlutter(defaults: d, keychain: kc).token == .failed)
+        #expect(!d.bool(forKey: Migration.doneKey))
+        kc.failReads = false
+        let r = Migration.fromFlutter(defaults: d, keychain: kc)
+        #expect(r.token == .copied && d.bool(forKey: Migration.doneKey))
     }
 
     @Test func settingsStoreRoundTrip() throws {

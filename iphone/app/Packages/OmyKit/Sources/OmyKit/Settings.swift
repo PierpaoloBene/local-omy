@@ -2,7 +2,8 @@ import Foundation
 import Security
 
 public protocol KeychainStore: Sendable {
-    func read(service: String, account: String) -> String?
+    /// nil = definitively not there (errSecItemNotFound); any other failure throws.
+    func read(service: String, account: String) throws -> String?
     func write(_ v: String, service: String, account: String) throws
     /// Removes the item (no error if missing). Default: does nothing.
     func delete(service: String, account: String) throws
@@ -25,13 +26,16 @@ public struct SystemKeychain: KeychainStore {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
 
-    public func read(service: String, account: String) -> String? {
+    public func read(service: String, account: String) throws -> String? {
         var q = base(service, account)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         q[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny  // flutter_secure_storage also tries synchronizable
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
+        let st = SecItemCopyMatching(q as CFDictionary, &out)
+        if st == errSecItemNotFound { return nil }
+        guard st == errSecSuccess else { throw KeychainError(status: st) }
+        guard let d = out as? Data else { return nil }
         return String(data: d, encoding: .utf8)
     }
 
@@ -87,7 +91,7 @@ public final class SettingsStore: @unchecked Sendable {
         set { if let v = newValue { defaults.set(v, forKey: Key.features) } else { defaults.removeObject(forKey: Key.features) } }
     }
 
-    public var token: String? { keychain.read(service: Self.service, account: Self.tokenAccount) }
+    public var token: String? { try? keychain.read(service: Self.service, account: Self.tokenAccount) }
 
     public func setToken(_ v: String?) throws {
         if let v, !v.isEmpty { try keychain.write(v, service: Self.service, account: Self.tokenAccount) } else {
@@ -105,6 +109,8 @@ public final class SettingsStore: @unchecked Sendable {
 public struct MigrationReport: Sendable, Equatable {
     public enum Item: Sendable, Equatable { case copied, alreadyPresent, missing, failed }
     public var alreadyDone = false
+    /// Not run because protected data was unavailable (device locked since boot); retried at the next launch.
+    public var deferred = false
     public var deviceID: Item = .missing
     public var macURL: Item = .missing
     public var features: Item = .missing
@@ -118,10 +124,15 @@ public enum Migration {
     /// Once, at launch. Copies (never deletes: the old values stay, so a rollback to the Flutter app works):
     /// UserDefaults `flutter.device_id` / `flutter.mac_url` / `flutter.features` -> `deviceID` / `macURL` / `features`;
     /// Keychain service `flutter_secure_storage_service` account `upload_token` -> service `local-omy`. Values
-    /// already present in the new keys win. If the token could not be written the migration is retried next launch.
+    /// already present in the new keys win. If the token could not be read or written (or protected data is unavailable) the migration is retried next launch.
     @discardableResult
-    public static func fromFlutter(defaults: UserDefaults, keychain: KeychainStore) -> MigrationReport {
+    public static func fromFlutter(defaults: UserDefaults, keychain: KeychainStore, protectedDataAvailable: Bool = true) -> MigrationReport {
         var r = MigrationReport()
+        // Before the first unlock (background relaunch) the Keychain and defaults cannot be read: try again later.
+        guard protectedDataAvailable else {
+            r.deferred = true
+            return r
+        }
         if defaults.bool(forKey: doneKey) {
             r.alreadyDone = true
             return r
@@ -135,15 +146,15 @@ public enum Migration {
         r.deviceID = copy("flutter.device_id", SettingsStore.Key.deviceID)
         r.macURL = copy("flutter.mac_url", SettingsStore.Key.macURL)
         r.features = copy("flutter.features", SettingsStore.Key.features)
-        if let t = keychain.read(service: SettingsStore.service, account: SettingsStore.tokenAccount), !t.isEmpty {
-            r.token = .alreadyPresent
-        } else if let old = keychain.read(service: flutterService, account: SettingsStore.tokenAccount), !old.isEmpty {
-            do {
+        do {
+            if let t = try keychain.read(service: SettingsStore.service, account: SettingsStore.tokenAccount), !t.isEmpty {
+                r.token = .alreadyPresent
+            } else if let old = try keychain.read(service: flutterService, account: SettingsStore.tokenAccount), !old.isEmpty {
                 try keychain.write(old, service: SettingsStore.service, account: SettingsStore.tokenAccount)
                 r.token = .copied
-            } catch {
-                r.token = .failed
             }
+        } catch {
+            r.token = .failed
         }
         if r.token != .failed { defaults.set(true, forKey: doneKey) }
         return r

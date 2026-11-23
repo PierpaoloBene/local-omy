@@ -152,6 +152,11 @@ public final class SegmentWriter: @unchecked Sendable {
         }
     }
 
+    /// fsync without closing (no-op once closed).
+    public func synchronize() throws {
+        try lock.withLock { try handle?.synchronize() }
+    }
+
     /// fsync and close. Idempotent.
     public func close() throws {
         try lock.withLock {

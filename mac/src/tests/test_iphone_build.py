@@ -1,4 +1,4 @@
-"""omy iphone build: native app (XcodeGen) when iphone/app/project.yml exists, else Flutter. No real tools run."""
+"""omy iphone build: native app (XcodeGen) only when config iphone_app = "native" and iphone/app/project.yml exists, else Flutter. No real tools run."""
 
 import pytest
 
@@ -14,6 +14,9 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(iphone, "DERIVED", derived)
     monkeypatch.setattr(iphone, "APP", tmp_path / "build" / "local-omy.app")
     monkeypatch.setattr(iphone, "iphone_bundle_id", lambda team: "com.example.local-omy")
+    config = {}
+    monkeypatch.setattr(iphone, "load_config", lambda: config)
+    monkeypatch.setattr(iphone, "find_xcodegen", lambda: "/abs/xcodegen")
     calls = []
 
     def fake_run(cmd, what, cwd=None):
@@ -23,14 +26,15 @@ def sandbox(tmp_path, monkeypatch):
             (derived / "Build" / "Products" / "Release-iphoneos" / product).mkdir(parents=True)
 
     monkeypatch.setattr(iphone, "run", fake_run)
-    return app_dir, calls
+    return app_dir, calls, config
 
 
 def test_native_build_uses_xcodegen_and_the_project(sandbox):
-    app_dir, calls = sandbox
+    app_dir, calls, config = sandbox
     (app_dir / "project.yml").write_text("name: LocalOmy\n")
+    config["iphone_app"] = "native"
     app = iphone.build("TEAM123", "UDID-1")
-    assert calls[0] == (["xcodegen", "generate"], app_dir)
+    assert calls[0] == (["/abs/xcodegen", "generate"], app_dir)
     cmd, cwd = calls[1]
     assert cmd[:5] == ["xcodebuild", "-project", str(app_dir / "LocalOmy.xcodeproj"), "-scheme", "LocalOmy"]
     assert "id=UDID-1" in cmd and "DEVELOPMENT_TEAM=TEAM123" in cmd
@@ -39,8 +43,31 @@ def test_native_build_uses_xcodegen_and_the_project(sandbox):
 
 
 def test_flutter_build_without_project_yml(sandbox):
-    _, calls = sandbox
+    _, calls, config = sandbox
+    config["iphone_app"] = "native"
     iphone.build("TEAM123", None)
     assert calls[0][0][:2] == ["flutter", "build"]
     cmd = calls[1][0]
     assert "-workspace" in cmd and "generic/platform=iOS" in cmd
+
+
+def test_flutter_even_with_project_yml_unless_config_says_native(sandbox):
+    app_dir, calls, config = sandbox
+    (app_dir / "project.yml").write_text("name: LocalOmy\n")
+    iphone.build("TEAM123", None)  # no iphone_app key: the nightly renewal must not switch apps
+    assert calls[0][0][:2] == ["flutter", "build"]
+    config["iphone_app"] = "flutter"
+    assert not iphone.use_native_app()
+
+
+def test_find_xcodegen_falls_back_to_homebrew(tmp_path, monkeypatch):
+    monkeypatch.setattr(iphone.shutil, "which", lambda name: None)
+    fake = tmp_path / "xcodegen"
+    fake.write_text("")
+    monkeypatch.setattr(iphone, "XCODEGEN_FALLBACK", str(fake))
+    assert iphone.find_xcodegen() == str(fake)
+    monkeypatch.setattr(iphone, "XCODEGEN_FALLBACK", str(tmp_path / "missing"))
+    with pytest.raises(iphone.IphoneError):
+        iphone.find_xcodegen()
+    monkeypatch.setattr(iphone.shutil, "which", lambda name: "/usr/local/bin/xcodegen")
+    assert iphone.find_xcodegen() == "/usr/local/bin/xcodegen"

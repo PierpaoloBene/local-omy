@@ -105,16 +105,33 @@ final class AppModel {
         scenePhase = phase
         switch phase {
         case .active:
+            retryMigration()
             kick("foreground")
             Task { await syncFeatures() }
             ble.refreshStatus()
             locationLog.reload()
         case .background:
-            // The recorder keeps running: bluetooth-central keeps the app alive while the pendant streams.
-            break
+            // The recorder keeps running (bluetooth-central keeps the app alive while the pendant streams):
+            // no rotation, just fsync what was written so far.
+            recorder.flush()
         default:
             break
         }
+    }
+
+    /// The Flutter migration is skipped before the first unlock (protected data unavailable); runs it as soon as
+    /// possible and picks up what it copied.
+    private func retryMigration() {
+        let d = settings.defaults
+        guard !d.bool(forKey: Migration.doneKey), UIApplication.shared.isProtectedDataAvailable else { return }
+        let r = Migration.fromFlutter(defaults: d, keychain: settings.keychain, protectedDataAvailable: true)
+        Self.log.info("migration retry: \(String(describing: r))")
+        guard !r.alreadyDone, !r.deferred else { return }
+        macURL = settings.macURL ?? ""
+        hasToken = !(settings.token ?? "").isEmpty
+        features = Features(json: settings.featuresJSON)
+        rebuildAPI()
+        if let id = settings.deviceID { ble.connect(id) }
     }
 
     // MARK: pendant

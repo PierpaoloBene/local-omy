@@ -165,6 +165,22 @@ import Testing
         #expect(await store.queue().count == 1)
     }
 
+    @Test func recoverOrphansSurvivesOneBadPart() async throws {
+        let tmp = TempDir()
+        try FileManager.default.createDirectory(at: tmp.segments, withIntermediateDirectories: true)
+        let bad = "20231114T221320Z-00000bad", good = "20231114T221330Z-00000good"
+        // unreadable as a file: a directory named *.part makes Data(contentsOf:) throw
+        try FileManager.default.createDirectory(at: tmp.segments.appendingPathComponent("\(bad).part"), withIntermediateDirectories: true)
+        var d = SegmentFormat.header(codec: 21, startMs: 1_700_000_000_123)
+        d.append(SegmentFormat.record(offsetMs: 0, frame: frame(1, 0)))
+        try d.write(to: tmp.segments.appendingPathComponent("\(good).part"))
+        try Data("x".utf8).write(to: tmp.segments.appendingPathComponent("20231114T000000Z-00000000.json.tmp"))
+        let store = SegmentStore(directory: tmp.segments)
+        #expect(try await store.recoverOrphans(extras: SidecarExtras()) == 1)
+        #expect(await store.queue().map(\.id.raw) == [good])
+        #expect(!FileManager.default.fileExists(atPath: tmp.segments.appendingPathComponent("20231114T000000Z-00000000.json.tmp").path))
+    }
+
     @Test func recoverSkipsSegmentsBeingWritten() async throws {
         let tmp = TempDir()
         let store = SegmentStore(directory: tmp.segments)
