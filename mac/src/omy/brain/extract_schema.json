@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "properties": {
+    "titolo": {"type": "string", "maxLength": 80},
+    "qualita": {"type": "string", "enum": ["buona", "parziale", "rumore"]},
+    "riassunto_parte": {"type": "string"},
+    "punti_chiave": {"type": "array", "maxItems": 6, "items": {"type": "object", "properties": {
+      "testo": {"type": "string"},
+      "refs": {"type": "array", "maxItems": 8, "items": {"type": "string", "pattern": "^P[0-9]+$"}}},
+      "required": ["testo", "refs"]}},
+    "entita": {"type": "object", "properties": {
+      "persone": {"type": "array", "maxItems": 8, "items": {"type": "object", "properties": {
+        "nome": {"type": "string"}, "refs": {"type": "array", "maxItems": 8, "items": {"type": "string", "pattern": "^P[0-9]+$"}}}, "required": ["nome", "refs"]}},
+      "luoghi": {"type": "array", "maxItems": 8, "items": {"type": "object", "properties": {
+        "nome": {"type": "string"}, "refs": {"type": "array", "maxItems": 8, "items": {"type": "string", "pattern": "^P[0-9]+$"}}}, "required": ["nome", "refs"]}},
+      "organizzazioni": {"type": "array", "maxItems": 8, "items": {"type": "object", "properties": {
+        "nome": {"type": "string"}, "refs": {"type": "array", "maxItems": 8, "items": {"type": "string", "pattern": "^P[0-9]+$"}}}, "required": ["nome", "refs"]}},
+      "progetti": {"type": "array", "maxItems": 8, "items": {"type": "object", "properties": {
+        "nome": {"type": "string"}, "refs": {"type": "array", "maxItems": 8, "items": {"type": "string", "pattern": "^P[0-9]+$"}}}, "required": ["nome", "refs"]}}},
+      "required": ["persone", "luoghi", "organizzazioni", "progetti"]},
+    "impegni_e_todo": {"type": "array", "maxItems": 8, "items": {"type": "object", "properties": {
+      "chi": {"type": "string"},
+      "cosa": {"type": "string"},
+      "verso_chi": {"type": ["string", "null"]},
+      "scadenza_testo": {"type": ["string", "null"]},
+      "refs": {"type": "array", "maxItems": 8, "items": {"type": "string", "pattern": "^P[0-9]+$"}}},
+      "required": ["chi", "cosa", "verso_chi", "scadenza_testo", "refs"]}},
+    "date_ed_eventi_citati": {"type": "array", "maxItems": 8, "items": {"type": "object", "properties": {
+      "testo_data": {"type": "string"},
+      "evento": {"type": "string"},
+      "refs": {"type": "array", "maxItems": 8, "items": {"type": "string", "pattern": "^P[0-9]+$"}}},
+      "required": ["testo_data", "evento", "refs"]}},
+    "ascoltato": {"type": "array", "maxItems": 4, "items": {"type": "object", "properties": {
+      "riassunto": {"type": "string"},
+      "refs": {"type": "array", "maxItems": 8, "items": {"type": "string", "pattern": "^P[0-9]+$"}}},
+      "required": ["riassunto", "refs"]}},
+    "tag": {"type": "array", "maxItems": 6, "items": {"type": "string"}}
+  },
+  "required": ["titolo", "qualita", "riassunto_parte", "punti_chiave", "entita", "impegni_e_todo", "date_ed_eventi_citati", "ascoltato", "tag"]
+}

@@ -10,6 +10,7 @@ dependencies = [
     "opuslib>=3.0.1",
     # speaker diarization (omy diarize); the model needs a Hugging Face token
     "pyannote-audio>=4",
+    "dateparser>=1.5.1",
 ]
 
 [project.scripts]
