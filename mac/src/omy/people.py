@@ -67,6 +67,19 @@ def _save_people(people: dict) -> None:
     _write_atomic(diarize.PEOPLE, json.dumps({"people": people}, ensure_ascii=False, indent=1) + "\n")
 
 
+def _renamed(result: dict) -> dict:
+    """Names changed: the notes of the second brain show the current names, so
+    queue their rendering (deduplicated) and wake the worker. Never fails the
+    change itself."""
+    try:
+        from omy import jobs
+        jobs.enqueue("render", "people")
+        jobs.wake()
+    except Exception:
+        pass
+    return result
+
+
 def relabel() -> list[str]:
     """Name again the voices of every diarized session, from the stored
     embeddings and the current people; re-render the days that changed."""
@@ -268,7 +281,7 @@ def rename(session_id: str, label: str, name: str) -> dict:
     if clusters[label].get("source") == "media":
         del clusters[label]["source"]
     _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
-    return {"person": pin, "name": name, "days": relabel()}
+    return _renamed({"person": pin, "name": name, "days": relabel()})
 
 
 def set_source(session_id: str, labels: list[str], source: str) -> dict:
@@ -295,7 +308,7 @@ def set_source(session_id: str, labels: list[str], source: str) -> dict:
             c.pop("unknown", None)
     _save_people(people)
     _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
-    return {"source": source, "labels": labels, "days": relabel()}
+    return _renamed({"source": source, "labels": labels, "days": relabel()})
 
 
 def set_unknown(session_id: str, labels: list[str], unknown: bool = True) -> dict:
@@ -320,7 +333,7 @@ def set_unknown(session_id: str, labels: list[str], unknown: bool = True) -> dic
             del c["source"]
     _save_people(people)
     _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
-    return {"unknown": unknown, "labels": labels, "days": relabel()}
+    return _renamed({"unknown": unknown, "labels": labels, "days": relabel()})
 
 
 def set_person_source(person_id: str, source: str) -> dict:
@@ -353,7 +366,7 @@ def set_person_source(person_id: str, source: str) -> dict:
         (diarize.PEOPLE_DIR / f"{person_id}.npz").unlink(missing_ok=True)
         del people[person_id]
         _save_people(people)
-    return {"person": person_id, "name": name, "source": source, "voices": voices, "days": relabel()}
+    return _renamed({"person": person_id, "name": name, "source": source, "voices": voices, "days": relabel()})
 
 
 def list_people() -> dict:
@@ -398,7 +411,7 @@ def rename_person(person_id: str, name: str) -> dict:
     else:
         people[person_id]["name"] = name
     _save_people(people)
-    return {"person": other or person_id, "name": name, "days": relabel()}
+    return _renamed({"person": other or person_id, "name": name, "days": relabel()})
 
 
 def delete_person(person_id: str) -> dict:
@@ -412,7 +425,7 @@ def delete_person(person_id: str) -> dict:
     name = people.pop(person_id)["name"]
     _save_people(people)
     _repin(person_id, None)
-    return {"deleted": name, "days": relabel()}
+    return _renamed({"deleted": name, "days": relabel()})
 
 
 def _repin(old: str, new: str | None) -> None:

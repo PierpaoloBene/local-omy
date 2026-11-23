@@ -384,7 +384,6 @@ def create_app(config: Config) -> FastAPI:
 
     omy_lock = asyncio.Lock()
     omy_env = {**os.environ, "OMY_ARCHIVE": str(config.archive)}
-    transcribing: list[asyncio.subprocess.Process] = []
 
     async def omy(*args: str) -> dict:
         """Runs omy --json ARGS; its error, if any, as ValueError."""
@@ -490,25 +489,32 @@ def create_app(config: Config) -> FastAPI:
             return _error(400, "invalid filter")
         return await run(request, "transcripts", "conversations", *filters)
 
-    # Starts transcribing the closed sessions now, without waiting for the
-    # hourly job; GET /v1/transcripts shows the progress.
+    # Asks the worker (omy worker) to scan for sessions to transcribe now,
+    # without waiting for its next scan; GET /v1/transcripts shows the progress.
     @app.post("/v1/transcribe")
     async def transcribe_now(request: Request):
         if not _authorized(request, config.token):
             return _error(401, "unauthorized")
-        if transcribing and transcribing[0].returncode is None:
-            return {"started": False, "running": True}
-        logfile = open(Path("~/Library/Logs/local-omy-periodic.log").expanduser(), "ab")
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "omy.cli", "--json", "transcribe", "--pending",
-                stdin=asyncio.subprocess.DEVNULL, stdout=logfile, stderr=logfile, env=omy_env,
-            )
-        finally:
-            logfile.close()
-        transcribing[:] = [proc]
-        asyncio.get_running_loop().create_task(proc.wait())
-        return {"started": True, "running": True}
+
+        def ask() -> dict:
+            from omy import jobs, transcribe
+            busy = transcribe.progress()["running"] or jobs.pending(["transcribe", "diarize"]) > 0
+            jobs.wake()
+            return {"started": not busy, "running": True}
+
+        return await asyncio.to_thread(ask)
+
+    # The worker, its queue and the model in memory.
+    @app.get("/v1/brain/status")
+    async def brain_status(request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+
+        def read() -> dict:
+            from omy import jobs, models, worker
+            return {"worker": worker.read_status(), "jobs": jobs.summary(), "models": models.state()}
+
+        return await asyncio.to_thread(read)
 
     @app.get("/v1/people")
     async def people_list(request: Request):
