@@ -122,3 +122,67 @@ alla fine del batch) solo se nessun transcribe/diarize è in coda o in corso, fi
 - Per questo `diarize` e `transcribe` girano come sottoprocessi (`python -m omy.cli job transcribe|diarize <id>`), uno
   per sessione; whisper non viene interrotto (pochi GB, convive con il 4B), pyannote sì.
 - Di giorno, a riposo, il worker tiene caricato il modello chat; lo scarica durante `diarize` e lo ricarica dopo.
+
+# Fase 2: indice e scheda "Chiedi"
+
+## 8. Indice (modulo `omy.brain.index`, agente D)
+SQLite `ARCHIVE/cache/brain-index.sqlite` (WAL). Un **chunk** è l'unità di ricerca:
+```
+chunks(id INTEGER PK, kind TEXT  -- 'nota' (riassunto, punto chiave, impegno, data, entità di una nota) | 'testo' (finestra di paragrafi della trascrizione)
+       session TEXT, day TEXT, start TEXT  -- iso locale del primo paragrafo citato
+       t REAL       -- secondi dall'inizio sessione
+       row_id TEXT  -- id riga JSONL del primo paragrafo ("<session>/<n>"), per aprire la conversazione lì
+       persons TEXT -- JSON: person id coinvolti ("me" incluso)
+       title TEXT   -- titolo della nota (o "HH:MM, <partecipanti>" se non c'è nota)
+       field TEXT   -- 'riassunto'|'punto'|'impegno'|'data'|'entita'|'testo'
+       text TEXT, source_hash TEXT)
+chunks_fts USING fts5(text, title, content='chunks', tokenize='unicode61 remove_diacritics 2')
+vectors(chunk_id PK, vec BLOB)   -- float16, normalizzati, EMBED_DIM=512 (troncamento MRL di Qwen3-Embedding-0.6B)
+meta(key PK, value)              -- 'version' incrementata a ogni update (il receiver ricarica la matrice)
+```
+- `index.update(sessions: list[str] | None = None) -> dict`: incrementale per `source_hash` (sidecar o righe JSONL);
+  i chunk `testo` esistono anche per sessioni non ancora organizzate (finestre di ~600 caratteri, a confine di paragrafo).
+- `index.search(query: str, *, day_from: str|None, day_to: str|None, persons: list[str]|None, k: int = 8) -> list[Hit]`:
+  ibrida BM25 (FTS5) + coseno (numpy sulla matrice in memoria), fusione RRF k=60, filtri su giorno e persone,
+  preferenza per chunk `nota` a parità. `Hit` = dict con tutti i campi del chunk + `score`.
+- Embedding: `omy.brain.embed.embed(texts: list[str], query: bool) -> np.ndarray` (llama-server `--embedding
+  --pooling last`, porta 8092, modello `ARCHIVE/models/brain/Qwen3-Embedding-0.6B-Q8_0.gguf`; per le query il prefisso
+  `Instruct: Dato una domanda, trova i passaggi dell'archivio personale che rispondono\nQuery: `).
+- `models.ensure("embed")`: ruolo **compagno**, può stare insieme a "chat" (≈0,7 GB) ma mai con "organizer" né durante
+  diarize. Il worker carica embed per il job `index` (dopo il batch notturno e dopo ogni transcribe/diarize per i
+  chunk `testo` nuovi), e lo tiene di giorno insieme al chat.
+
+## 9. Domande (modulo `omy.brain.ask` + endpoint, agente E)
+`POST /v1/ask` (auth Bearer come le altre). Richiesta:
+```json
+{"question": "Cosa ho promesso a Marco la settimana scorsa?",
+ "history": [{"role": "user", "content": "…"}, {"role": "assistant", "content": "…"}],   // ultimi ≤ 4 turni
+ "now": "2026-11-23T14:30:00+01:00"}                                                    // opzionale, ora del telefono
+```
+Risposta `text/event-stream`, un evento JSON per riga `data: {...}`:
+```
+{"type":"status","stage":"waking"|"searching"|"answering"}      // waking = il worker sta caricando il modello chat
+{"type":"citations","items":[Citation, ...]}                     // prima del testo
+{"type":"delta","text":"…"}                                      // testo in streaming; cita come [1], [2]
+{"type":"done","not_found":false,"timings":{"wait_model_ms":0,"retrieval_ms":120,"ttft_ms":1800,"total_ms":3400}}
+{"type":"error","message":"…"}
+```
+`Citation = {"n": 1, "kind": "nota"|"testo", "session": "<id>", "day": "2026-11-21", "time": "18:22",
+"t": 512.0, "row_id": "<session>/<n>", "title": "…", "snippet": "≤ 200 caratteri"}`.
+Pipeline: date relative della domanda risolte in codice (`omy.brain.dates`: oggi, ieri, settimana scorsa, martedì,
+a ottobre, il 3 novembre…) → filtro giorni; nomi di persone noti (people.json, my_aliases, fuzzy) → filtro/boost
+persone; `index.search` (k=8, contesto ≤ ~1.200 token) → se nessun hit sopra soglia: risposta "Non ho trovato nulla
+nell'archivio su questo." senza modello; altrimenti `models.request_chat()` + llama-server streaming con prompt
+`prompts/ask.md` (risposta breve, italiano, solo dalle fonti, cita [n], se le fonti non bastano lo dice).
+Ogni domanda aggiorna la domanda chat (prelazione, §7). Log di ogni domanda con i timings in
+`ARCHIVE/cache/ask-log.jsonl` (senza testo della risposta).
+
+`GET /v1/brain/note/{session}`: il sidecar JSON della nota (404 se non c'è) per la vista nota nell'app.
+
+## 10. App iPhone, scheda "Chiedi" (agente F)
+Quinta scheda in `app_shell.dart` (icona `CupertinoIcons.chat_bubble_2`), stesso stile (`common.dart`). Chat con
+storico della sessione (in memoria), risposte in streaming (SSE via `http` client `send()` + stream di linee),
+stato "sto svegliando il modello…/cerco…". Citazioni [n] come chip toccabili sotto la risposta: tocco → apre
+`ConversationViewer` sul paragrafo `row_id` della sessione (via `conversations(day:)`), pressione lunga → vista
+nota (`GET /v1/brain/note/{session}`: titolo, riassunto, punti chiave, impegni). Sotto ogni risposta, piccolo, il
+tempo totale misurato sul telefono (dall'invio al `done`) e il primo token. Nessun nuovo target né nuova app.
