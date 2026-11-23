@@ -553,7 +553,7 @@ uv run omy jobs                                 # stato della coda
 - organizzatore: Qwen3.8-27B GSQ-RCO IQ2_XS con testa MTP (ISTA-DASLab, 8,8 GB),
   `--spec-type draft-mtp --spec-draft-n-max 4`: prefill ~72 tok/s, decode ~16,5 tok/s,
   ~16 min per una giornata di ~16k token;
-- chat: Qwen3.5-4B Q4_0 (in valutazione con Qwen3.8-4B-Distill);
+- chat: Qwen3.5-4B Q4_0 (Qwen3.8-4B-Distill provato: meno citazioni e più lento);
 - embedding e reranker: Qwen3-Embedding-0.6B e Qwen3-Reranker-0.6B Q8 (Fase 2).
 
 Misure e scelte in `tools/brainbench/RESULTS.md`; interfacce in `omy/brain/INTERFACES.md`.
@@ -575,6 +575,25 @@ I nomi che dai alle voci si propagano a note e pagine, anche all'indietro, senza
 modello. Il testo generato sta tra `<!-- omy:begin … -->` e `<!-- omy:end … -->`: fuori puoi
 scrivere quello che vuoi, e un blocco modificato a mano non viene sovrascritto. Le spunte in
 `impegni.md` (o nella nota) segnano un impegno come fatto.
+
+### Scheda "Chiedi" e indice di ricerca
+
+**Indice** (`omy/brain/index.py`, `~/OmiArchive/cache/brain-index.sqlite`): FTS5 (BM25) + ricerca
+semantica con Qwen3-Embedding-0.6B (vettori da 512, numpy in memoria), fusi con RRF. Contiene sia le
+note sia le trascrizioni non ancora organizzate (finestre di ~600 caratteri), quindi si possono fare
+domande anche sulla giornata in corso. Si aggiorna da solo dopo ogni trascrizione e dopo il batch
+notturno; i nomi che dai alle voci finiscono anche nell'indice.
+
+**Domande** (`omy/brain/ask.py`, `POST /v1/ask`, risposta in streaming SSE): date relative ("ieri",
+"il 3 dicembre", "la settimana scorsa") e persone note risolte in codice → ricerca ibrida → Qwen3.5-4B
+con ~850 token di fonti numerate. Le risposte citano [n]; ogni citazione porta giorno, ora e riga
+della trascrizione, e nell'app apre la conversazione in quel punto (pressione lunga: la nota). Se
+niente nelle fonti è pertinente risponde "Non ho trovato nulla" senza caricare il modello.
+Tempi in `~/OmiArchive/cache/ask-log.jsonl` (senza il testo delle risposte).
+
+Latenza misurata via Tailscale con domande nuove: primo testo 2,5–3,0 s, risposta completa
+2,9–4,0 s (la ricerca ~50 ms; il resto è il prefill del 4B). Di notte una domanda sospende
+l'organizzazione e carica il 4B in ~4 s.
 
 ## Output per altre app
 

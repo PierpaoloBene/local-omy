@@ -43,7 +43,7 @@ MIN_SCORE = 0.010
 # relevant only if the full-text query matched it or its cosine is at least COS_MIN.
 COS_MIN = 0.50
 K = 8
-CONTEXT_CHARS = int(1200 * 3.2)  # ~1,200 tokens of sources
+CONTEXT_CHARS = int(850 * 3.2)  # ~850 tokens of sources: prefill dominates the latency (~500 tok/s)
 MAX_SOURCE_CHARS = 700
 SNIPPET = 200
 MAX_HISTORY = 8  # messages = 4 turns
