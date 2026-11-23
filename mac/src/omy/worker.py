@@ -13,6 +13,7 @@ Its state goes to cache/worker.json (read by omy jobs and the receiver).
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import os
@@ -41,6 +42,14 @@ ORGANIZE_COOLDOWN = 12 * 3600.0
 HEAVY = ("organize", "diarize")
 DEFAULT_WINDOW = "01:00-07:00"
 JOB_RETRY_S = 300.0
+BUSY_RETRY_S = 60.0       # the transcribe lock was taken by somebody else
+PROC_STOP_WAIT = 10.0     # terminate, then kill a job subprocess after this
+HEARTBEAT_FRESH = 900.0   # the worker counts as alive for 15 min after a status write
+BATCH_BACKOFF = (300.0, 6 * 3600.0)
+
+
+class Busy(Exception):
+    """A job subprocess found cache/.transcribe.lock taken."""
 
 
 def log(msg: str) -> None:
@@ -66,6 +75,12 @@ def on_ac() -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return "AC Power" in out
+
+
+def heartbeat_fresh(max_age: float = HEARTBEAT_FRESH) -> bool:
+    """Whether a worker wrote its status within max_age seconds (cache/worker.json)."""
+    hb = read_status().get("heartbeat")
+    return isinstance(hb, (int, float)) and 0 <= time.time() - hb < max_age
 
 
 def spawn_job(kind: str, key: str) -> subprocess.Popen:
@@ -106,6 +121,8 @@ class Worker:
         self.state = "starting"
         self.last_error: str | None = None
         self.guard_thread: threading.Thread | None = None
+        self.batch_failures = 0
+        self.batch_retry_at = 0.0
 
     # --- what may run -------------------------------------------------------------
 
@@ -134,22 +151,31 @@ class Worker:
         self.scan_due = False
         out = {"transcribe": 0, "diarize": 0, "organize": 0}
 
-        def add(kind: str, key: str) -> bool:
+        gave_up: set[str] = set()
+
+        def add(kind: str, key: str, input_hash: str | None = None) -> bool:
+            if jobs.gave_up(kind, key, input_hash):
+                gave_up.add(key)  # failed for good on this very input
+                return False
             if jobs.recent(kind, key, "failed", COOLDOWN["failed"]) or jobs.recent(kind, key, "done", COOLDOWN["done"]):
                 return False
-            jobs.enqueue(kind, key)
+            jobs.enqueue(kind, key, input_hash=input_hash)
             return True
+
+        def segments_hash(session) -> str:
+            return hashlib.sha256(",".join(x.id for x in session.segments).encode()).hexdigest()
 
         if not feature_on("auto_transcribe"):
             return out
         days = transcribe.pending_days()
         todo, still_open = transcribe.plan(days)
         for session, _prior in todo:
-            out["transcribe"] += add("transcribe", session.id)
+            out["transcribe"] += add("transcribe", session.id, segments_hash(session))
         waiting = {s.id for s, _ in todo}
         for session in transcribe._to_diarize(days, still_open):
-            out["diarize"] += add("diarize", session.id)
-            waiting.add(session.id)
+            out["diarize"] += add("diarize", session.id, segments_hash(session))
+            if session.id not in gave_up:  # a diarization that failed for good does not hold the note back
+                waiting.add(session.id)
         out["organize"] = self._scan_organize(days, set(still_open) | waiting)
         return out
 
@@ -170,7 +196,10 @@ class Worker:
                     continue
                 try:
                     if organize.needs_organize(session.id):
-                        jobs.enqueue("organize", session.id)
+                        h = organize.input_hash(session.id) if hasattr(organize, "input_hash") else None
+                        if jobs.gave_up("organize", session.id, h):
+                            continue
+                        jobs.enqueue("organize", session.id, input_hash=h)
                         n += 1
                 except Exception as e:  # one bad session must not stop the scan
                     log(f"needs_organize {session.id}: {e}")
@@ -233,6 +262,9 @@ class Worker:
                        "render": self.run_render, "index": self.run_index}[job.kind]
             handler(job)
             jobs.finish(job.id)
+        except Busy:
+            log(f"{job.kind} {job.key}: the transcription lock is busy, again in {BUSY_RETRY_S:.0f} s")
+            jobs.requeue(job.id, BUSY_RETRY_S)
         except models.Preempted:
             log(f"{job.kind} {job.key} preempted, back in the queue")
             jobs.requeue(job.id)
@@ -251,16 +283,21 @@ class Worker:
             self.write_status()
 
     def run_subprocess(self, job: jobs.Job) -> None:
+        from omy import transcribe
+        if self.preempted:
+            raise models.Preempted("interrupted")
         if job.kind == "diarize":
             models.release_all()  # pyannote needs the memory
         proc = self.proc = spawn_job(job.kind, job.key)
         while proc.poll() is None:
-            if self.stopping:
+            if self.stopping or (self.preempted and job.kind == "diarize"):
                 proc.terminate()
             time.sleep(0.2)
         err = _tail(proc)
         if self.preempted:
             raise models.Preempted("interrupted")
+        if proc.returncode == transcribe.BUSY_EXIT:
+            raise Busy()
         if proc.returncode != 0:
             raise RuntimeError(f"exit code {proc.returncode}" + (f": {err}" if err else ""))
 
@@ -269,8 +306,10 @@ class Worker:
         if not job.force and hasattr(organize, "needs_organize") and not organize.needs_organize(job.key):
             return
         models.check_preempt()
+        if self.preempted or models.chat_active():
+            raise models.Preempted("a chat question arrived")
         base = models.ensure("organizer")
-        if self.preempted:
+        if self.preempted or models.chat_active():
             raise models.Preempted("a chat question arrived")
         kwargs = {"force": True} if job.force and "force" in inspect.signature(organize.organize_session).parameters else {}
         organize.organize_session(job.key, base, **kwargs)
@@ -302,21 +341,58 @@ class Worker:
             BATCH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             BATCH.write_text(json.dumps([*b, key]))
 
+    def _drop_unreadable(self, batch: list[str]) -> list[str]:
+        """The sids of the batch whose sidecar can be read: the others are
+        dropped (and logged), so one broken note cannot hold the batch back."""
+        try:
+            from omy.brain import organize
+        except ImportError:
+            return batch
+        note_path = getattr(organize, "note_path", None)
+        if note_path is None:
+            return batch
+        ok = []
+        for sid in batch:
+            try:
+                path = note_path(sid)
+                json.loads(path.read_text())
+                ok.append(sid)
+            except Exception as e:
+                log(f"batch: the note of {sid} is unreadable ({e}), dropped")
+        return ok
+
     def finalize_batch(self) -> None:
         """When no organize job is left (or none may run now): links,
-        entity pages and indexes of the notes just written."""
+        entity pages and indexes of the notes just written. A failure is
+        retried with a backoff (5 min, doubling, up to 6 h)."""
         batch = self.batch()
         if not batch or (jobs.pending(["organize"]) > 0 and self.organize_ok()):
             return
+        if time.time() < self.batch_retry_at:
+            return
+        kept = self._drop_unreadable(batch)
+        if kept != batch:
+            if kept:
+                BATCH.write_text(json.dumps(kept))
+            else:
+                BATCH.unlink(missing_ok=True)
+            batch = kept
+            if not batch:
+                return
         try:
             from omy.brain import vault
             vault.update_links(batch)
             vault.render_entities(batch)
             vault.render_indexes()
         except Exception as e:
-            log(f"vault batch failed: {e}")
+            first, top = BATCH_BACKOFF
+            wait = min(first * 2 ** self.batch_failures, top)
+            self.batch_failures += 1
+            self.batch_retry_at = time.time() + wait
+            log(f"vault batch failed (attempt {self.batch_failures}), again in {wait / 60:.0f} min: {e}")
             self.last_error = f"vault batch: {e}"
             return
+        self.batch_failures, self.batch_retry_at = 0, 0.0
         BATCH.unlink(missing_ok=True)
         jobs.enqueue("index", "all")
 
@@ -330,20 +406,40 @@ class Worker:
         if not models.chat_active():
             return
         job = self.current
-        if job is not None and job.kind in HEAVY and not self.preempted:
-            self.preempted = True
-            log(f"chat question: interrupting {job.kind} {job.key}")
-            proc = self.proc
-            if job.kind == "diarize" and proc is not None:
-                proc.terminate()
+        if job is not None and job.kind in HEAVY:
+            if not self.preempted:
+                self.preempted = True
+                log(f"chat question: interrupting {job.kind} {job.key}")
+            if job.kind == "organize":
+                # Without any lock: the main thread may be inside ensure(), loading
+                # the organizer; that raises Preempted. Repeated until the job is
+                # over, in case the abort came before ensure() started.
+                models.abort("organizer")
             else:
-                models.release("organizer")
+                proc = self.proc
+                if proc is None:
+                    return  # not spawned yet: run_subprocess sees `preempted`
+                self.stop_proc(proc)
         if models.available("chat") and models.state()["loaded"] != "chat" and time.time() >= self.chat_retry_at:
             try:
                 models.ensure("chat")
             except models.ModelError as e:
                 log(f"chat model: {e}")
                 self.chat_retry_at = time.time() + CHAT_RETRY
+
+    def stop_proc(self, proc) -> None:
+        """terminate, wait up to PROC_STOP_WAIT, then kill."""
+        if proc.poll() is not None:
+            return
+        proc.terminate()
+        deadline = time.monotonic() + PROC_STOP_WAIT
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if proc.poll() is None:
+            log("job subprocess did not stop, killing it")
+            proc.kill()
+            while proc.poll() is None:
+                time.sleep(0.05)
 
     def _guard_loop(self) -> None:
         while not self.stopping:
@@ -378,8 +474,15 @@ class Worker:
         self.stopping = True
         self.preempted = True  # what is running goes back in the queue, not to failed
         self.wake_event.set()
-        if self.proc is not None:
-            self.proc.terminate()
+        # launchd gives a few seconds: the llama-server recorded in models.json
+        # dies now (plain kill, no locks), whatever the main thread is doing.
+        try:
+            models.abort()
+        except Exception:
+            pass
+        proc = self.proc
+        if proc is not None:
+            proc.terminate()
 
     def run(self) -> None:
         signal.signal(signal.SIGUSR1, lambda *_: (setattr(self, "scan_due", True), self.wake_event.set()))

@@ -28,8 +28,10 @@ import math
 import os
 import re
 import stat
+import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -491,13 +493,34 @@ def create_app(config: Config) -> FastAPI:
 
     # Asks the worker (omy worker) to scan for sessions to transcribe now,
     # without waiting for its next scan; GET /v1/transcripts shows the progress.
+    # If the worker's heartbeat is stale or missing, it starts `omy transcribe
+    # --pending` itself, as before the worker existed.
+    transcribing: list[subprocess.Popen] = []
+
+    def fallback_transcribe() -> dict:
+        if transcribing and transcribing[0].poll() is None:
+            return {"started": False, "running": True}
+        log_path = Path("~/Library/Logs/local-omy-periodic.log").expanduser()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        logfile = open(log_path, "ab")
+        try:
+            proc = subprocess.Popen([sys.executable, "-m", "omy.cli", "--json", "transcribe", "--pending"],
+                                    stdin=subprocess.DEVNULL, stdout=logfile, stderr=logfile, env=omy_env)
+        finally:
+            logfile.close()
+        transcribing[:] = [proc]
+        threading.Thread(target=proc.wait, daemon=True).start()
+        return {"started": True, "running": True}
+
     @app.post("/v1/transcribe")
     async def transcribe_now(request: Request):
         if not _authorized(request, config.token):
             return _error(401, "unauthorized")
 
         def ask() -> dict:
-            from omy import jobs, transcribe
+            from omy import jobs, transcribe, worker
+            if not worker.heartbeat_fresh():
+                return fallback_transcribe()
             busy = transcribe.progress()["running"] or jobs.pending(["transcribe", "diarize"]) > 0
             jobs.wake()
             return {"started": not busy, "running": True}

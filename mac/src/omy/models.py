@@ -63,6 +63,10 @@ class Preempted(Exception):
 _proc: subprocess.Popen | None = None
 _mutex = threading.RLock()
 _heavy_started: float = 0.0
+# What abort() acts on without the mutex: the server being started or running
+# (role, pid), and when each role was last aborted (monotonic).
+_active: tuple[str, int] | None = None
+_aborted: dict[str, float] = {}
 
 
 def log(msg: str) -> None:
@@ -180,7 +184,8 @@ def _stop_pid(pid: int, proc: subprocess.Popen | None = None) -> None:
 
 
 def _stop() -> None:
-    global _proc
+    global _proc, _active
+    _active = None
     st = state()
     proc, _proc = _proc, None
     pid = proc.pid if proc is not None else st["pid"]
@@ -228,7 +233,8 @@ class _FileLock:
 def ensure(role: str) -> str:
     """The base URL of the llama-server of this role, ready: any other role is
     stopped first, then it is started (if needed) and waited for."""
-    global _proc
+    global _proc, _active
+    entered = time.monotonic()
     if role not in MODELS:
         raise ModelError(f"unknown role {role!r}")
     with _mutex, _FileLock():
@@ -245,11 +251,16 @@ def ensure(role: str) -> str:
         LOG.parent.mkdir(parents=True, exist_ok=True)
         with LOG.open("ab") as out:
             _proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+        _active = (role, _proc.pid)
         _write_state({"role": None, "pid": _proc.pid, "port": MODELS[role]["port"], "starting": role})
         deadline = time.monotonic() + HEALTH_TIMEOUT
         while True:
+            if _aborted.get(role, 0.0) > entered:
+                _stop()
+                raise Preempted(f"loading {role} aborted")
             if _proc.poll() is not None:
                 code, _proc = _proc.returncode, None
+                _active = None
                 _write_state({"role": None, "pid": None, "port": None})
                 raise ModelError(f"llama-server {role} exited with code {code}")
             if _healthy(role):
@@ -258,9 +269,41 @@ def ensure(role: str) -> str:
                 _stop()
                 raise ModelError(f"llama-server {role} not ready after {HEALTH_TIMEOUT:.0f} s")
             time.sleep(0.25)
+        if _aborted.get(role, 0.0) > entered:
+            _stop()
+            raise Preempted(f"loading {role} aborted")
         _write_state({"role": role, "pid": _proc.pid, "port": MODELS[role]["port"], "since": time.time()})
         log(f"{role} ready on port {MODELS[role]['port']}")
         return base_url(role)
+
+
+def abort(role: str | None = None) -> bool:
+    """Kill the llama-server of this role (any, if None), running or still
+    loading, WITHOUT the mutex or the file lock: they may be held by the very
+    ensure() that is loading it, and that ensure() raises Preempted. For the
+    guard (a question arrived) and the SIGTERM handler. Returns whether
+    there was a process to kill."""
+    now = time.monotonic()
+    for r in (MODELS if role is None else [role]):
+        _aborted[r] = now
+    pid = None
+    active = _active
+    if active is not None and (role is None or active[0] == role):
+        pid = active[1]
+    else:
+        try:
+            st = json.loads(STATE.read_text())
+            if role is None or st.get("role") == role or st.get("starting") == role:
+                pid = st.get("pid")
+        except (OSError, ValueError):
+            pass
+    if not pid or not _alive(pid):
+        return False
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
 
 
 def release(role: str) -> None:

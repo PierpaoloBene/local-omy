@@ -17,8 +17,10 @@ from omy_receiver.l10n import tr
 
 
 def periodic() -> dict:
-    """Hourly job (LaunchAgent): renew the iPhone app when needed, then
-    transcribe the sessions closed since the last run."""
+    """DEPRECATED (the worker replaces it): renew the iPhone app when needed,
+    then, only if the worker is not alive, transcribe the sessions closed since
+    the last run. With a fresh worker heartbeat it does no transcription or
+    diarization at all; otherwise it holds the same lock as the worker's jobs."""
     print(f"--- {datetime.now().isoformat(timespec='seconds')} periodic", file=sys.stderr)
     result: dict = {}
     try:
@@ -34,25 +36,33 @@ def periodic() -> dict:
     if not feature_on("auto_transcribe"):
         result["transcribe"] = {"skipped": "auto_transcribe off"}
         return result
+    from omy import worker
+    if worker.heartbeat_fresh():
+        result["transcribe"] = {"skipped": "the worker is running"}
+        return result
     try:
         result["transcribe"] = transcribe.transcribe(transcribe.pending_days())
         if result["transcribe"]["failed"]:
             n = len(result["transcribe"]["failed"])
             iphone.notify(tr(f"Trascrizione non riuscita per {n} sessioni", f"Transcription failed for {n} sessions"))
+    except transcribe.Busy as e:
+        result["transcribe"] = {"skipped": str(e)}
     except transcribe.TranscribeError as e:
         result["transcribe"] = {"error": str(e)}
     return result
 
 
 def organize(since: date, force: bool = False, now: bool = False) -> dict:
-    """Queue an organize job for every transcribed session since this day."""
+    """Queue an organize job for every transcribed session since this day. They
+    run now, whatever the time and the power; notes that are up to date are
+    skipped, unless force."""
     from omy import jobs
     from omy.sessions import recorded_days, sessions_for_day
     queued = []
     for day in (d for d in recorded_days() if d >= since):
         for session in sessions_for_day(day):
             if transcribe._load_doc(session) is not None:
-                jobs.enqueue("organize", session.id, force=force)
+                jobs.enqueue("organize", session.id, force=force, ignore_window=True)
                 queued.append(session.id)
     if now:
         jobs.wake()
@@ -163,10 +173,11 @@ def main() -> int:
         .add_subparsers(dest="action", required=True)
     for name in ("transcribe", "diarize"):
         job.add_parser(name, help=f"{name} one session").add_argument("session")
-    og = sub.add_parser("organize", help="queue the second-brain notes of the sessions since a day")
+    og = sub.add_parser("organize", help="queue the second-brain notes of the sessions since a day; "
+                    "they run now, whatever the time of day and the power")
     og.add_argument("--since", type=date.fromisoformat, required=True, help="YYYY-MM-DD (local day)")
     og.add_argument("--force", action="store_true",
-                    help="redo notes that are up to date, whatever the time of day and the power")
+                    help="also redo notes that are up to date (without it they are skipped)")
     og.add_argument("--now", action="store_true", help="wake the worker now")
     sub.add_parser("jobs", help="the job queue and the worker")
 
@@ -193,7 +204,7 @@ def main() -> int:
             print(json.dumps({"error": str(e)}))
         else:
             print(f"omy: {e}", file=sys.stderr)
-        return 1
+        return transcribe.BUSY_EXIT if args.cmd == "job" and isinstance(e, transcribe.Busy) else 1
 
     if args.json:
         print(json.dumps(result))
