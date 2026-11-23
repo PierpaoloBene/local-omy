@@ -80,6 +80,8 @@ def full_response():
             {"chi": "Rosalinda", "cosa": "chiamare Mario", "verso_chi": "null", "scadenza_testo": "domani",
              "refs": ["P2"]},
             {"chi": "Io", "cosa": "fantasma", "verso_chi": None, "scadenza_testo": None, "refs": ["P99"]},
+            {"chi": "Io", "cosa": "fare tutto con modelli locali", "verso_chi": None, "scadenza_testo": None,
+             "refs": ["P1"]},
             {"chi": "Io", "cosa": "dal video", "verso_chi": None, "scadenza_testo": None, "refs": ["P4"]}],
         date_ed_eventi_citati=[{"testo_data": "il 3 dicembre", "evento": "cena", "refs": ["P3"]},
                                {"testo_data": "stasera", "evento": "boh", "refs": ["P3"]}],
@@ -110,7 +112,7 @@ def test_single_part_note_and_post_checks():
     assert note["riassunto"] == "Hai promesso il preventivo."
     assert note["parti"] == [{"da": "P1", "a": "P5", "riassunto": "Hai promesso il preventivo."}]
     assert note["collegamenti"] == [] and note["elaborazione"]["n_parti"] == 1
-    assert note["elaborazione"]["prompt_version"] == 1 and note["elaborazione"]["input_hash"] == organize.input_hash(SID)
+    assert note["elaborazione"]["prompt_version"] == 2 and note["elaborazione"]["input_hash"] == organize.input_hash(SID)
     # participants: the media voice is not one
     assert [(p["label"], p["person"], p["nome_al_momento"]) for p in note["partecipanti"]] == [
         ("SPEAKER_00", "me", "Io"), ("SPEAKER_01", "p1", "Rosalinda"), ("SPEAKER_02", None, "Persona 1")]
@@ -180,7 +182,7 @@ def test_trivial_session_is_noise_without_llm():
     path, srv = run(lambda b, n: part())
     assert srv.calls == []
     note = load(path)
-    assert note["qualita"] == "rumore" and note["titolo"] == "Sì, ok."
+    assert note["qualita"] == "rumore" and note["titolo"] == "Frammento 08:00"
     assert note["punti_chiave"] == [] and note["impegni_e_todo"] == [] and note["ascoltato"] == []
     assert note["entita"] == {"persone": [], "luoghi": [], "organizzazioni": [], "progetti": []}
     assert note["elaborazione"]["n_parti"] == 0 and not organize.needs_organize(SID)
@@ -325,3 +327,39 @@ def test_split_parts_boundaries():
     parts = organize.split_parts(lines * 6)
     assert parts[0][0] == 0 and parts[-1][1] == 59
     assert all(b[0] == a[1] + 1 for a, b in zip(parts, parts[1:]))
+
+
+def test_vague_commitments_dropped():
+    for cosa in ("abituarci piano piano", "fare tutto con modelli locali", "vedere in poi", "chiamare"):
+        assert organize._vague_cosa(cosa)
+    for cosa in ("andare in banca", "mandare il preventivo", "prenotare il tavolo"):
+        assert not organize._vague_cosa(cosa)
+
+
+def test_duration_events_and_month_dates():
+    setup_basic()
+    resp = part(date_ed_eventi_citati=[
+        {"testo_data": "da agosto", "evento": "abiti qui", "refs": ["P3"]},
+        {"testo_data": "da quattro anni", "evento": "lavori lì", "refs": ["P3"]},
+        {"testo_data": "settembre", "evento": "la vacanza", "refs": ["P3"]},
+        {"testo_data": "il 3 dicembre", "evento": "cena", "refs": ["P3"]}])
+    path, _ = run(lambda b, n: resp)
+    ev = load(path)["date_ed_eventi_citati"]
+    assert [(e["testo_data"], e["data"]) for e in ev] == [("settembre", "2026-09-01"), ("il 3 dicembre", "2026-12-03")]
+
+
+def test_fuzzy_person_names_and_anonymous_labels():
+    setup_basic()
+    resp = part(
+        entita={"persone": [{"nome": "Rosolinda", "refs": ["P2"]}, {"nome": "Sconosciuto 3", "refs": ["P2"]},
+                            {"nome": "Unknown 1", "refs": ["P2"]}, {"nome": "Marta", "refs": ["P2"]}],
+                "luoghi": [{"nome": "Savona", "refs": ["P2"]}], "organizzazioni": [], "progetti": []},
+        impegni_e_todo=[{"chi": "Rosolinda", "cosa": "chiamare Mario", "verso_chi": "Rosolinda",
+                         "scadenza_testo": None, "refs": ["P2"]}],
+        tag=["Cena", "savona", "rosalinda", "a", "b", "c", "d", "e", "f"])
+    path, _ = run(lambda b, n: resp)
+    note = load(path)
+    assert [(p["nome"], p["person_id"]) for p in note["entita"]["persone"]] == [("Rosalinda", "p1"), ("Marta", None)]
+    t = note["impegni_e_todo"][0]
+    assert (t["chi"], t["chi_id"], t["verso_chi"], t["verso_chi_id"]) == ("Rosalinda", "p1", "Rosalinda", "p1")
+    assert note["tag"] == ["cena", "a", "b", "c", "d", "e"]

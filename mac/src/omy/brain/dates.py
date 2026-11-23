@@ -54,6 +54,32 @@ def _norm(text: str) -> str:
     return t
 
 
+MAX_DAYS = 396  # ~13 months: further from the reference than this is not a plausible date
+_BARE_MONTH = re.compile(r"^(?:(?:mese di|in|a|di)\s+)?(" + "|".join(MONTHS) + r")$")
+
+
+def is_duration(text: str) -> bool:
+    """"da agosto", "da quattro anni", "per mesi": a duration or a "since", not a date."""
+    t = " ".join(fold(text).split())
+    if t.startswith("da ") or t == "da":
+        return True
+    return bool(re.search(r"\b(anni|mesi)\b", t)) and not re.search(r"\b(fa|tra|fra|entro)\b", t)
+
+
+def bare_month(text: str) -> int | None:
+    """1-12 when text is just a month name ("agosto", "il mese di settembre"), else None."""
+    t = " ".join(fold(text).split())
+    t = re.sub(r"^(?:il|lo|la|l|del|nel|di|a|in|entro|per)\s+", "", t)
+    m = _BARE_MONTH.match(t)
+    return MONTHS.index(m[1]) + 1 if m else None
+
+
+def _month_date(month: int, today: date, future: bool) -> date:
+    if future:
+        return date(today.year if month > today.month else today.year + 1, month, 1)
+    return date(today.year if month < today.month else today.year - 1, month, 1)
+
+
 def is_past(text: str) -> bool:
     return bool(PAST_HINT.search(fold(text)))
 
@@ -149,15 +175,20 @@ def resolve(text: str, reference: datetime, prefer: str | None = None) -> date |
     "past"; None = "past" if the text says fa/scorso/ieri/..., else "future"."""
     if not isinstance(text, str) or not text.strip():
         return None
+    if is_duration(text):
+        return None
     t = _norm(text)
     if not t:
         return None
     if prefer is None:
         prefer = "past" if is_past(text) else "future"
     today = reference.date()
-    got = rules(t, today, prefer == "future")
+    if (mo := bare_month(text)) is not None:
+        got = _month_date(mo, today, prefer == "future")
+    else:
+        got = rules(t, today, prefer == "future")
     if got is not None:
-        return got
+        return got if abs((got - today).days) <= MAX_DAYS else None
     if VAGUE.search(t) or re.search(r"\b(pasqua|pentecoste)\b", t):
         return None
     try:
@@ -166,4 +197,6 @@ def resolve(text: str, reference: datetime, prefer: str | None = None) -> date |
         return None
     parsed = dateparser.parse(t, languages=["it"], settings={
         "RELATIVE_BASE": reference.replace(tzinfo=None), "PREFER_DATES_FROM": prefer})
-    return parsed.date() if parsed else None
+    if not parsed or abs((parsed.date() - today).days) > MAX_DAYS:
+        return None
+    return parsed.date()

@@ -15,6 +15,20 @@ from omy.config import ARCHIVE
 from omy.diarize import load_people, my_name
 
 
+ANON_RE = re.compile(r"^(persona|sconosciut[oa]|person|unknown|speaker|stranger)\b(\s+\d+)?$", re.I)
+
+
+def unpageable(person: str | None, name: str | None, me: str | None = None) -> bool:
+    """True for the user and for unnamed per-session labels ("Persona 2", "Unknown 1"): they get no
+    persone page and are shown as plain text."""
+    if person == "me":
+        return True
+    n = (name or "").strip()
+    if not n or ANON_RE.match(n):
+        return True
+    return n.casefold() in {"io", "me", (me or my_name()).casefold()}
+
+
 def current_name(person: str | None, fallback: str | None, people: dict | None = None,
                  me: str | None = None) -> str | None:
     """The name of person ("me", a person id) today; `fallback` when the id is

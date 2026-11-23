@@ -24,10 +24,11 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from omy.brain import names as names_mod
 from omy.brain import NOTES, SCHEMA_VERSION, WORK, confidence, dates, llm
 from omy.config import ARCHIVE
 
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 MODEL = "Qwen3.8-27B-GSQ-RCO-IQ2_XS-mtp"  # fallback when omy.models cannot tell
 CARRY = 0.8  # similarity of `cosa` above which a re-organized commitment is the same one as before
 HERE = Path(__file__).resolve().parent
@@ -47,7 +48,12 @@ REDUCE_SCHEMA = {
 }
 REF_RE = re.compile(r"^P([0-9]+)$")
 NO_ONE = {"", "null", "none", "nessuno", "n/a", "?"}
-ANON_RE = re.compile(r"^(persona|sconosciuto)\b(\s+\d+)?$", re.I)
+ANON_RE = names_mod.ANON_RE
+FUZZY = 0.75  # similarity of a spoken name to a known person's name to take it as the same (ASR misspellings)
+MAX_TAGS = 6
+_V = r"(?:fare|vedere|andare|provare|pensare|abituar\w+|continuare|capire|usare|cercare)"
+VAGUE_COSA = re.compile(rf"^{_V}(?:\s+(?:tutto|qualcosa|cose|piano|poi|in|dopo|meglio|ancora|cosi|bene|piu|po|un|di|a))+$"
+                        rf"|^{_V}\s+tutto\b")
 APP_SUFFIX = re.compile(r"\s*\([^)]*\)$")
 
 
@@ -428,12 +434,15 @@ class Checker:
         self.s = s
         self.my = diarize.my_name()
         self.names: dict[str, str] = {_fold(self.my): "me", "io": "me"}
+        self.canon: dict[str, str] = {"me": self.my}
         for p in s.participants():
             if p["person"]:
                 self.names[_fold(p["nome_al_momento"])] = p["person"]
+                self.canon.setdefault(p["person"], p["nome_al_momento"])
         for pid, p in diarize.load_people().items():
             if p.get("name"):
                 self.names[_fold(APP_SUFFIX.sub("", p["name"]))] = pid
+                self.canon[pid] = APP_SUFFIX.sub("", p["name"])
         self.paras = s.paragraphs()
         self.dropped = 0
 
@@ -453,10 +462,56 @@ class Checker:
             return self.names[key]
         first = key.split()[0] if key.split() else ""
         hits = {pid for n, pid in self.names.items() if n and (n.split()[0] == first or n == first)} if first else set()
-        return hits.pop() if len(hits) == 1 else None
+        if len(hits) == 1:
+            return hits.pop()
+        return self.fuzzy(key)
+
+    def fuzzy(self, key: str) -> str | None:
+        """A name misspelled by the transcription ("Rosolinda") -> the known person it is closest to."""
+        if len(key) < 4:
+            return None
+        best: dict[str, float] = {}
+        for n, pid in self.names.items():
+            for cand in {n, n.split()[0] if n.split() else n}:
+                if len(cand) >= 4 and cand[0] == key[0]:
+                    r = _lev_ratio(key, cand)
+                    if r >= FUZZY:
+                        best[pid] = max(best.get(pid, 0), r)
+        if not best:
+            return None
+        top = max(best.values())
+        winners = [pid for pid, r in best.items() if r == top]
+        return winners[0] if len(winners) == 1 else None
+
+    def display(self, name: str, pid: str | None) -> str:
+        """The canonical name when `name` was matched only by similarity, else the name as said."""
+        if pid and pid != "me" and pid in self.canon:
+            key = _fold(APP_SUFFIX.sub("", name.strip()))
+            known = {n for n, p in self.names.items() if p == pid}
+            first = {n.split()[0] for n in known if n.split()}
+            if key not in known and key not in first:
+                return self.canon[pid]
+        return name
 
     def row(self, ref: str) -> dict:
         return self.s.rows[int(ref[1:]) - 1]
+
+
+def _lev_ratio(a: str, b: str) -> float:
+    """1 - Levenshtein distance / longest length."""
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return 1 - prev[-1] / max(len(a), len(b), 1)
+
+
+def _vague_cosa(cosa: str) -> bool:
+    """Not a concrete commitment: a single word, or a bare vague verb phrase ("fare tutto", "vedere in poi")."""
+    n = _norm_text(cosa)
+    return len(n.split()) < 2 or bool(VAGUE_COSA.match(n))
 
 
 def _check(s: Session, merged: dict) -> dict:
@@ -486,6 +541,8 @@ def _check(s: Session, merged: dict) -> dict:
             pid = c.person_id(name) if kind == "persone" else None
             if kind == "persone" and (ANON_RE.match(name) or pid == "me"):
                 continue
+            if pid:
+                name = c.display(name, pid)
             rows.append({"nome": name, **({"person_id": pid} if kind == "persone" else {}), "refs": refs,
                          "conf": i.get("conf")})
         ent[kind] = _merge(rows, lambda a, b: _fold(a["nome"]) == _fold(b["nome"]))
@@ -494,18 +551,23 @@ def _check(s: Session, merged: dict) -> dict:
     todo = []
     for i, refs in keep(merged["impegni_e_todo"]):
         cosa = _clean(i.get("cosa"), 240)
-        if not cosa:
+        if not cosa or _vague_cosa(cosa):
             continue
         chi, chi_id = _label(i.get("chi"), 60), c.person_id(i.get("chi"))
+        if chi and chi_id:
+            chi = c.display(chi, chi_id)
         # Who promised is who spoke: the named (or your own) speaker of a cited paragraph.
         named = [c.row(r) for r in refs if c.row(r).get("person")]
         if named and not any(r["person"] == chi_id for r in named):
             chi, chi_id = APP_SUFFIX.sub("", named[0]["speaker"] or ""), named[0]["person"]
         verso = _label(i.get("verso_chi"), 60)
+        verso_id = c.person_id(verso)
+        if verso and verso_id:
+            verso = c.display(verso, verso_id)
         ref_dt = datetime.fromisoformat(c.paras[refs[0]]["inizio"])
         sc = _label(i.get("scadenza_testo"), 60)
         d = dates.resolve(sc, ref_dt, prefer="future") if sc else None
-        todo.append({"chi": chi, "chi_id": chi_id, "verso_chi": verso, "verso_chi_id": c.person_id(verso),
+        todo.append({"chi": chi, "chi_id": chi_id, "verso_chi": verso, "verso_chi_id": verso_id,
                      "cosa": cosa, "scadenza_testo": sc, "scadenza": d.isoformat() if d else None,
                      "stato": "aperto", "refs": refs, "conf": i.get("conf"),
                      "uid": hashlib.sha1(f"{s.id}|{refs[0]}|{cosa}".encode()).hexdigest()[:8]})
@@ -518,7 +580,13 @@ def _check(s: Session, merged: dict) -> dict:
         txt, ev = _label(i.get("testo_data"), 60), _clean(i.get("evento"), 200)
         if not txt:
             continue
-        d = dates.resolve(txt, datetime.fromisoformat(c.paras[refs[0]]["inizio"]))
+        ref_dt = datetime.fromisoformat(c.paras[refs[0]]["inizio"])
+        if dates.is_duration(txt):  # "da agosto", "da quattro anni": not a date; kept only for a dated event
+            if not ev or dates.resolve(ev, ref_dt) is None:
+                continue
+            d = None
+        else:
+            d = dates.resolve(txt, ref_dt, prefer="past" if dates.bare_month(txt) else None)
         evs.append({"testo_data": txt, "data": d.isoformat() if d else None, "evento": ev, "refs": refs,
                     "conf": i.get("conf")})
     out["date_ed_eventi_citati"] = _merge(
@@ -530,10 +598,11 @@ def _check(s: Session, merged: dict) -> dict:
             heard.append({"riassunto": _clean(i["riassunto"]), "app": (c.row(refs[0]).get("via") or {}).get("app"),
                           "refs": refs})
     out["ascoltato"] = heard
-    seen, tags = set(), []
+    seen = {_fold(e["nome"]) for kind in ("persone", "luoghi") for e in ent[kind]}
+    tags = []
     for t in merged["tag"]:
-        t = _clean(t, 40)
-        if t and _fold(t) not in seen:
+        t = _clean(t, 40).lower()
+        if t and _fold(t) not in seen and len(tags) < MAX_TAGS:
             seen.add(_fold(t))
             tags.append(t)
     out["tag"] = tags
@@ -600,8 +669,7 @@ def _base(s: Session) -> dict:
 
 
 def _trivial(s: Session) -> dict:
-    first = next((r for r in s.rows if not _is_media(r)), s.rows[0])
-    return {"titolo": _clean(first["text"], 50) or "Rumore", "qualita": "rumore", "riassunto": "", "parti": [],
+    return {"titolo": f"Frammento {s.rows[0]['start'][11:16]}", "qualita": "rumore", "riassunto": "", "parti": [],
             "punti_chiave": [], "entita": {"persone": [], "luoghi": [], "organizzazioni": [], "progetti": []},
             "impegni_e_todo": [], "date_ed_eventi_citati": [], "ascoltato": [], "tag": []}
 

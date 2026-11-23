@@ -80,7 +80,7 @@ def test_note_rendering(three):
     t = md.read_text()
     assert t.startswith("---\n")
     assert f'id: "{A}"' in t and "data: 2026-11-21" in t
-    assert 'partecipanti: ["[[persone/Anna]]", "[[persone/Io]]"]' in t
+    assert 'partecipanti: ["Io", "[[persone/Anna]]"]' in t
     assert 'luogo: "[[luoghi/Casa]]"' in t and "da_rivedere: true" in t
     assert "## Riassunto" in t and "## Punti chiave" in t and "## Impegni" in t
     assert "Parti" not in t  # one part only
@@ -108,7 +108,7 @@ def test_rename_participant_and_move_page(three):
     page = (BRAIN / "persone" / "Rosalinda.md").read_text()
     assert 'person_id: "p_anna"' in page and 'alias: ["Anna"]' in page
     assert "mie note su lei" in page            # moved, not copied: the user's text survives
-    assert len(list((BRAIN / "persone").glob("*.md"))) == 3  # Rosalinda, Io (me), Marco
+    assert len(list((BRAIN / "persone").glob("*.md"))) == 2  # Rosalinda, Marco (no page for the user)
     assert "Mandare le foto" in page and "[18:22]" in page
     # the sidecar is untouched
     assert json.loads(three[A].read_text())["partecipanti"][1]["nome_al_momento"] == "Anna"
@@ -124,8 +124,9 @@ def test_persona_label_pinned_later(archive):
     next(NOTES.rglob("*.json")).write_text(json.dumps(p))
     vault.render_note(A)
     vault.render_entities([A])
-    assert "[[persone/Persona 2]]" in next(NOTES.rglob("*.md")).read_text()
-    assert (BRAIN / "persone" / "Persona 2.md").is_file()
+    t0 = next(NOTES.rglob("*.md")).read_text()
+    assert "[[persone/Persona 2]]" not in t0 and '"Persona 2"' in t0 and "[[persone/Io]]" not in t0
+    assert not (BRAIN / "persone" / "Persona 2.md").exists() and not (BRAIN / "persone" / "Io.md").exists()
     d = archive / "transcripts" / "2026-11-21" / "speakers"
     d.mkdir(parents=True)
     (d / f"{A}.json").write_text(json.dumps({"clusters": {"SPEAKER_02": {"name": "Marco", "person": "p_marco"}}}))
@@ -133,7 +134,7 @@ def test_persona_label_pinned_later(archive):
     t = next(NOTES.rglob("*.md")).read_text()
     assert "Marco propone un viaggio" in t and "[[persone/Marco]]" in t and "Persona 2" not in t
     assert not (BRAIN / "persone" / "Persona 2.md").exists()
-    assert 'alias: ["Persona 2"]' in (BRAIN / "persone" / "Marco.md").read_text()
+    assert (BRAIN / "persone" / "Marco.md").is_file()
 
 
 def test_merge_people(three):

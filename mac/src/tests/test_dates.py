@@ -43,3 +43,16 @@ def test_past_preference():
 
 def test_reference_is_paragraph_start():
     assert resolve("domani", datetime(2026, 12, 31, 23, 30)) == date(2027, 1, 1)
+
+
+@pytest.mark.parametrize("text", ["da agosto", "da quattro anni", "da due mesi", "tra 20 anni", "il 3 dicembre 2030"])
+def test_durations_and_far_dates_are_none(text):
+    assert resolve(text, REF) is None
+
+
+def test_bare_month():
+    assert resolve("settembre", REF, prefer="past") == date(2026, 9, 1)
+    assert resolve("il mese di settembre", REF, prefer="past") == date(2026, 9, 1)
+    assert resolve("agosto", REF, prefer="future") == date(2027, 8, 1)
+    assert resolve("dicembre", REF, prefer="future") == date(2026, 12, 1)
+    assert resolve("dicembre", REF, prefer="past") == date(2025, 12, 1)

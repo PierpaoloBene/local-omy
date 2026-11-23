@@ -38,7 +38,7 @@ dell'id sessione, `HHMM` ora locale di inizio, `slug` dal titolo (ascii, max 40)
   "collegamenti": [{"nota": "<session id>", "motivo": "persona:<id>" | "progetto:<nome>" | "entita:<nome>"}],
   "confidenza": {"media": 0.91, "minima": 0.36},
   "da_rivedere": [{"campo": "impegni_e_todo[0]", "motivo": "confidenza 0.31 < 0.40"}],
-  "elaborazione": {"modello": "Qwen3.8-27B-GSQ-RCO-IQ2_XS-mtp", "prompt_version": 1, "schema_version": 1,
+  "elaborazione": {"modello": "Qwen3.8-27B-GSQ-RCO-IQ2_XS-mtp", "prompt_version": 2, "schema_version": 1,
                    "input_hash": "<sha256>", "creato": "<iso>", "durata_s": 312.5, "n_parti": 3}
 }
 ```

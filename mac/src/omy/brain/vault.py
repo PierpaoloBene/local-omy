@@ -33,7 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 from omy.brain import BRAIN, NOTES
-from omy.brain.names import Names, current_name
+from omy.brain.names import Names, current_name, unpageable
 from omy.config import ARCHIVE
 from omy.diarize import load_people, my_name
 
@@ -476,7 +476,8 @@ class _Vault:
             ("parti", "## Parti\n\n" + items(parts) if parts else ""),
             ("collegamenti", "## Collegamenti\n\n" + items(links) if links else ""),
         ]
-        people = sorted({f'"[[persone/{_safe(p["new"])}]]"' for p in names.participants if p["new"]})
+        people = sorted({(json.dumps(p["new"], ensure_ascii=False) if unpageable(p["person"], p["new"], self.me)
+                          else f'"[[persone/{_safe(p["new"])}]]"') for p in names.participants if p["new"]})
         conf = (sc.get("confidenza") or {}).get("media")
         fm = [("id", json.dumps(sc["id"])), ("data", sc.get("data", "")),
               ("ora_inizio", sc.get("ora_inizio") or ""), ("ora_fine", sc.get("ora_fine") or ""),
@@ -535,6 +536,8 @@ class _Vault:
             e["mentions"] += mentions
 
         for p in names.participants:
+            if unpageable(p["person"], p["new"], self.me):
+                continue
             add("persone", p["new"], p["old"], p["person"], [{"refs": [], "text": "partecipante", "low": False}])
         for cat, label in (("persone", "persone"), ("luoghi", "luoghi"), ("organizzazioni", "organizzazioni"),
                            ("progetti", "progetti")):
@@ -544,7 +547,10 @@ class _Vault:
                 if not ms:
                     ms = [{"refs": refs, "text": "", "low": _low(e)}]
                 if cat == "persone":
-                    add(cat, names.name(e.get("person_id"), e.get("nome")), e.get("nome"), e.get("person_id"), ms)
+                    shown = names.name(e.get("person_id"), e.get("nome"))
+                    if unpageable(e.get("person_id"), shown, self.me):
+                        continue
+                    add(cat, shown, e.get("nome"), e.get("person_id"), ms)
                 else:
                     add(cat, rw(e.get("nome")), e.get("nome"), None, ms)
         if (sc.get("luogo") or {}).get("name"):
