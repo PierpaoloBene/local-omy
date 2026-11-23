@@ -238,16 +238,24 @@ class Worker:
             log(f"iphone renew: {e}")
 
     def idle(self) -> None:
-        """Nothing to run: keep the chat model loaded, if there is one."""
+        """Nothing to run: keep the chat model and the embedding companion loaded, if there are."""
         self.state = "idle"
-        if (not models.available("chat") or models.state()["loaded"] == "chat"
-                or time.time() < self.chat_retry_at):
+        if time.time() < self.chat_retry_at:
             return
-        try:
-            models.ensure("chat")
-        except models.ModelError as e:
-            log(f"chat model: {e}")
-            self.chat_retry_at = time.time() + CHAT_RETRY
+        for role in ("chat", "embed"):
+            if not models.available(role) or self._is_loaded(role):
+                continue
+            try:
+                models.ensure(role)
+            except models.ModelError as e:
+                log(f"{role} model: {e}")
+                self.chat_retry_at = time.time() + CHAT_RETRY
+                return
+
+    @staticmethod
+    def _is_loaded(role: str) -> bool:
+        st = models.state()
+        return st["loaded"] == role or role in st.get("companions", [])
 
     def run_job(self, job: jobs.Job) -> None:
         self.current, self.preempted = job, False
@@ -261,6 +269,8 @@ class Worker:
             handler = {"transcribe": self.run_subprocess, "diarize": self.run_subprocess, "organize": self.run_organize,
                        "render": self.run_render, "index": self.run_index}[job.kind]
             handler(job)
+            if job.kind in ("transcribe", "diarize") and not self.preempted:
+                jobs.enqueue("index", job.key)  # the new text chunks (low priority, deduplicated by the queue)
             jobs.finish(job.id)
         except Busy:
             log(f"{job.kind} {job.key}: the transcription lock is busy, again in {BUSY_RETRY_S:.0f} s")
@@ -319,13 +329,16 @@ class Worker:
     def run_render(self, job: jobs.Job) -> None:
         from omy.brain import vault
         vault.rerender_people(None if job.key == "people" else [x for x in job.key.split(",") if x])
+        jobs.enqueue("index", "all")  # a rename changes the names in the chunks
 
     def run_index(self, job: jobs.Job) -> None:
         try:
             from omy.brain import index
         except ImportError:
             return
-        index.update()
+        models.ensure("embed")
+        sessions = None if job.key == "all" else [x for x in job.key.split(",") if x]
+        index.update(sessions)
 
     # --- the batch of organized notes ---------------------------------------------------
 
@@ -394,7 +407,7 @@ class Worker:
             return
         self.batch_failures, self.batch_retry_at = 0, 0.0
         BATCH.unlink(missing_ok=True)
-        jobs.enqueue("index", "all")
+        jobs.enqueue("index", "all" if len(batch) > 50 else ",".join(batch))
 
     # --- the guard (questions during heavy work) ---------------------------------------------
 
@@ -420,12 +433,15 @@ class Worker:
                 if proc is None:
                     return  # not spawned yet: run_subprocess sees `preempted`
                 self.stop_proc(proc)
-        if models.available("chat") and models.state()["loaded"] != "chat" and time.time() >= self.chat_retry_at:
-            try:
-                models.ensure("chat")
-            except models.ModelError as e:
-                log(f"chat model: {e}")
-                self.chat_retry_at = time.time() + CHAT_RETRY
+        if time.time() >= self.chat_retry_at:
+            for role in ("chat", "embed"):  # the question's search needs the embedding companion too
+                if models.available(role) and not self._is_loaded(role):
+                    try:
+                        models.ensure(role)
+                    except models.ModelError as e:
+                        log(f"{role} model: {e}")
+                        self.chat_retry_at = time.time() + CHAT_RETRY
+                        break
 
     def stop_proc(self, proc) -> None:
         """terminate, wait up to PROC_STOP_WAIT, then kill."""
