@@ -451,7 +451,8 @@ def _person_names(persons: list[str]) -> list[str]:
 
 def search(query: str, *, day_from: str | None = None, day_to: str | None = None,
            persons: list[str] | None = None, k: int = 8) -> list[dict]:
-    """Hybrid search (BM25 + cosine, RRF k=60). Hit = the chunk's fields plus `score`."""
+    """Hybrid search (BM25 + cosine, RRF k=60). Hit = the chunk's fields plus `score`, `lexical`
+    (matched by the full-text query) and `cos` (cosine similarity, None when not in the vector top)."""
     if not INDEX_PATH.is_file():
         return []
     with closing(_connect(create=False)) as db:
@@ -470,6 +471,8 @@ def search(query: str, *, day_from: str | None = None, day_to: str | None = None
                 allowed.add(cid)
 
         lists: list[list[int]] = []
+        lexical: set[int] = set()
+        cos: dict[int, float] = {}
         q = fts_query(query)
         if q:
             try:
@@ -480,6 +483,7 @@ def search(query: str, *, day_from: str | None = None, day_to: str | None = None
                 log(f"fts query failed: {e}")
                 found = []
             lists.append([i for i in found if allowed is None or i in allowed][:TOP])
+            lexical.update(lists[-1])
 
         if len(view["ids"]):
             try:
@@ -495,10 +499,12 @@ def search(query: str, *, day_from: str | None = None, day_to: str | None = None
                     scores = np.where(mask, scores, -np.inf)
                 order = np.argsort(-scores)[:TOP]
                 lists.append([int(ids[i]) for i in order if np.isfinite(scores[i])])
+                cos.update({int(ids[i]): float(scores[i]) for i in order if np.isfinite(scores[i])})
 
         fused: dict[int, float] = {}
         for lst in lists:
             for rank, cid in enumerate(lst):
                 fused[cid] = fused.get(cid, 0.0) + 1.0 / (RRF_K + rank + 1)
         best = sorted(fused, key=lambda i: (-fused[i], rows[i]["kind"] != "nota", i))[:k]
-        return [{**rows[i], "persons": list(rows[i]["persons"]), "score": fused[i]} for i in best]
+        return [{**rows[i], "persons": list(rows[i]["persons"]), "score": fused[i],
+                 "lexical": i in lexical, "cos": cos.get(i)} for i in best]

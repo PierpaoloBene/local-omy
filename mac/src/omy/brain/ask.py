@@ -38,6 +38,9 @@ from omy.config import ARCHIVE
 
 PROMPT = Path(__file__).with_name("prompts") / "ask.md"
 MIN_SCORE = 0.010
+# The vector list always returns its nearest chunks, so RRF alone never says "nothing": a hit is
+# relevant only if the full-text query matched it or its cosine is at least COS_MIN.
+COS_MIN = 0.50
 K = 8
 CONTEXT_CHARS = int(1200 * 3.2)  # ~1,200 tokens of sources
 MAX_SOURCE_CHARS = 700
@@ -101,6 +104,14 @@ def _when(hit: dict) -> tuple[str, str]:
     except (KeyError, ValueError, TypeError):
         label = str(hit.get("day") or "")
     return label, start[11:16] if len(start) >= 16 else ""
+
+
+def relevant(hits: list[dict]) -> bool:
+    if not hits or max(h.get("score") or 0 for h in hits) < MIN_SCORE:
+        return False
+    if not any("lexical" in h or "cos" in h for h in hits):   # an index without these fields
+        return True
+    return any(h.get("lexical") or (h.get("cos") or 0) >= COS_MIN for h in hits)
 
 
 def build_context(hits: list[dict]) -> tuple[str, list[dict]]:
@@ -249,7 +260,7 @@ async def answer(question: str, history: list[dict], now: datetime) -> AsyncIter
         hits = await asyncio.to_thread(_search, question, history, rng, persons)
         timings["retrieval_ms"] = ms(t0, time.monotonic())
         n_hits = len(hits)
-        if not hits or max(h.get("score") or 0 for h in hits) < MIN_SCORE:
+        if not relevant(hits):
             not_found = True
             yield {"type": "citations", "items": []}
             yield {"type": "delta", "text": NOT_FOUND}

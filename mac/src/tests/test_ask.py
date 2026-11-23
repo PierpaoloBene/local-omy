@@ -353,3 +353,12 @@ def test_note_endpoint(client, archive):
     assert client.get("/v1/brain/note/..%2Fx", headers=AUTH).status_code in (400, 404)
     assert client.get("/v1/brain/note/abc", headers=AUTH).status_code == 400
     assert client.get(f"/v1/brain/note/{SESSION}").status_code == 401
+
+
+def test_relevant_needs_lexical_or_close_vector():
+    from omy.brain import ask
+    near = {"score": 0.016, "lexical": False, "cos": 0.31}
+    assert not ask.relevant([near])
+    assert ask.relevant([near, {"score": 0.016, "lexical": True, "cos": None}])
+    assert ask.relevant([{"score": 0.016, "lexical": False, "cos": 0.62}])
+    assert not ask.relevant([])
