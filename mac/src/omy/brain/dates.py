@@ -1,0 +1,169 @@
+"""resolve(): turns a date expression as said ("venerdì prossimo") into a date.
+
+The model never resolves dates; this code does. dateparser's Italian is thin
+("dopodomani", "tra due settimane", "il 3 dicembre" all fail), so the common
+Italian forms are handled by the rules below and dateparser only gets what is
+left (RELATIVE_BASE = start time of the cited paragraph).
+
+Choices:
+- a weekday ("venerdì", "venerdì prossimo") is its next occurrence strictly after
+  the reference day; "scorso/passato" is the latest one strictly before it;
+- "a natale" (and Capodanno, Epifania, Ferragosto, ...) is that holiday's date, the
+  next one (the previous one when the text is in the past); Pasqua is null (moves);
+- "entro fine mese" is the last day of the reference month;
+- vague expressions (stasera, estate, periodo, weekend, "mese prossimo", ...) are null.
+"""
+
+from __future__ import annotations
+
+import calendar
+import re
+import unicodedata
+from datetime import date, datetime, timedelta
+
+WEEKDAYS = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
+_DAYS = ["lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato", "domenica"]
+MONTHS = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre",
+          "ottobre", "novembre", "dicembre"]
+NUMBERS = {"un": 1, "uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5, "sei": 6, "sette": 7,
+           "otto": 8, "nove": 9, "dieci": 10, "undici": 11, "dodici": 12, "quindici": 15, "venti": 20,
+           "trenta": 30}
+HOLIDAYS = {"natale": (12, 25), "capodanno": (1, 1), "epifania": (1, 6), "ferragosto": (8, 15),
+            "santo stefano": (12, 26), "immacolata": (12, 8), "halloween": (10, 31)}
+VAGUE = re.compile(
+    r"\b(stasera|stanotte|stamattina|stamani|stasera|sera|mattina|pomeriggio|notte|estate|inverno|primavera|autunno|"
+    r"periodo|prossimamente|presto|tardi|weekend|week end|fine settimana|un giorno|qualche|poco|prossimi giorni|"
+    r"giorni scorsi|tempo|(?:mese|anno)\s+(?:prossimo|scorso|passato)|(?:prossimo|scorso|passato)\s+(?:mese|anno))\b")
+PAST_HINT = re.compile(r"\b(fa|scors[oaie]|passat[oaie]|ieri|altro ieri|l altro ieri)\b")
+_FILLER = re.compile(r"^(?:entro|per|di|da|a|il|lo|la|l|del|dal|nel|sul|verso|circa)\b\s*")
+
+
+def fold(text: str) -> str:
+    text = unicodedata.normalize("NFD", text.lower())
+    return "".join(c for c in text if not unicodedata.combining(c)).replace("'", " ").replace("’", " ").strip()
+
+
+def _num(word: str) -> int | None:
+    return int(word) if word.isdigit() else NUMBERS.get(word)
+
+
+def _norm(text: str) -> str:
+    t = " ".join(fold(text).replace(",", " ").split())
+    while (m := _FILLER.match(t)) and m.end() < len(t):
+        t = t[m.end():]
+    return t
+
+
+def is_past(text: str) -> bool:
+    return bool(PAST_HINT.search(fold(text)))
+
+
+def _next_year_date(month: int, day: int, today: date, future: bool, year: int | None = None) -> date | None:
+    try:
+        if year is not None:
+            return date(year, month, day)
+        d = date(today.year, month, day)
+        if future and d <= today and d != today:
+            d = date(today.year + 1, month, day)
+        elif not future and d > today:
+            d = date(today.year - 1, month, day)
+        return d
+    except ValueError:  # 30 February, 29 February of a common year
+        return None
+
+
+def _add_months(today: date, n: int) -> date:
+    m = today.month - 1 + n
+    y, m = today.year + m // 12, m % 12 + 1
+    return date(y, m, min(today.day, calendar.monthrange(y, m)[1]))
+
+
+def rules(t: str, today: date, future: bool) -> date | None:
+    """t is already folded and normalised."""
+    if m := re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", t):
+        try:
+            return date(int(m[1]), int(m[2]), int(m[3]))
+        except ValueError:
+            return None
+    if m := re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", t):
+        y = int(m[3]) if m[3] else None
+        if y is not None and y < 100:
+            y += 2000
+        return _next_year_date(int(m[2]), int(m[1]), today, future, y)
+    for month, name in enumerate(MONTHS, 1):
+        if m := re.search(rf"\b(\d{{1,2}})(?:\s*(?:o|°))?\s+{name}\b(?:\s+(\d{{4}}))?", t):
+            return _next_year_date(month, int(m[1]), today, future, int(m[2]) if m[2] else None)
+    for name, (month, day) in HOLIDAYS.items():
+        if re.search(rf"\b{name}\b", t):
+            return _next_year_date(month, day, today, future)
+    if re.search(r"\bfine (?:del )?mese\b", t):
+        return date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+    if re.search(r"\bl altro ieri\b|\baltro ieri\b", t):
+        return today - timedelta(days=2)
+    if re.search(r"\bdopodomani\b|\bdopo domani\b", t):
+        return today + timedelta(days=2)
+    if re.search(r"\bdomani\b", t):
+        return today + timedelta(days=1)
+    if re.search(r"\bieri\b", t):
+        return today - timedelta(days=1)
+    if re.search(r"\boggi\b", t):
+        return today
+    if m := re.search(r"\b(?:tra|fra|entro)\s+(\w+)\s+(giorn[io]|settiman[ae]|mes[ie]|ann[io])\b", t):
+        n = _num(m[1])
+        if n is not None:
+            u = m[2]
+            if u.startswith("giorn"):
+                return today + timedelta(days=n)
+            if u.startswith("settim"):
+                return today + timedelta(days=7 * n)
+            if u.startswith("mes"):
+                return _add_months(today, n)
+            return _add_months(today, 12 * n)
+    if m := re.search(r"\b(\w+)\s+(giorn[io]|settiman[ae]|mes[ie]|ann[io])\s+fa\b", t):
+        n = _num(m[1])
+        if n is not None:
+            u = m[2]
+            if u.startswith("giorn"):
+                return today - timedelta(days=n)
+            if u.startswith("settim"):
+                return today - timedelta(days=7 * n)
+            if u.startswith("mes"):
+                return _add_months(today, -n)
+            return _add_months(today, -12 * n)
+    if re.search(r"\bsettimana\s+prossima\b|\bprossima\s+settimana\b", t):
+        return today - timedelta(days=today.weekday()) + timedelta(days=7)
+    if re.search(r"\bsettimana\s+scorsa\b|\bscorsa\s+settimana\b", t):
+        return today - timedelta(days=today.weekday()) - timedelta(days=7)
+    for i, name in enumerate(_DAYS):
+        if re.search(rf"\b{name}\b", t):
+            if not future:
+                return today - timedelta(days=(today.weekday() - i) % 7 or 7)
+            return today + timedelta(days=(i - today.weekday()) % 7 or 7)
+    return None
+
+
+def resolve(text: str, reference: datetime, prefer: str | None = None) -> date | None:
+    """text as said -> date, or None when vague/unparseable.
+
+    reference: start time of the cited paragraph. prefer: "future" (scadenze) or
+    "past"; None = "past" if the text says fa/scorso/ieri/..., else "future"."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    t = _norm(text)
+    if not t:
+        return None
+    if prefer is None:
+        prefer = "past" if is_past(text) else "future"
+    today = reference.date()
+    got = rules(t, today, prefer == "future")
+    if got is not None:
+        return got
+    if VAGUE.search(t) or re.search(r"\b(pasqua|pentecoste)\b", t):
+        return None
+    try:
+        import dateparser
+    except ImportError:
+        return None
+    parsed = dateparser.parse(t, languages=["it"], settings={
+        "RELATIVE_BASE": reference.replace(tzinfo=None), "PREFER_DATES_FROM": prefer})
+    return parsed.date() if parsed else None
