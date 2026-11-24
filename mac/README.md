@@ -483,6 +483,15 @@ Misure del 5 novembre 2026, sugli spezzoni corretti a mano rimasti (`voices/enro
 | trascrizione per turno di parola (diarizzazione prima, un pezzo per turno) | 218 | 129 |
 | voci separate prima (pyannote `speech-separation-ami-1.0`), ogni traccia trascritta | 203 | 88 |
 | Qwen3-ASR 1.7B con forced aligner, al posto di whisper | | WER 56% contro 46% |
+| whisper large-v3 (q5_0) al posto di turbo | 52% | WER 50%, 68 sbagliate |
+| whisper turbo / large-v3 fine-tune italiani (LocalAI, yodas-only e multi) | 47-49% | WER 53-55% |
+| NVIDIA Parakeet TDT 0.6B v3 (onnx-asr) | 57% | WER 48%, 149 sbagliate (inventa sul rumore; con VAD Silero: 46%, WER 58%) |
+| NVIDIA Canary 1B v2 (onnx-asr) | 54% | WER 48%, 80 sbagliate |
+| Voxtral Mini 3B (llama.cpp) | 35% | WER 65%: in modalità chat risponde invece di trascrivere |
+
+Confronto del 24/11/2026 (`--variant windows large-v3-q5 turbo-it large-it-yodas large-it-multi`;
+gli altri con `~/bench-scripts/asr_eval.py`, stesse finestre da 30 s): sull'audio del ciondolo nessuno
+batte large-v3-turbo con le finestre. Parakeet è il migliore solo sulla clip pulita (B: WER 18% contro 25%).
 
 La trascrizione per turno è peggiore: pezzi di pochi secondi tolgono a whisper il contesto e
 la lingua (frasi inventate in inglese), e dove le voci si accavallano la stessa frase esce

@@ -19,6 +19,7 @@ import json
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 
 from omy import transcribe as T
@@ -89,8 +90,24 @@ def run_variant(name: str, clip: Path) -> list[dict]:
         tmp.unlink(missing_ok=True)
 
 
+def with_model(model: str):
+    """The current pipeline with another whisper.cpp model (path under models/)."""
+    def run(wav: Path) -> list[dict]:
+        old, T.WHISPER_MODEL = T.WHISPER_MODEL, model
+        try:
+            return T.transcribe_wav(wav)
+        finally:
+            T.WHISPER_MODEL = old
+    return run
+
+
 VARIANTS = {
     "windows": lambda wav: T.transcribe_wav(wav),
+    # Candidates (tools/eval_transcribe.py --variant ...); files in models/eval/.
+    "large-v3-q5": with_model("eval/large-v3-q5.bin"),
+    "turbo-it": with_model("eval/turbo-it-yodas-q8.bin"),
+    "large-it-yodas": with_model("eval/large-v3-it-yodas-q8.bin"),
+    "large-it-multi": with_model("eval/large-v3-it-multi-q8.bin"),
 }
 
 
@@ -105,6 +122,7 @@ def main() -> None:
         tot = {"ref": 0, "found": 0, "wrong": 0, "errors": 0}
         tot_f = dict(tot)
         items_all = []
+        t0 = time.perf_counter()
         for txt in clips:
             ref = reference(txt)
             items = run_variant(name, txt.with_suffix(".wav"))
@@ -119,7 +137,8 @@ def main() -> None:
                   f" | filtered: found {sf['found'] / sf['ref']:5.0%} wrong {sf['wrong']:4} WER {sf['errors'] / sf['ref']:5.0%}")
             items_all.append((ref, items))
         print(f"ALL {name:8} found {tot['found'] / tot['ref']:5.0%} wrong {tot['wrong']:4} WER {tot['errors'] / tot['ref']:5.0%}"
-              f" | filtered: found {tot_f['found'] / tot_f['ref']:5.0%} wrong {tot_f['wrong']:4} WER {tot_f['errors'] / tot_f['ref']:5.0%}")
+              f" | filtered: found {tot_f['found'] / tot_f['ref']:5.0%} wrong {tot_f['wrong']:4} WER {tot_f['errors'] / tot_f['ref']:5.0%}"
+              f" | {time.perf_counter() - t0:.0f} s")
         if a.sweep:
             for th in (0.0, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8):
                 f = w = 0
