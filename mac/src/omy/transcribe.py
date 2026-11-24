@@ -77,8 +77,8 @@ FALLBACK_LANGUAGE = "it"
 CONF_MIN = 0.65
 UNCLEAR = archive_tr("[incomprensibile]", "[unintelligible]")
 # Bumped when the above changes: older transcripts are redone (plan()).
-# 4: "conf" per line.
-PIPELINE = 4
+# 4: "conf" per line. 5: "conf" actually saved, "words" with DTW times.
+PIPELINE = 5
 # Silence longer than this starts a new paragraph in the day markdown, and so
 # does a paragraph that has run this long without one.
 BLOCK_GAP = timedelta(minutes=2)
@@ -90,6 +90,13 @@ HALLUCINATIONS = {
     "grazie", "grazie a tutti", "grazie per la visione", "gracias", "merci", "you", "",
 }
 ISOLATED = timedelta(seconds=30)
+# Word times from whisper's cross-attention (DTW; needs flash attention off):
+# a line of whisper often holds several people's turns (a 30 s window), so the
+# paragraphs are split where the diarization says the speaker changes.
+DTW_ARGS = ["-dtw", "large.v3.turbo", "-nfa"]
+# A speaker run shorter than this many words is joined to its neighbour: word
+# times and turn edges are both ±0.3 s off, so one-word flips are noise.
+MIN_RUN_WORDS = 3
 # Of the lines of DAY.jsonl: bumped when a field changes meaning or goes away.
 EXPORT_VERSION = 1
 # How far back --pending looks.
@@ -162,7 +169,7 @@ def _run_whisper(wav: Path, language: str = LANGUAGE) -> list[dict]:
         # No text context between windows: stops the repetition loops
         # ("Grazie a tutti." x18) that whisper produces on noise.
         "-mc", "0",
-        "--vad", "-vm", str(MODELS_DIR / VAD_MODEL), *VAD_ARGS,
+        "--vad", "-vm", str(MODELS_DIR / VAD_MODEL), *VAD_ARGS, *DTW_ARGS,
         "-np", "-ojf", "-of", str(base), "-f", str(wav),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     if r.returncode != 0:
@@ -175,9 +182,27 @@ def _run_whisper(wav: Path, language: str = LANGUAGE) -> list[dict]:
     lang = data.get("result", {}).get("language")
     return [
         {"from": it["offsets"]["from"], "to": it["offsets"]["to"], "text": it["text"].strip(), "language": lang,
-         "conf": _confidence(it.get("tokens", []))}
+         "conf": _confidence(it.get("tokens", [])), "words": _words(it.get("tokens", []), it["offsets"]["from"])}
         for it in data["transcription"] if it["text"].strip()
     ]
+
+
+def _words(tokens: list[dict], line_from: int) -> list[list]:
+    """[[ms from the line's start, word], ...]: a word starts at a token with a
+    leading space; its time is the DTW time of that token (centiseconds), else
+    the token's own offset."""
+    out: list[list] = []
+    for t in tokens:
+        text = t.get("text", "")
+        if not text or text.startswith("[_") or text.startswith("<|"):
+            continue
+        if out and not text.startswith(" "):
+            out[-1][1] += text
+            continue
+        dtw = t.get("t_dtw", -1)
+        at = dtw * 10 if dtw is not None and dtw >= 0 else t.get("offsets", {}).get("from", line_from)
+        out.append([max(0, at - line_from), text.strip()])
+    return [w for w in out if w[1]]
 
 
 def _confidence(tokens: list[dict]) -> float | None:
@@ -264,6 +289,8 @@ def transcribe_session(session: Session, prior: dict | None = None,
                     "end": _iso(work.start + timedelta(milliseconds=chunk_start_ms + it["to"])),
                     "language": it["language"],
                     "text": it["text"],
+                    "conf": it["conf"],
+                    "words": it["words"],
                 })
             if on_progress:
                 on_progress(decoder.position_ms)
@@ -337,7 +364,7 @@ def _clean(speech: list[dict]) -> list[dict]:
             if kept and kept[-1].get("unclear"):
                 kept[-1] = {**kept[-1], "end": it["end"]}
                 continue
-            it = {**it, "text": UNCLEAR, "unclear": True}
+            it = {k: v for k, v in it.items() if k != "words"} | {"text": UNCLEAR, "unclear": True}
         kept.append(it)
     return kept
 
@@ -363,14 +390,70 @@ def _speaker_of(turns: list[dict], start: datetime, end: datetime) -> dict | Non
     return best
 
 
+def _turn_at(turns: list[tuple[datetime, datetime, dict]], at: datetime) -> dict | None:
+    """The turn around this instant, else the nearest within 1 s."""
+    best, gap = None, timedelta(seconds=1)
+    for s, e, x in turns:
+        if s <= at < e:
+            return x
+        d = min(abs(at - s), abs(at - e))
+        if d < gap:
+            best, gap = x, d
+    return best
+
+
+def _split_by_speaker(it: dict, turns: list[tuple[datetime, datetime, dict]]) -> list[tuple[dict | None, dict]]:
+    """(turn, item) pieces of a whisper line, cut where the speaker of its
+    words changes (runs under MIN_RUN_WORDS joined to the run before)."""
+    words = it.get("words") or []
+    start, end = _t(it["start"]), _t(it["end"])
+    if len(words) < 2 * MIN_RUN_WORDS or not turns:
+        return [(None, it)]
+    runs: list[list] = []  # [turn, [words]]
+    for w in words:
+        turn = _turn_at(turns, start + timedelta(milliseconds=w[0]))
+        if runs and (turn is None or runs[-1][0] is turn or (turn and runs[-1][0] and turn["speaker"] == runs[-1][0]["speaker"])):
+            runs[-1][1].append(w)
+        else:
+            runs.append([turn, [w]])
+    merged: list[list] = []
+    for r in runs:
+        same = merged and r[0] and merged[-1][0] and r[0]["speaker"] == merged[-1][0]["speaker"]
+        if merged and (len(r[1]) < MIN_RUN_WORDS or merged[-1][0] is None or same):
+            merged[-1][1] += r[1]
+            if merged[-1][0] is None:
+                merged[-1][0] = r[0]
+        else:
+            merged.append(r)
+    if len(merged) > 1 and len(merged[0][1]) < MIN_RUN_WORDS:
+        merged[1][1] = merged[0][1] + merged[1][1]
+        merged.pop(0)
+    if len(merged) == 1:
+        return [(None, it)]
+    out = []
+    for i, (turn, ws) in enumerate(merged):
+        s = start + timedelta(milliseconds=ws[0][0]) if i else start
+        e = start + timedelta(milliseconds=merged[i + 1][1][0][0]) if i + 1 < len(merged) else end
+        out.append((turn, {**it, "start": _iso(s), "end": _iso(max(e, s)), "text": " ".join(w[1] for w in ws),
+                           "words": [[w[0] - ws[0][0], w[1]] for w in ws]}))
+    return out
+
+
 def _paragraphs(speech: list[dict], turns: list[dict]) -> list[tuple[dict | None, list[dict]]]:
-    """(turn of its first item, items) of the cleaned speech: a new paragraph
-    at each change of speaker, after BLOCK_GAP of silence, or after BLOCK_MAX."""
+    """(turn, items) of the cleaned speech: whisper lines first split where the
+    speaker changes inside them, then a new paragraph at each change of
+    speaker, after BLOCK_GAP of silence, or after BLOCK_MAX."""
     out: list[tuple[dict | None, list[dict]]] = []
     block_start = prev_end = None
+    spans = [(_t(x["start"]), _t(x["end"]), x) for x in turns]
+    pieces = []
     for it in speech:
+        for turn, piece in _split_by_speaker(it, spans):
+            # whisper's dialogue dash ("- Sì. - No.") is redundant once split by speaker
+            piece = {**piece, "text": re.sub(r"^\s*-\s+", "", piece["text"])}
+            pieces.append((turn or _speaker_of(turns, _t(piece["start"]), _t(piece["end"])), piece))
+    for turn, it in pieces:
         start, end = _t(it["start"]), _t(it["end"])
-        turn = _speaker_of(turns, start, end)
         name = turn and turn["speaker"]
         if (not out or start - prev_end > BLOCK_GAP or start - block_start > BLOCK_MAX
                 or name != (out[-1][0] and out[-1][0]["speaker"])):

@@ -20,6 +20,7 @@ Regole:
 - Non fare impegni dei contenuti [MEDIA].
 - Non inventare e non dedurre oltre il testo. Se una lista non ha elementi, lasciala vuota.
 - La trascrizione contiene errori: ignora le frasi incomprensibili.
+- Il microfono capta anche ciò che non è conversazione anche se non è marcato [MEDIA]: canzoni (musica in sottofondo o qualcuno che canta: versi in rima o poetici che non c'entrano col discorso), TV o video, e frasi inventate dal riconoscimento vocale sul rumore (spesso inglese generico: «Thank you», «I'm not sure»). Ignorali: non farne punti chiave, impegni, entità, date né tag, e non attribuirli a chi «parla».
 
 CONTESTO DI QUESTA CONVERSAZIONE
 Chi possiede il registratore compare nelle trascrizioni come «{my_name}».

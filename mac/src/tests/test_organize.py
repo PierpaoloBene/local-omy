@@ -112,7 +112,7 @@ def test_single_part_note_and_post_checks():
     assert note["riassunto"] == "Hai promesso il preventivo."
     assert note["parti"] == [{"da": "P1", "a": "P5", "riassunto": "Hai promesso il preventivo."}]
     assert note["collegamenti"] == [] and note["elaborazione"]["n_parti"] == 1
-    assert note["elaborazione"]["prompt_version"] == 2 and note["elaborazione"]["input_hash"] == organize.input_hash(SID)
+    assert note["elaborazione"]["prompt_version"] == organize.PROMPT_VERSION and note["elaborazione"]["input_hash"] == organize.input_hash(SID)
     # participants: the media voice is not one
     assert [(p["label"], p["person"], p["nome_al_momento"]) for p in note["partecipanti"]] == [
         ("SPEAKER_00", "me", "Io"), ("SPEAKER_01", "p1", "Rosalinda"), ("SPEAKER_02", None, "Persona 1")]

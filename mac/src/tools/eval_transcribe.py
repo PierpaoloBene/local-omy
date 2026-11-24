@@ -38,6 +38,74 @@ def reference(txt: Path) -> list[str]:
     return words(" ".join(re.sub(r"^\s*[A-Z]{1,2}:", "", re.sub(r"\[[^\]]*\]", " ", ln)) for ln in lines))
 
 
+def ref_speakers(txt: Path) -> list[tuple[str, str]]:
+    """(word, speaker letter) of the reference: "X: text" lines, P (me) if none."""
+    out = []
+    for ln in txt.read_text().splitlines():
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        m = re.match(r"^\s*([A-Z]{1,2}):", ln)
+        who = m.group(1) if m else "P"
+        out += [(w, who) for w in words(re.sub(r"^\s*[A-Z]{1,2}:", "", re.sub(r"\[[^\]]*\]", " ", ln)))]
+    return out
+
+
+def pairs(ref: list[str], hyp: list[str]) -> list[tuple[int, int]]:
+    """(ref index, hyp index) of the equal words of a min edit distance alignment."""
+    n, m = len(ref), len(hyp)
+    d = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        d[i][0] = i
+    for j in range(m + 1):
+        d[0][j] = j
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (ref[i - 1] != hyp[j - 1]))
+    out = []
+    i, j = n, m
+    while i > 0 and j > 0:
+        if d[i][j] == d[i - 1][j - 1] + (ref[i - 1] != hyp[j - 1]):
+            if ref[i - 1] == hyp[j - 1]:
+                out.append((i - 1, j - 1))
+            i, j = i - 1, j - 1
+        elif d[i][j] == d[i - 1][j] + 1:
+            i -= 1
+        else:
+            j -= 1
+    return out[::-1]
+
+
+def attribution(txt: Path, items: list[dict], split: bool) -> tuple[int, int]:
+    """(words given to the right speaker, matched words): the clip diarized,
+    each diarization label mapped to the reference speaker it mostly covers."""
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+    from omy import diarize
+    key = txt.stem
+    if key not in _DIAR:
+        _DIAR[key] = diarize.diarize_wav(txt.with_suffix(".wav"))["turns"]
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    iso = lambda ms: T._iso(t0 + timedelta(milliseconds=ms))
+    turns = [{"start": iso(s * 1000), "end": iso(e * 1000), "speaker": lab, "label": lab} for s, e, lab in _DIAR[key]]
+    speech = [{"start": iso(it["from"]), "end": iso(it["to"]), "text": it["text"], "language": it.get("language"),
+               **({"words": it.get("words")} if split else {})} for it in items]
+    hyp = []
+    for turn, its in T._paragraphs(speech, turns):
+        for it in its:
+            hyp += [(w, turn and turn["speaker"]) for w in words(it["text"])]
+    ref = ref_speakers(txt)
+    pr = pairs([w for w, _ in ref], [w for w, _ in hyp])
+    votes: dict = {}
+    for i, j in pr:
+        votes.setdefault(hyp[j][1], Counter())[ref[i][1]] += 1
+    best = {lab: c.most_common(1)[0][0] for lab, c in votes.items()}
+    ok = sum(1 for i, j in pr if best[hyp[j][1]] == ref[i][1])
+    return ok, len(pr)
+
+
+_DIAR: dict = {}
+
+
 def align(ref: list[str], hyp: list[str]) -> list[bool]:
     """Per hyp word: True if aligned to an equal reference word (min edit distance)."""
     n, m = len(ref), len(hyp)
@@ -115,6 +183,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--variant", nargs="*", default=["windows"])
     ap.add_argument("--sweep", action="store_true")
+    ap.add_argument("--speakers", action="store_true", help="also: words given to the right speaker, without/with the split")
     a = ap.parse_args()
     OUT.mkdir(mode=0o700, parents=True, exist_ok=True)
     clips = sorted(ENROLL.glob("*.txt"))
@@ -122,6 +191,7 @@ def main() -> None:
         tot = {"ref": 0, "found": 0, "wrong": 0, "errors": 0}
         tot_f = dict(tot)
         items_all = []
+        spk = {False: [0, 0], True: [0, 0]}
         t0 = time.perf_counter()
         for txt in clips:
             ref = reference(txt)
@@ -136,9 +206,18 @@ def main() -> None:
             print(f"{txt.stem} {name:8} found {s['found'] / s['ref']:5.0%} wrong {s['wrong']:4} WER {s['errors'] / s['ref']:5.0%}"
                   f" | filtered: found {sf['found'] / sf['ref']:5.0%} wrong {sf['wrong']:4} WER {sf['errors'] / sf['ref']:5.0%}")
             items_all.append((ref, items))
+            if a.speakers:
+                for split in (False, True):
+                    ok, n = attribution(txt, items, split)
+                    spk[split][0] += ok
+                    spk[split][1] += n
+                    print(f"   speakers {'split' if split else 'lines'}: {ok}/{n} = {ok / max(n, 1):.0%}")
         print(f"ALL {name:8} found {tot['found'] / tot['ref']:5.0%} wrong {tot['wrong']:4} WER {tot['errors'] / tot['ref']:5.0%}"
               f" | filtered: found {tot_f['found'] / tot_f['ref']:5.0%} wrong {tot_f['wrong']:4} WER {tot_f['errors'] / tot_f['ref']:5.0%}"
               f" | {time.perf_counter() - t0:.0f} s")
+        if a.speakers:
+            for split in (False, True):
+                print(f"   ALL speakers {'split' if split else 'lines'}: {spk[split][0]}/{spk[split][1]} = {spk[split][0] / max(spk[split][1], 1):.0%}")
         if a.sweep:
             for th in (0.0, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8):
                 f = w = 0

@@ -28,7 +28,7 @@ from omy.brain import names as names_mod
 from omy.brain import NOTES, SCHEMA_VERSION, WORK, confidence, dates, llm
 from omy.config import ARCHIVE
 
-PROMPT_VERSION = 2
+PROMPT_VERSION = 3  # 3: songs, TV and noise phrases ignored
 MODEL = "Qwen3.8-27B-GSQ-RCO-IQ2_XS-mtp"  # fallback when omy.models cannot tell
 CARRY = 0.8  # similarity of `cosa` above which a re-organized commitment is the same one as before
 HERE = Path(__file__).resolve().parent
