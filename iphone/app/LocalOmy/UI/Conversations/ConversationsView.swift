@@ -146,7 +146,7 @@ struct ConversationsView: View {
                     Text("\(convShortDay(p.day ?? "")) \(convHM(p.start))").font(.footnote).foregroundStyle(.secondary)
                     Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
                 }
-                Text(convHighlighted(p.text, searched)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+                Text(convReadable(p.text, searched)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 10).contentShape(Rectangle())

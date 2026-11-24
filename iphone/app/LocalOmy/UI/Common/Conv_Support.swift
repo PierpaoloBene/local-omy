@@ -231,6 +231,30 @@ struct ConvEmpty: View {
 }
 
 /// [s] with every occurrence of [q] (any case) marked.
+/// The Mac marks lines the transcriber was unsure of (mostly invented text on noise or overlapping voices).
+let convUnclearMarks = ["[incomprensibile]", "[unintelligible]"]
+
+/// Whether the paragraph is only unclear marks.
+func convIsUnclear(_ s: String) -> Bool {
+    var t = s
+    for m in convUnclearMarks { t = t.replacingOccurrences(of: m, with: "") }
+    return t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+/// The text with each unclear mark shown as a quiet "…" (italic, faded).
+func convReadable(_ s: String, _ q: String?) -> AttributedString {
+    var a = convHighlighted(s, q)
+    for m in convUnclearMarks {
+        while let r = a.range(of: m) {
+            var dots = AttributedString("…")
+            dots.inlinePresentationIntent = .emphasized
+            dots.foregroundColor = Color.gray
+            a.replaceSubrange(r, with: dots)
+        }
+    }
+    return a
+}
+
 func convHighlighted(_ s: String, _ q: String?) -> AttributedString {
     var a = AttributedString(s)
     guard let needle = q?.trimmingCharacters(in: .whitespacesAndNewlines), !needle.isEmpty else { return a }

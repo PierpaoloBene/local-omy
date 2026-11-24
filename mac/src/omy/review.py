@@ -5,6 +5,7 @@ with a summary, one day, a search. Read only from transcripts/DAY.jsonl
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime
 
 from omy import transcribe
@@ -17,6 +18,13 @@ CONVERSATIONS_MAX = 5000
 # What kind of voice a paragraph is, from its via: in the room, an online
 # meeting, a phone call (iPhone), a video (or a TV).
 TYPES = ("room", "meeting", "call", "media")
+
+
+def _readable(text: str) -> str:
+    """Without the transcriber's unclear marks: a preview should be words."""
+    for m in ("[incomprensibile]", "[unintelligible]"):
+        text = text.replace(m, "…")
+    return re.sub(r"(\s*…\s*)+", " … ", text).strip(" …")
 
 
 def _records(day: str) -> list[dict]:
@@ -134,7 +142,7 @@ def _conversation(day: str, records: list[dict]) -> dict:
         "types": sorted({p["type"] for p in who.values() if p["person"] != "me"}),
         "participants": [{**p, "minutes": round(p.pop("seconds") / 60, 1)}
                          for p in sorted(who.values(), key=lambda p: (p["person"] != "me", -p["seconds"]))],
-        "snippet": max((r["text"] for r in others), key=len)[:200],
+        "snippet": max((_readable(r["text"]) for r in others), key=len)[:200],
     }
 
 

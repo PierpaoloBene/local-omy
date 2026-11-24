@@ -493,6 +493,12 @@ Confronto del 24/11/2026 (`--variant windows large-v3-q5 turbo-it large-it-yodas
 gli altri con `~/bench-scripts/asr_eval.py`, stesse finestre da 30 s): sull'audio del ciondolo nessuno
 batte large-v3-turbo con le finestre. Parakeet è il migliore solo sulla clip pulita (B: WER 18% contro 25%).
 
+Pipeline 5 (24/11/2026): whisper calcola il tempo di ogni parola (DTW, `-dtw large.v3.turbo -nfa`,
++18% di tempo) e una riga che contiene più battute viene divisa dove la diarizzazione dice che cambia
+chi parla (gruppi sotto 3 parole uniti al vicino). Parole attribuite alla persona giusta sulle clip
+etichettate (`eval_transcribe.py --speakers`): 92% → 95% (clip E: 58% → 74%), WER invariato. Da questa
+versione la confidenza per riga è davvero salvata: prima `[incomprensibile]` non veniva mai applicato.
+
 La trascrizione per turno è peggiore: pezzi di pochi secondi tolgono a whisper il contesto e
 la lingua (frasi inventate in inglese), e dove le voci si accavallano la stessa frase esce
 due volte. La separazione delle voci (addestrata su riunioni in inglese con microfoni da

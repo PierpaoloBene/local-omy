@@ -322,13 +322,20 @@ private struct Bubble: View {
             }
             VStack(alignment: me ? .trailing : .leading, spacing: 3) {
                 if first { meta(p, me: me).padding(.horizontal, 12) }
-                Text(convHighlighted(p.text, highlight))
+                if convIsUnclear(p.text) {
+                    Text(tr("non si capisce", "unintelligible"))
+                        .font(.footnote).italic().foregroundStyle(.secondary)
+                        .padding(.horizontal, 12).padding(.vertical, 5)
+                        .background(Capsule().fill(Color(.tertiarySystemFill)))
+                } else {
+                Text(convReadable(p.text, highlight))
                     .font(.system(size: 16)).lineSpacing(3)
                     .foregroundStyle(me ? Color.white : Color.primary)
                     .padding(.horizontal, 13).padding(.vertical, 8)
                     .background(RoundedRectangle(cornerRadius: 18).fill(me ? Color.accentColor : Color(.secondarySystemGroupedBackground)))
                     .overlay { if focused { RoundedRectangle(cornerRadius: 18).stroke(Color.yellow, lineWidth: 2.5) } }
                     .textSelection(.enabled)
+                }
             }
             if !me { Spacer(minLength: 48) }
         }
