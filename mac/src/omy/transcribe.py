@@ -772,3 +772,15 @@ def diarize_job(session_id: str) -> dict:
         diarize.diarize_session(session)
         render_day(session.day)
     return {"diarized": [session.id], "days": [session.day.isoformat()]}
+
+
+def diarize_compute_job(session_id: str) -> dict:
+    """The Mac's part of a diarize job (docs/hub-migration.md, D4): audio and pyannote only. The result goes to
+    cache/diarize-result-SESSION.json; the hub names the voices."""
+    from omy import diarize
+    session = find_session(session_id)
+    with take_lock():
+        result = diarize.decode_and_diarize(session)
+    out = CACHE_DIR / f"diarize-result-{session_id}.json"
+    _write_atomic(out, json.dumps(diarize.result_to_json(result)))
+    return {"result": str(out), "voices": len(result["seconds"])}

@@ -87,7 +87,8 @@ def main() -> int:
     setup = sub.add_parser("setup", help="prepare this Mac").add_subparsers(dest="action", required=True)
     setup.add_parser("check", help="checklist of what this Mac needs")
     fix = setup.add_parser("fix", help="fix one checklist item")
-    fix.add_argument("item", choices=["brew", "token", *macsetup.AGENTS, "tailscale", "models", "iphone", "diarize"])
+    fix.add_argument("item", choices=["brew", "token", *macsetup.AGENTS, "tailscale", "models", "iphone", "diarize",
+                                        "compute", "compute-on", "compute-off"])
     setup.add_parser("token", help="print the receiver token (to paste into the iPhone app)")
     setup.add_parser("models", help="download the whisper and VAD models (same as fix models)")
 
@@ -176,7 +177,7 @@ def main() -> int:
     cw.add_argument("--kind", action="append", help="with --once: only these kinds")
     job = sub.add_parser("job", help="run one queued job in this process (what the worker spawns)") \
         .add_subparsers(dest="action", required=True)
-    for name in ("transcribe", "diarize"):
+    for name in ("transcribe", "diarize", "diarize-compute"):
         job.add_parser(name, help=f"{name} one session").add_argument("session")
     og = sub.add_parser("organize", help="queue the second-brain notes of the sessions since a day; "
                     "they run now, whatever the time of day and the power")
@@ -292,8 +293,8 @@ def _run(args: argparse.Namespace) -> dict:
         from omy import compute
         result = compute.main(once=args.once, dry_run=args.dry_run, kinds=args.kind)
     elif args.cmd == "job":
-        result = transcribe.transcribe_job(args.session) if args.action == "transcribe" \
-            else transcribe.diarize_job(args.session)
+        result = {"transcribe": transcribe.transcribe_job, "diarize": transcribe.diarize_job,
+                  "diarize-compute": transcribe.diarize_compute_job}[args.action](args.session)
     elif args.cmd == "organize":
         result = organize(args.since, args.force, args.now)
     elif args.cmd == "index":

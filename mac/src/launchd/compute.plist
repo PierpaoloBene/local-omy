@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: __UV__, __MAC_DIR__, __HOME__ and __PATH__ are filled in by `omy setup fix compute`.
+     The Mac's compute worker: pulls jobs from the hub (docs/hub-migration.md). Installed DISABLED: it replaces
+     the `worker` agent at the cutover (docs/cutover.md) and the two must never run together (models, RAM). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>__LABEL__</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__UV__</string>
+		<string>run</string>
+		<string>--frozen</string>
+		<string>--project</string>
+		<string>__MAC_DIR__</string>
+		<string>omy</string>
+		<string>compute-worker</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__MAC_DIR__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__PATH__</string>
+		<!-- the workspace: raw/ transcripts/ ... of the job in hand, wiped between jobs; models -> ~/OmiArchive/models -->
+		<key>OMY_ARCHIVE</key>
+		<string>__HOME__/OmiCompute</string>
+		<key>OMY_TZ</key>
+		<string>Europe/Rome</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/local-omy-compute.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/local-omy-compute.log</string>
+</dict>
+</plist>

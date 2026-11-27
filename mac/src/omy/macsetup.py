@@ -22,6 +22,9 @@ TOKEN_FILE = Path(os.environ.get("OMY_TOKEN_FILE", CONFIG_DIR / "token"))
 AGENTS_DIR = Path("~/Library/LaunchAgents").expanduser()
 # Installed by `omy setup`. launchd/periodic.plist stays in the repo for a rollback, not installed.
 AGENTS = ("receiver", "worker")
+# The compute worker (docs/hub-migration.md) is installed apart: disabled until the cutover.
+COMPUTE = "compute"
+WORKSPACE = Path("~/OmiCompute").expanduser()
 RECEIVER_URL = "http://127.0.0.1:8787"
 # PATH for the LaunchAgents: Homebrew (flutter, pod, whisper-cli), uv, Xcode tools.
 AGENT_PATH = ":".join([
@@ -93,6 +96,44 @@ def install_agent(name: str) -> None:
             return
         time.sleep(0.5)
     raise SetupError(f"launchctl bootstrap {name} failed: {r.stderr.strip()}")
+
+
+def install_compute(load: bool = False) -> dict:
+    """The compute worker's plist and workspace (~/OmiCompute, models -> ~/OmiArchive/models). Without load
+    it is left NOT loaded and disabled (launchctl disable), so that not even the next login starts it:
+    the original worker is still the one at work. `compute-on` enables and loads it (the cutover)."""
+    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    WORKSPACE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (WORKSPACE / "cache").mkdir(mode=0o700, exist_ok=True)
+    marker = WORKSPACE / ".omy-compute-workspace"
+    if not marker.exists():
+        marker.write_text("wiped between jobs: raw/ transcripts/ voices/ brain/\n")
+    models_link = WORKSPACE / "models"
+    if not models_link.exists() and not models_link.is_symlink():
+        models_link.symlink_to(Path("~/OmiArchive/models").expanduser())
+    path = _plist_path(COMPUTE)
+    path.write_text(_render_agent(COMPUTE))
+    os.chmod(path, 0o644)
+    domain, label = f"gui/{os.getuid()}", _label(COMPUTE)
+    if not load:
+        _run(["launchctl", "disable", f"{domain}/{label}"])
+        return {"installed": str(path), "loaded": agent_info(COMPUTE)["loaded"], "workspace": str(WORKSPACE)}
+    _run(["launchctl", "enable", f"{domain}/{label}"])
+    _run(["launchctl", "bootout", f"{domain}/{label}"])
+    for _ in range(10):
+        r = _run(["launchctl", "bootstrap", domain, str(path)])
+        if r.returncode == 0:
+            return {"installed": str(path), "loaded": True, "workspace": str(WORKSPACE)}
+        time.sleep(0.5)
+    raise SetupError(f"launchctl bootstrap {COMPUTE} failed: {r.stderr.strip()}")
+
+
+def stop_compute() -> dict:
+    """The compute worker stops (its job goes back to the hub's queue) and stays disabled."""
+    domain, label = f"gui/{os.getuid()}", _label(COMPUTE)
+    _run(["launchctl", "bootout", f"{domain}/{label}"])
+    _run(["launchctl", "disable", f"{domain}/{label}"])
+    return {"loaded": agent_info(COMPUTE)["loaded"]}
 
 
 def retire_agent(name: str = "periodic") -> bool:
@@ -176,6 +217,12 @@ def checks() -> list[dict]:
             else tr("non in esecuzione", "not running") if not ok else "ok"
         add(name, label, ok, detail)
 
+    if _plist_path(COMPUTE).exists():  # installed for the move to the hub
+        a = agent_info(COMPUTE)
+        add(COMPUTE, tr("Compute worker (per l'hub)", "Compute worker (for the hub)"), a["loaded"] and a["running"],
+            tr("installato, non attivo (si attiva al passaggio all'hub)", "installed, not active (enabled at the move to the hub)")
+            if not a["loaded"] else "ok")
+
     ts = tailscale_info()
     add("tailscale", "tailscale serve → 127.0.0.1:8787", ts["serving"],
         ts["url"] or (tr("Tailscale non installato (tailscale.com/download)", "Tailscale not installed (tailscale.com/download)")
@@ -224,6 +271,14 @@ def fix(id_: str) -> dict:
             f.write(secrets.token_urlsafe(32) + "\n")
     elif id_ in AGENTS:
         install_agent(id_)
+    elif id_ == "compute":
+        install_compute(load=False)
+    elif id_ == "compute-on":
+        install_compute(load=True)
+        id_ = "compute"
+    elif id_ == "compute-off":
+        stop_compute()
+        id_ = "compute"
     elif id_ == "tailscale":
         ts = _tailscale()
         if ts is None:

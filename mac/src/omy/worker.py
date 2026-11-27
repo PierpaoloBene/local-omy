@@ -302,13 +302,17 @@ class Worker:
                 self.scan_due = True  # its diarization and notes come next
             self.write_status()
 
+    def spawn_kind(self, job: jobs.Job) -> str:
+        """The `omy job KIND` that runs this job."""
+        return job.kind
+
     def run_subprocess(self, job: jobs.Job) -> None:
         from omy import transcribe
         if self.preempted:
             raise models.Preempted("interrupted")
         if job.kind == "diarize":
             models.release_all()  # pyannote needs the memory
-        proc = self.proc = spawn_job(job.kind, job.key)
+        proc = self.proc = spawn_job(self.spawn_kind(job), job.key)
         while proc.poll() is None:
             if self.stopping or (self.preempted and job.kind == "diarize"):
                 proc.terminate()
@@ -322,9 +326,17 @@ class Worker:
             raise RuntimeError(f"exit code {proc.returncode}" + (f": {err}" if err else ""))
 
     def run_organize(self, job: jobs.Job) -> None:
-        from omy.brain import organize, vault
+        from omy.brain import vault
+        if self.organize_note(job)[0]:
+            vault.render_note(job.key)
+            self.add_batch(job.key)
+
+    def organize_note(self, job: jobs.Job):
+        """The model part of an organize job: (whether it ran, the note's sidecar); (False, None) if the note
+        is up to date."""
+        from omy.brain import organize
         if not job.force and hasattr(organize, "needs_organize") and not organize.needs_organize(job.key):
-            return
+            return False, None
         models.check_preempt()
         if self.preempted or models.chat_active():
             raise models.Preempted("a chat question arrived")
@@ -332,9 +344,7 @@ class Worker:
         if self.preempted or models.chat_active():
             raise models.Preempted("a chat question arrived")
         kwargs = {"force": True} if job.force and "force" in inspect.signature(organize.organize_session).parameters else {}
-        organize.organize_session(job.key, base, **kwargs)
-        vault.render_note(job.key)
-        self.add_batch(job.key)
+        return True, organize.organize_session(job.key, base, **kwargs)
 
     def run_render(self, job: jobs.Job) -> None:
         from omy.brain import vault
