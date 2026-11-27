@@ -166,4 +166,66 @@ def test_demand_wake_summary():
     time.sleep(0.01)
     jobs.wake()
     assert jobs.wake_time() > before
-    assert set(jobs.summary()) == {"queued", "by_kind", "running", "failed"}
+    assert set(jobs.summary()) == {"queued", "by_kind", "running", "failed", "oldest_queued"}
+
+
+# --- leases (the Mac's compute worker on the hub) ---------------------------------------------
+
+def test_lease_claims_and_blocks_duplicates():
+    t = jobs.enqueue("transcribe", "s1")
+    j = jobs.next_job(["transcribe"], lease_for="mac")
+    assert j.id == t and j.lease_id and jobs.state_of(t) == "leased"
+    assert jobs.get(t).attempts == 1
+    assert jobs.enqueue("transcribe", "s1") == t  # leased: a no-op, like running
+    assert jobs.lease_of(t, j.lease_id).id == t and jobs.lease_of(t, "other") is None
+    assert jobs.pending(["transcribe"]) == 1
+    assert jobs.summary()["running"][0]["id"] == t
+    jobs.finish(t)
+    assert jobs.state_of(t) == "done"
+
+
+def test_lease_expires_and_is_reaped():
+    t = jobs.enqueue("diarize", "s1")
+    j = jobs.next_job(["diarize"], lease_for="mac", now=1000.0)
+    assert jobs.reap(now=1000.0 + jobs.LEASE_S - 1) == []
+    assert jobs.heartbeat(t, j.lease_id, now=1000.0 + 100)          # renewed
+    assert jobs.reap(now=1000.0 + 100 + jobs.LEASE_S - 1) == []
+    assert jobs.reap(now=1000.0 + 100 + jobs.LEASE_S + 1) == [t]
+    assert jobs.state_of(t) == "queued"
+    assert jobs.get(t).attempts == 0                                   # as before the claim
+    assert not jobs.heartbeat(t, j.lease_id)                           # the old lease is gone
+    assert jobs.reclaimable(t, j.lease_id).id == t                     # but its work is not thrown away
+    j2 = jobs.next_job(["diarize"], lease_for="mac2")
+    assert j2.lease_id != j.lease_id and jobs.reclaimable(t, j.lease_id) is None
+
+
+def test_lease_expiring_too_often_fails_the_job():
+    t = jobs.enqueue("transcribe", "killer")
+    for i in range(jobs.MAX_EXPIRIES):
+        assert jobs.state_of(t) == "queued"
+        jobs.next_job(["transcribe"], lease_for="mac", now=0.0)
+        jobs.reap(now=jobs.LEASE_S + 1)
+    assert jobs.state_of(t) == "failed"
+    assert jobs.retry_failed(t) == 1 and jobs.state_of(t) == "queued"   # "Riprova"
+    assert jobs.get(t).attempts == 0
+
+
+def test_release_gives_the_attempt_back_and_organize_waits():
+    o = jobs.enqueue("organize", "s9")
+    t = jobs.enqueue("transcribe", "s1")
+    j = jobs.next_job(["transcribe", "organize"], lease_for="mac")
+    assert j.id == t
+    assert jobs.next_job(["organize"], lease_for="mac") is None        # a transcription is leased: organize waits
+    assert jobs.release(t, j.lease_id) and not jobs.release(t, j.lease_id)
+    assert jobs.get(t).attempts == 0 and jobs.state_of(t) == "queued"
+    jobs.finish(jobs.next_job(["transcribe"], lease_for="mac").id)
+    assert jobs.next_job(["organize"], lease_for="mac").id == o
+
+
+def test_a_restarted_worker_loses_its_leases():
+    a, b = jobs.enqueue("transcribe", "a"), jobs.enqueue("diarize", "b")
+    jobs.next_job(["transcribe"], lease_for="mac")
+    jobs.next_job(["diarize"], lease_for="other")
+    assert jobs.release_worker("mac") == 1
+    assert jobs.state_of(a) == "queued" and jobs.state_of(b) == "leased"
+    assert jobs.reset_running() == 0                                    # leases survive a restart of the hub
