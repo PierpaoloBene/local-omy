@@ -10,7 +10,7 @@ import os
 import sys
 from datetime import date, datetime
 
-from omy import battery, enroll, iphone, lock, macsetup, people, places, review, status, transcribe
+from omy import battery, enroll, iphone, lock, macsetup, people, places, remote, review, status, transcribe
 from omy.config import ARCHIVE, feature_on
 from omy_receiver import features
 from omy_receiver.l10n import tr
@@ -207,8 +207,11 @@ def main() -> int:
                or args.cmd == "speakers" and args.action in ("rename", "kind", "unknown")
                or args.cmd == "transcribe" and args.render)
     try:
-        with lock.writing() if changes else contextlib.nullcontext():
-            result = _run(args)
+        if remote.enabled(args.cmd):  # hub_url in config.toml: the archive is on the hub (docs/hub-migration.md)
+            result = remote.run(args)
+        else:
+            with lock.writing() if changes else contextlib.nullcontext():
+                result = _run(args)
     except (iphone.IphoneError, transcribe.TranscribeError, macsetup.SetupError) as e:
         if args.json:
             print(json.dumps({"error": str(e)}))
@@ -258,6 +261,8 @@ def _run(args: argparse.Namespace) -> dict:
         }[args.action]()
     elif args.cmd == "voice":
         result = enroll.enroll()
+        if remote.hub_url():  # the profile is used where the voices are named: the hub
+            result["hub"] = remote.upload_profile()
     elif args.cmd == "speakers":
         result = {
             "list": lambda: people.list_day(args.day),

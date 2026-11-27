@@ -690,9 +690,28 @@ class ComputeWorker(Worker):
 
     # --- the Mac app's audio context ------------------------------------------------------------------------
 
+    def sync_settings(self) -> None:
+        """The features (settings.json) as the hub has them, where the Mac app reads them (next to context/):
+        the iPhone may have turned mac_audio off."""
+        try:
+            r = self.hub.request("GET", "/compute/v1/settings", timeout=20)
+            if r.status != 200 or not self.context_dir.parent.is_dir():
+                return
+            dest = self.context_dir.parent / "settings.json"
+            text = json.dumps({"features": {k: {"on": v["on"], "at": v["at"]} for k, v in r.json()["features"].items()
+                                            if v.get("at")}}, indent=1)
+            if not dest.exists() or dest.read_text() != text:
+                tmp = dest.with_name(".settings.json.tmp")
+                tmp.write_text(text)
+                os.replace(tmp, dest)
+        except (HubDown, OSError, KeyError, ValueError) as e:
+            log(f"settings: {e}")
+
     def sync_context(self, days: list[str] | None = None) -> None:
         """Upload the recent context/audio-DAY.jsonl files (written by the Mac app) to the hub."""
         self.last_context = time.time()
+        if days is None:
+            self.sync_settings()
         if not self.context_dir.is_dir():
             return
         files = sorted(self.context_dir.glob("audio-????-??-??.jsonl"))[-CONTEXT_DAYS:]

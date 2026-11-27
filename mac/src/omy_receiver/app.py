@@ -828,6 +828,28 @@ def create_app(config: Config) -> FastAPI:
         from omy import hubstats
         return await asyncio.to_thread(hubstats.widget)
 
+    # The second brain, for the Mac app (omy brain status / organize / index, run on the hub).
+    @app.get("/v1/brain/summary")
+    async def brain_summary(request: Request):
+        return await run(request, "brain", "status")
+
+    @app.post("/v1/brain/organize")
+    async def brain_organize(request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        try:
+            b = await json_body(request)
+            since, force = _day(b["since"]), b.get("force", False)
+            if not isinstance(force, bool):
+                raise ValueError
+        except (ValueError, KeyError, TypeError):
+            return _error(400, "invalid body")
+        return await run(request, "organize", "--since", since, "--now", *(["--force"] if force else []))
+
+    @app.post("/v1/brain/index")
+    async def brain_index(request: Request):
+        return await run(request, "index", "--all")
+
     @app.get("/v1/battery")
     async def battery_status(request: Request):
         return await run(request, "battery")
