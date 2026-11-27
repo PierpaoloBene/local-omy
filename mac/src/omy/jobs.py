@@ -63,6 +63,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS jobs_running ON jobs(kind, key) WHERE state = 
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_leased ON jobs(kind, key) WHERE state = 'leased';
 CREATE INDEX IF NOT EXISTS jobs_pick ON jobs(state, priority, id);
 CREATE TABLE IF NOT EXISTS demand (role TEXT PRIMARY KEY, last_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS asks (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    history TEXT NOT NULL DEFAULT '[]',
+    asked_at TEXT,
+    state TEXT NOT NULL DEFAULT 'pending',
+    created REAL NOT NULL,
+    lease_id TEXT,
+    lease_until REAL,
+    worker TEXT,
+    finished REAL,
+    answer TEXT NOT NULL DEFAULT '',
+    citations TEXT NOT NULL DEFAULT '[]',
+    used TEXT NOT NULL DEFAULT '[]',
+    not_found INTEGER NOT NULL DEFAULT 0,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS asks_state ON asks(state, created);
 """
 
 

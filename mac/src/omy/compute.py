@@ -167,6 +167,7 @@ class ComputeWorker(Worker):
         self.last_context = 0.0
         self.caffeinate: subprocess.Popen | None = None
         self.progress: dict = {}
+        self.cached_kinds: list[str] | None = None
 
     # --- safety: this directory is wiped between jobs ------------------------------------------
 
@@ -307,6 +308,8 @@ class ComputeWorker(Worker):
         log(f"compute worker started (workspace {self.ws}, hub {self.hub.url})")
         self.guard_thread = threading.Thread(target=self._guard_loop, daemon=True)
         self.guard_thread.start()
+        self.cached_kinds = self.capabilities()["kinds"]
+        threading.Thread(target=self.ask_loop, daemon=True).start()
         while not self.stopping:
             try:
                 if self.step():
@@ -586,6 +589,104 @@ class ComputeWorker(Worker):
         out = self.ws / "embed-output.json"
         out.write_text(json.dumps({"vectors": vectors}))
         return [out], {}
+
+    # --- "Chiedi": questions queued on the hub ----------------------------------------------------------------
+
+    def ask_loop(self) -> None:
+        """A thread of its own: a question must not wait for a transcription to end. It long-polls the hub for
+        the oldest question nobody is answering."""
+        while not self.stopping:
+            if "ask" not in (self.cached_kinds or ["ask"]):
+                time.sleep(30.0)
+                continue
+            try:
+                r = self.hub.request("GET", f"/compute/v1/ask/next?worker_id={self.worker_id}&wait=20", timeout=50)
+            except HubDown:
+                time.sleep(10.0)
+                continue
+            if r.status != 200:
+                time.sleep(10.0 if r.status != 204 else 0.0)
+                continue
+            try:
+                self.answer_ask(r.json()["ask"])
+            except Exception as e:  # noqa: BLE001
+                log(f"ask: {e}")
+
+    def answer_ask(self, ask: dict) -> None:
+        """Embed the question, let the hub search, write the answer with the chat model and stream it back."""
+        import queue
+        import re
+        from omy.brain import ask as ask_mod, embed
+        base = f"/compute/v1/ask/{ask['id']}"
+        t0 = time.monotonic()
+        jobs.touch_demand("chat")      # a heavy job in hand gives way (guard_once), and the models are loaded
+        try:
+            qvec = embed.embed([ask["embed_text"]], query=True)[0].tolist()
+        except Exception as e:  # noqa: BLE001 - BM25 only
+            log(f"ask: no query embedding ({e})")
+            qvec = None
+        r = self.hub.request("POST", base + "/retrieve", timeout=120, body={"lease_id": ask["lease_id"], "qvec": qvec})
+        if r.status != 200 or r.json().get("not_found"):
+            return
+
+        def post(events: list[dict]) -> bool:
+            try:
+                return self.hub.request("POST", base + "/events", timeout=30,
+                                        body={"lease_id": ask["lease_id"], "events": events}).status == 200
+            except HubDown:
+                return False
+
+        doc = r.json()
+        try:
+            url = models.request_chat()
+        except Exception as e:  # noqa: BLE001
+            post([{"type": "error", "message": f"{type(e).__name__}: {e}"[:200]}])
+            return
+        q: queue.Queue = queue.Queue()
+        stop, holder = threading.Event(), {}
+        threading.Thread(target=ask_mod._stream_llama, daemon=True,
+                         args=(url, doc["messages"], q.put, stop, holder)).start()
+        think, full, first = ask_mod.ThinkFilter(), "", None
+        batch: list[dict] = []
+        last = time.monotonic()
+        try:
+            while True:
+                try:
+                    item = q.get(timeout=0.2)
+                except queue.Empty:
+                    item = None
+                if item is ask_mod._DONE:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                if item:
+                    text = think.feed(item)
+                    if text:
+                        first = first or time.monotonic()
+                        full += text
+                        batch.append({"type": "delta", "text": text})
+                if batch and time.monotonic() - last >= 0.15:
+                    if not post(batch):
+                        return  # the hub does not know this lease any more
+                    batch, last = [], time.monotonic()
+            if tail := think.flush():
+                full += tail
+                batch.append({"type": "delta", "text": tail})
+            valid = {c["n"] for c in doc["citations"]}
+            used = sorted({int(n) for n in re.findall(r"\[(\d+)\]", full)} & valid)
+            batch.append({"type": "done", "used": used, "timings": {
+                "ttft_ms": int((first - t0) * 1000) if first else 0, "total_ms": int((time.monotonic() - t0) * 1000)}})
+            post(batch)
+        except Exception as e:  # noqa: BLE001
+            post([*batch, {"type": "error", "message": f"{type(e).__name__}: {e}"[:200]}])
+        finally:
+            stop.set()
+            resp = holder.get("resp")
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # --- the Mac app's audio context ------------------------------------------------------------------------
 

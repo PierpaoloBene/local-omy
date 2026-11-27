@@ -44,7 +44,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.requests import ClientDisconnect
 
-from . import features
+from . import features, hubask
 from .localtime import local_tz
 from .segment import SegmentError, parse_header
 
@@ -413,6 +413,7 @@ def create_app(config: Config) -> FastAPI:
     omy_env = {k: v for k, v in os.environ.items() if k not in ("OMY_TOKEN", "OMY_COMPUTE_TOKEN", "OMY_WIDGET_TOKEN")}
     omy_env["OMY_ARCHIVE"] = str(config.archive)
     hub = os.environ.get("OMY_ROLE") == "hub"
+    live = hubask.Live()
 
     async def omy(*args: str) -> dict:
         """Runs omy --json ARGS; its error, if any, as ValueError."""
@@ -575,6 +576,45 @@ def create_app(config: Config) -> FastAPI:
 
         return await asyncio.to_thread(read)
 
+    async def hub_ask_events(request: Request, question: str, history: list, now: datetime):
+        """On the hub the question goes to a persistent queue (omy.asks): the Mac, if it is there, takes it at
+        once and its events are relayed here; if not, the iPhone is told it is waiting for the Mac and fetches
+        the answer later (GET /v1/asks, /v1/ask/{id})."""
+        from omy import asks, hubstate
+        ask_id = await asyncio.to_thread(asks.create, question, history, now.isoformat())
+        async for ev in hubask.relay(live, ask_id, hubstate.online()):
+            if await request.is_disconnected():
+                break
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    # What waits for the Mac and what it answered meanwhile (the iPhone lists these, GET /v1/asks).
+    def ask_view(a: dict) -> dict:
+        return {k: a[k] for k in ("id", "question", "state", "created", "finished", "answer", "citations", "used",
+                                  "not_found", "error")}
+
+    @app.get("/v1/asks")
+    async def asks_list(request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        from omy import asks
+        return {"asks": [ask_view(a) for a in await asyncio.to_thread(asks.recent)]}
+
+    @app.get("/v1/ask/{ask_id}")
+    async def ask_get(ask_id: str, request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        from omy import asks
+        a = await asyncio.to_thread(asks.get, ask_id) if re.fullmatch(r"[0-9a-f]{16}", ask_id) else None
+        return _error(404, "no such question") if a is None else ask_view(a)
+
+    @app.delete("/v1/ask/{ask_id}")
+    async def ask_cancel(ask_id: str, request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        from omy import asks
+        ok = re.fullmatch(r"[0-9a-f]{16}", ask_id) and await asyncio.to_thread(asks.cancel, ask_id)
+        return {"cancelled": bool(ok)}
+
     # A question to the second brain: server-sent events, see omy.brain.ask. POST, so the
     # question stays out of the access log.
     @app.post("/v1/ask")
@@ -610,6 +650,11 @@ def create_app(config: Config) -> FastAPI:
                     now = now.replace(tzinfo=LOCAL_TZ)
         except (ValueError, TypeError):
             return _error(400, "invalid question")
+
+        if hub:
+            return StreamingResponse(hub_ask_events(request, question.strip(), history, now),
+                                     media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
         async def events():
             from omy.brain import ask
@@ -774,9 +819,68 @@ def create_app(config: Config) -> FastAPI:
             return _error(400, "invalid name")
         return await run(request, "places", "remove", name, change=True)
 
+    # The hub's dashboard widget (its own read-only token, or the phone's), the Mac app and other apps.
+    @app.get("/v1/widget")
+    async def widget(request: Request):
+        if not (_authorized(request, config.token)
+                or (config.widget_token is not None and _authorized(request, config.widget_token))):
+            return _error(401, "unauthorized")
+        from omy import hubstats
+        return await asyncio.to_thread(hubstats.widget)
+
+    @app.get("/v1/battery")
+    async def battery_status(request: Request):
+        return await run(request, "battery")
+
+    @app.get("/v1/status")
+    async def hub_status(request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        from omy import hubstats
+        return await asyncio.to_thread(hubstats.status_doc)
+
+    # The day transcripts for other apps (README, "Output per altre app"): which days changed since a time, and
+    # the JSONL of a day, with Last-Modified so that a reader can ask only for what is newer.
+    @app.get("/v1/export/days")
+    async def export_days(request: Request, since: float = 0.0):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+
+        def read() -> list[dict]:
+            out = []
+            for f in sorted((config.archive / "transcripts").glob("????-??-??.jsonl")):
+                st = f.stat()
+                if st.st_mtime > since:
+                    out.append({"day": f.stem, "mtime": st.st_mtime, "size": st.st_size})
+            return out
+        return {"days": await asyncio.to_thread(read)}
+
+    @app.get("/v1/export/{day}.jsonl")
+    async def export_day(day: str, request: Request):
+        if not _authorized(request, config.token):
+            return _error(401, "unauthorized")
+        try:
+            _day(day)
+        except ValueError:
+            return _error(400, "invalid day")
+        f = config.archive / "transcripts" / f"{day}.jsonl"
+        if not f.is_file():
+            return _error(404, "no such day")
+        from email.utils import formatdate, parsedate_to_datetime
+        mtime = f.stat().st_mtime
+        since = request.headers.get("if-modified-since")
+        if since:
+            try:
+                if parsedate_to_datetime(since).timestamp() >= int(mtime):
+                    return Response(status_code=304)
+            except (TypeError, ValueError):
+                pass
+        return Response(f.read_bytes(), media_type="application/x-ndjson",
+                        headers={"Last-Modified": formatdate(mtime, usegmt=True)})
+
     if config.compute_token is not None:
         from . import compute
-        app.include_router(compute.build_router(config, _authorized, log))
+        app.include_router(compute.build_router(config, _authorized, log, live))
     return app
 
 

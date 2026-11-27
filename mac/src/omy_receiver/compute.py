@@ -35,8 +35,8 @@ def _err(status: int, detail: str, **extra) -> JSONResponse:
     return JSONResponse({"error": detail, **extra}, status_code=status)
 
 
-def build_router(config, authorized, log) -> APIRouter:
-    from omy import hubjobs, hubstate, jobs
+def build_router(config, authorized, log, live=None) -> APIRouter:
+    from omy import asks, hubjobs, hubstate, jobs
 
     router = APIRouter(prefix="/compute/v1")
     archive: Path = config.archive
@@ -369,5 +369,110 @@ def build_router(config, authorized, log) -> APIRouter:
             f.write(data)
         os.replace(tmp, dest)
         return {"ok": True}
+
+    # --- "Chiedi": the questions the iPhone asked (omy.asks) -----------------------------------------------
+
+    def publish(ask_id: str, event: dict) -> None:
+        if live is not None:
+            live.publish(ask_id, event)
+
+    @router.get("/ask/next")
+    async def ask_next(request: Request, worker_id: str = "mac", wait: float = 0.0):
+        """Long-poll: the oldest question nobody is answering, leased to this worker, or 204."""
+        if (r := gate(request)) is not None:
+            return r
+        if not WORKER_ID.fullmatch(worker_id):
+            return _err(400, "invalid worker_id")
+        deadline = time.monotonic() + min(max(wait, 0.0), MAX_WAIT)
+        while True:
+            await asyncio.to_thread(hubstate.record, worker_id, hubstate.read().get("boot_id", ""), None, None)
+            a = await asyncio.to_thread(asks.next_for, worker_id)
+            if a is not None:
+                from omy.brain import ask as ask_mod
+                return {"ask": {"id": a["id"], "lease_id": a["lease_id"], "question": a["question"],
+                                "history": a["history"], "now": a["asked_at"],
+                                "embed_text": ask_mod.retrieval_query(a["question"], a["history"])}}
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return Response(status_code=204)
+            await asyncio.sleep(min(1.0, left))
+
+    @router.post("/ask/{ask_id}/retrieve")
+    async def ask_retrieve(ask_id: str, request: Request):
+        """The hub searches (dates, people, BM25 + the query vector the Mac made) and answers with the messages to give
+        to the chat model, or finishes the question itself when nothing relevant was found."""
+        if (r := gate(request)) is not None:
+            return r
+        try:
+            b = await body_json(request)
+            lease_id, qvec = b["lease_id"], b.get("qvec")
+            if qvec is not None and (not isinstance(qvec, list) or len(qvec) > 4096):
+                raise ValueError
+        except (ValueError, KeyError):
+            return _err(400, "invalid body")
+        a = await asyncio.to_thread(asks.get, ask_id)
+        if a is None or not await asyncio.to_thread(asks.holds, ask_id, lease_id):
+            return _err(409, "no valid lease")
+        from datetime import datetime
+        from omy.brain import ask as ask_mod
+        from omy_receiver.localtime import local_tz
+        try:
+            now = datetime.fromisoformat(a["asked_at"]) if a["asked_at"] else datetime.now(local_tz())
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=local_tz())
+        except ValueError:
+            now = datetime.now(local_tz())
+        publish(ask_id, {"type": "status", "stage": "searching"})
+        found = await asyncio.to_thread(ask_mod.retrieve, a["question"], a["history"], now, qvec)
+        if found["not_found"]:
+            await asyncio.to_thread(asks.finish, ask_id, lease_id, citations=[], used=[], not_found=True,
+                                    answer=ask_mod.NOT_FOUND)
+            for ev in ({"type": "citations", "items": []}, {"type": "delta", "text": ask_mod.NOT_FOUND},
+                       {"type": "done", "not_found": True, "used": [], "timings": {}}):
+                publish(ask_id, ev)
+            return {"not_found": True}
+        await asyncio.to_thread(asks.set_citations, ask_id, lease_id, found["citations"])
+        publish(ask_id, {"type": "citations", "items": found["citations"]})
+        publish(ask_id, {"type": "status", "stage": "answering"})
+        return {"not_found": False, "citations": found["citations"], "messages": found["messages"]}
+
+    @router.post("/ask/{ask_id}/events")
+    async def ask_events(ask_id: str, request: Request):
+        """The Mac's generation, as the events of /v1/ask: delta (text pieces), then done or error."""
+        if (r := gate(request)) is not None:
+            return r
+        try:
+            b = await body_json(request)
+            lease_id, events = b["lease_id"], b["events"]
+            if not isinstance(events, list) or len(events) > 200:
+                raise ValueError
+        except (ValueError, KeyError):
+            return _err(400, "invalid body")
+        if not await asyncio.to_thread(asks.holds, ask_id, lease_id):
+            return _err(409, "no valid lease")
+        for ev in events:
+            kind = ev.get("type") if isinstance(ev, dict) else None
+            if kind == "delta" and isinstance(ev.get("text"), str):
+                await asyncio.to_thread(asks.append, ask_id, lease_id, ev["text"])
+                publish(ask_id, {"type": "delta", "text": ev["text"]})
+            elif kind == "done":
+                used = [n for n in ev.get("used", []) if isinstance(n, int)]
+                await asyncio.to_thread(asks.finish, ask_id, lease_id, used=used)
+                publish(ask_id, {"type": "done", "not_found": False, "used": used,
+                                 "timings": ev.get("timings") if isinstance(ev.get("timings"), dict) else {}})
+            elif kind == "error":
+                msg = str(ev.get("message", "error"))[:200]
+                await asyncio.to_thread(asks.fail, ask_id, lease_id, msg)
+                publish(ask_id, {"type": "error", "message": msg})
+        await asyncio.to_thread(asks.renew, ask_id, lease_id)
+        return {"ok": True}
+
+    @router.get("/last-segment")
+    async def last_segment(request: Request):
+        """When the newest segment started: the Mac needs it to know if the iPhone app was reopened."""
+        if (r := gate(request)) is not None:
+            return r
+        from omy import hubstats
+        return {"start": await asyncio.to_thread(hubstats.last_segment_start)}
 
     return router

@@ -280,15 +280,25 @@ def _prev_question(question: str, history: list[dict]) -> str | None:
     return prev[-1].strip() if prev else None
 
 
-def _search(question: str, history: list[dict], rng, persons: list[str], maybe: list[str] | None = None) -> list[dict]:
-    """persons filter the search; `maybe` (an ambiguous first name) only boosts."""
-    index = _index()
+def retrieval_query(question: str, history: list[dict]) -> str:
+    """The text that is searched for (and, on the hub, embedded by the Mac): the question, with the previous one
+    in front when it is a short follow-up."""
     prev = _prev_question(question, history)
-    query = f"{prev} {question}" if prev else question
+    return f"{prev} {question}" if prev else question
+
+
+def _search(question: str, history: list[dict], rng, persons: list[str], maybe: list[str] | None = None,
+            qvec=None) -> list[dict]:
+    """persons filter the search; `maybe` (an ambiguous first name) only boosts. qvec: the query's embedding made
+    elsewhere (the Mac, for the hub)."""
+    index = _index()
+    query = retrieval_query(question, history)
     day_from, day_to = (rng[0], rng[1]) if rng else (None, None)
     kw = {"day_from": day_from, "day_to": day_to, "k": K}
     filt = [p for p in persons if p != "me"]
     boost = filt + [p for p in (maybe or []) if p != "me" and p not in filt]
+    if qvec is not None:
+        kw["qvec"] = qvec
     hits = index.search(query, persons=filt or None, **kw)
     if boost and (len(hits) < 2 if filt else True):
         if filt:
@@ -315,6 +325,22 @@ def _session_days(sessions: list[str]) -> dict[str, str]:
         if day:
             out[sid] = str(day)
     return out
+
+
+def retrieve(question: str, history: list[dict], now: datetime, qvec=None) -> dict:
+    """The retrieval half of answer(), for the hub: {"not_found": True} or {"not_found": False, "citations",
+    "messages"} to give to the chat model. Same steps; qvec comes from the Mac."""
+    prev = _prev_question(question, history)
+    rng = dates.question_range(question, now) or (dates.question_range(f"{prev} {question}", now) if prev else None)
+    persons, maybe = person_groups(question)
+    if prev and not persons and not maybe:
+        persons, maybe = person_groups(f"{prev} {question}")
+    hits = _search(question, history, rng, persons, maybe, qvec)
+    if not relevant(hits):
+        return {"not_found": True, "citations": [], "hits": len(hits)}
+    sources, cites = build_context(hits, _session_days([h.get("session") for h in hits]))
+    return {"not_found": False, "citations": cites, "messages": build_messages(question, history, sources, now),
+            "hits": len(hits)}
 
 
 async def answer(question: str, history: list[dict], now: datetime) -> AsyncIterator[dict]:
