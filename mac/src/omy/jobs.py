@@ -218,15 +218,15 @@ def finish(job_id: int) -> None:
         db.execute("COMMIT")
 
 
-def fail(job_id: int, error: str, retry_after: float | None = None) -> bool:
+def fail(job_id: int, error: str, retry_after: float | None = None, permanent: bool = False) -> bool:
     """The job failed. Back in the queue after retry_after seconds (default:
-    a backoff that doubles) unless it has used MAX_ATTEMPTS; returns whether
-    it will be retried."""
+    a backoff that doubles) unless it has used MAX_ATTEMPTS (or is permanent:
+    there is no point in trying again); returns whether it will be retried."""
     now = time.time()
     with closing(_connect()) as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT attempts FROM jobs WHERE id=?", (job_id,)).fetchone()
-        attempts = row["attempts"] if row else MAX_ATTEMPTS
+        attempts = MAX_ATTEMPTS if permanent or not row else row["attempts"]
         retry = attempts < MAX_ATTEMPTS
         if retry:
             wait = BACKOFF_S * 2 ** (attempts - 1) if retry_after is None else retry_after
@@ -323,6 +323,13 @@ def lease_of(job_id: int, lease_id: str) -> Job | None:
         row = db.execute("SELECT * FROM jobs WHERE id=? AND lease_id=? AND state='leased'",
                          (job_id, lease_id)).fetchone()
     return _job(row) if row else None
+
+
+def completed(job_id: int, lease_id: str) -> bool:
+    """Whether this lease already completed the job (a repeated complete is answered, not redone)."""
+    with closing(_connect()) as db:
+        return db.execute("SELECT 1 FROM jobs WHERE id=? AND lease_id=? AND state='done'",
+                          (job_id, lease_id)).fetchone() is not None
 
 
 def heartbeat(job_id: int, lease_id: str, now: float | None = None) -> bool:

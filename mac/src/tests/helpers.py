@@ -45,3 +45,27 @@ def write_speakers(archive: Path, day: str, session: str, voices: dict[str, np.n
         "turns": [{"start": start, "end": start, "speaker": clusters[k]["name"], "label": k} for _, _, k in turns],
     }))
     return path
+
+
+def write_segments(archive: Path, start: str = "2026-10-29T08:00:00", n: int = 3, seconds: int = 300,
+                   device: str = "pendant-1", tag: str = "0000abcd") -> list[str]:
+    """n contiguous segments of `seconds` from `start` (UTC), as the receiver stores them (the audio is junk:
+    nothing here decodes it). Returns their ids; the first one is the id of the session."""
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+    from omy_receiver.localtime import local_tz
+    t = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+    ids = []
+    for i in range(n):
+        s, e = t + timedelta(seconds=i * seconds), t + timedelta(seconds=(i + 1) * seconds)
+        sid = f"{s:%Y%m%dT%H%M%SZ}-{tag if i == 0 else f'{i:08x}'}"
+        day_dir = archive / "raw" / "audio" / s.astimezone(local_tz()).strftime("%Y-%m-%d")
+        day_dir.mkdir(parents=True, exist_ok=True)
+        audio = f"audio of {sid}".encode() * 50
+        (day_dir / f"{sid}.bin").write_bytes(audio)
+        (day_dir / f"{sid}.json").write_text(json.dumps({
+            "id": sid, "device_id": device, "codec": 20, "start": s.isoformat().replace("+00:00", "Z"),
+            "end": e.isoformat().replace("+00:00", "Z"), "frame_count": 10, "first_packet_index": 0,
+            "last_packet_index": 9, "sha256": hashlib.sha256(audio).hexdigest()}))
+        ids.append(sid)
+    return ids

@@ -359,10 +359,7 @@ class Worker:
             return []
 
     def add_batch(self, key: str) -> None:
-        b = self.batch()
-        if key not in b:
-            BATCH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            BATCH.write_text(json.dumps([*b, key]))
+        add_to_batch(key)
 
     def _drop_unreadable(self, batch: list[str]) -> list[str]:
         """The sids of the batch whose sidecar can be read: the others are
@@ -525,6 +522,17 @@ class Worker:
         self.state = "stopped"
         self.write_status()
         log("stopped")
+
+
+def add_to_batch(key: str) -> None:
+    """A note was written: its links, entity pages and indexes are rebuilt by finalize_batch."""
+    try:
+        b = json.loads(BATCH.read_text())
+    except (FileNotFoundError, ValueError):
+        b = []
+    if key not in b:
+        BATCH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        BATCH.write_text(json.dumps([*b, key]))
 
 
 def read_status() -> dict:

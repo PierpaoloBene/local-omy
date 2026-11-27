@@ -72,6 +72,11 @@ def my_name() -> str:
 
 
 def available() -> bool:
+    """Whether this machine can diarize. On the hub, whether the Mac's compute worker says it can (or
+    has not said anything yet: the jobs wait for it)."""
+    if os.environ.get("OMY_ROLE") == "hub":
+        from omy import hubstate
+        return hubstate.can("diarize")
     return TOKEN_FILE.is_file() or (HF_HOME / "hub").is_dir()
 
 
@@ -301,7 +306,9 @@ def speakers_path(session: Session) -> Path:
     return TRANSCRIPTS / session.day.isoformat() / "speakers" / f"{session.id}.json"
 
 
-def diarize_session(session: Session) -> dict:
+def decode_and_diarize(session: Session) -> dict:
+    """The part that needs the audio and pyannote (the Mac): decode the session and run the model.
+    {"turns", "embeddings", "seconds"}, see diarize_wav."""
     CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     wav = CACHE_DIR / f"diarize-{session.id}.wav"
     dec = StreamDecoder(session.segments[0].codec)
@@ -310,10 +317,35 @@ def diarize_session(session: Session) -> dict:
         for seg in session.segments:
             dec.add(parse(seg.bin.read_bytes()))
         dec.close()
-        result = diarize_wav(wav)
+        return diarize_wav(wav)
     finally:
         dec.close()
         wav.unlink(missing_ok=True)
+
+
+def result_to_json(result: dict) -> dict:
+    """The result of decode_and_diarize as plain JSON (what the Mac sends to the hub)."""
+    import numpy as np
+    return {"version": VERSION, "model": MODEL,
+            "turns": [[float(s), float(e), str(k)] for s, e, k in result["turns"]],
+            "embeddings": {str(k): np.asarray(v, dtype=np.float32).tolist() for k, v in result["embeddings"].items()},
+            "seconds": {str(k): float(v) for k, v in result["seconds"].items()}}
+
+
+def result_from_json(doc: dict) -> dict:
+    import numpy as np
+    return {"turns": [(float(s), float(e), str(k)) for s, e, k in doc["turns"]],
+            "embeddings": {k: np.asarray(v, dtype=np.float32) for k, v in doc["embeddings"].items()},
+            "seconds": {k: float(v) for k, v in doc["seconds"].items()}}
+
+
+def diarize_session(session: Session) -> dict:
+    return commit(session, decode_and_diarize(session))
+
+
+def commit(session: Session, result: dict) -> dict:
+    """The rest: the call/media context of each voice, the names, the speakers document. Needs no audio
+    and no model: on the hub it runs when the Mac delivers `result`."""
     from omy import context
     at = lambda sec: session.start + timedelta(seconds=sec)  # noqa: E731
     ctx = context.intervals(session.start, session.end)

@@ -6,6 +6,9 @@ Environment:
   OMY_TOKEN_FILE  token file, must be owned by you and mode 600
                   (default ~/.config/local-omy/token)
   OMY_TOKEN       token value (alternative to the file)
+  OMY_COMPUTE_TOKEN  token of the Mac's compute worker (/compute/v1/*); without it that API is not served
+  OMY_WIDGET_TOKEN   token that only reads GET /v1/widget (the hub dashboard)
+  OMY_ROLE        "hub": on the hub (the Mac computes, see docs/hub-migration.md); unset: as on the Mac
   OMY_ARCHIVE     archive root (default ~/OmiArchive)
   OMY_PORT        port on 127.0.0.1 (default 8787)
   OMY_MAX_BODY    max upload size in bytes (default 32 MiB)
@@ -115,6 +118,8 @@ class Config:
     token: bytes
     archive: Path
     max_body: int = 32 * 1024 * 1024
+    compute_token: bytes | None = None
+    widget_token: bytes | None = None
 
 
 def load_token() -> bytes:
@@ -139,11 +144,26 @@ def load_token() -> bytes:
     return value.encode("utf-8")
 
 
+def _extra_token(name: str) -> bytes | None:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    if len(value) < MIN_TOKEN_LEN:
+        raise ConfigError(f"{name} must be at least {MIN_TOKEN_LEN} characters")
+    return value.encode("utf-8")
+
+
 def load_config() -> Config:
+    token = load_token()
+    compute, widget = _extra_token("OMY_COMPUTE_TOKEN"), _extra_token("OMY_WIDGET_TOKEN")
+    if len({t for t in (token, compute, widget) if t is not None}) != len([t for t in (token, compute, widget) if t]):
+        raise ConfigError("OMY_TOKEN, OMY_COMPUTE_TOKEN and OMY_WIDGET_TOKEN must all be different")
     return Config(
-        token=load_token(),
+        token=token,
         archive=Path(os.environ.get("OMY_ARCHIVE", "~/OmiArchive")).expanduser(),
         max_body=int(os.environ.get("OMY_MAX_BODY", 32 * 1024 * 1024)),
+        compute_token=compute,
+        widget_token=widget,
     )
 
 
@@ -389,7 +409,10 @@ def create_app(config: Config) -> FastAPI:
         return {"features": merged}
 
     omy_lock = asyncio.Lock()
-    omy_env = {**os.environ, "OMY_ARCHIVE": str(config.archive)}
+    # The subprocesses never see the tokens (they are in the environment of the hub container).
+    omy_env = {k: v for k, v in os.environ.items() if k not in ("OMY_TOKEN", "OMY_COMPUTE_TOKEN", "OMY_WIDGET_TOKEN")}
+    omy_env["OMY_ARCHIVE"] = str(config.archive)
+    hub = os.environ.get("OMY_ROLE") == "hub"
 
     async def omy(*args: str) -> dict:
         """Runs omy --json ARGS; its error, if any, as ValueError."""
@@ -522,7 +545,12 @@ def create_app(config: Config) -> FastAPI:
             return _error(401, "unauthorized")
 
         def ask() -> dict:
-            from omy import jobs, transcribe, worker
+            from omy import hubstate, jobs, transcribe, worker
+            if hub:
+                # The hub does not transcribe: it wakes its scheduler and says whether the Mac is there to do it.
+                jobs.wake()
+                busy = jobs.pending(["transcribe", "diarize"]) > 0
+                return {"started": not busy, "running": busy, "mac_online": hubstate.online()}
             if not worker.heartbeat_fresh():
                 return fallback_transcribe()
             busy = transcribe.progress()["running"] or jobs.pending(["transcribe", "diarize"]) > 0
@@ -538,7 +566,11 @@ def create_app(config: Config) -> FastAPI:
             return _error(401, "unauthorized")
 
         def read() -> dict:
-            from omy import jobs, models, worker
+            from omy import hubstate, jobs, models, worker
+            if hub:
+                return {"worker": worker.read_status(), "jobs": jobs.summary(),
+                        "models": {"loaded": (hubstate.read().get("state") or {}).get("loaded")},
+                        "mac_online": hubstate.online()}
             return {"worker": worker.read_status(), "jobs": jobs.summary(), "models": models.state()}
 
         return await asyncio.to_thread(read)
@@ -742,6 +774,9 @@ def create_app(config: Config) -> FastAPI:
             return _error(400, "invalid name")
         return await run(request, "places", "remove", name, change=True)
 
+    if config.compute_token is not None:
+        from . import compute
+        app.include_router(compute.build_router(config, _authorized, log))
     return app
 
 

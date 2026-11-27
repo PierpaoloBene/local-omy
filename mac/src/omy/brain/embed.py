@@ -10,6 +10,7 @@ truncation) and normalized again.
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -30,6 +31,8 @@ class EmbedError(Exception):
 
 
 def _base(query: bool) -> str:
+    if os.environ.get("OMY_ROLE") == "hub":
+        raise EmbedError("the hub has no embedding model (the Mac embeds)")
     try:
         if not query:
             return models.ensure("embed")  # the worker's index job: load it (stops the organizer)

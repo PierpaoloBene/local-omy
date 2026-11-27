@@ -75,7 +75,11 @@ def _check_preempt() -> None:
 
 
 def model_name() -> str:
-    """The organizer model actually configured (file name without .gguf), else the constant."""
+    """The organizer model actually configured (file name without .gguf), else the constant. On the hub:
+    the one the Mac's compute worker reported (it enters input_hash)."""
+    if os.environ.get("OMY_ROLE") == "hub":
+        from omy import hubstate
+        return hubstate.organizer_model() or MODEL
     try:
         from omy import models
         return models.model_path("organizer").stem or MODEL
