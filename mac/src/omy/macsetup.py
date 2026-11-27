@@ -24,6 +24,9 @@ AGENTS_DIR = Path("~/Library/LaunchAgents").expanduser()
 AGENTS = ("receiver", "worker")
 # The compute worker (docs/hub-migration.md) is installed apart: disabled until the cutover.
 COMPUTE = "compute"
+# Pulls a read-only copy of the vault from the hub into ~/OmiBrain (for Obsidian), every 10 minutes.
+VAULT_MIRROR = "vault-mirror"
+VAULT_DIR = Path("~/OmiBrain").expanduser()
 WORKSPACE = Path("~/OmiCompute").expanduser()
 RECEIVER_URL = "http://127.0.0.1:8787"
 # PATH for the LaunchAgents: Homebrew (flutter, pod, whisper-cli), uv, Xcode tools.
@@ -128,6 +131,47 @@ def install_compute(load: bool = False) -> dict:
     raise SetupError(f"launchctl bootstrap {COMPUTE} failed: {r.stderr.strip()}")
 
 
+def install_vault_mirror(load: bool = False) -> dict:
+    """The mirror's plist (not loaded and disabled unless load: it needs the hub to hold the vault)."""
+    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _plist_path(VAULT_MIRROR)
+    path.write_text(_render_agent(VAULT_MIRROR))
+    os.chmod(path, 0o644)
+    domain, label = f"gui/{os.getuid()}", _label(VAULT_MIRROR)
+    if not load:
+        _run(["launchctl", "disable", f"{domain}/{label}"])
+        return {"installed": str(path), "loaded": agent_info(VAULT_MIRROR)["loaded"]}
+    _run(["launchctl", "enable", f"{domain}/{label}"])
+    _run(["launchctl", "bootout", f"{domain}/{label}"])
+    for _ in range(10):
+        r = _run(["launchctl", "bootstrap", domain, str(path)])
+        if r.returncode == 0:
+            return {"installed": str(path), "loaded": True}
+        time.sleep(0.5)
+    raise SetupError(f"launchctl bootstrap {VAULT_MIRROR} failed: {r.stderr.strip()}")
+
+
+def stop_vault_mirror() -> dict:
+    domain, label = f"gui/{os.getuid()}", _label(VAULT_MIRROR)
+    _run(["launchctl", "bootout", f"{domain}/{label}"])
+    _run(["launchctl", "disable", f"{domain}/{label}"])
+    return {"loaded": agent_info(VAULT_MIRROR)["loaded"]}
+
+
+def set_hub_url(url: str | None) -> dict:
+    """hub_url in config.toml turns omy into a client of the hub (omy.remote); None turns it off."""
+    from omy.config import load_config, save_config
+    cfg = load_config()
+    if url:
+        if not url.startswith("https://"):
+            raise SetupError("the hub's URL must be https://… (tailscale serve)")
+        cfg["hub_url"] = url.rstrip("/")
+    else:
+        cfg.pop("hub_url", None)
+    save_config(cfg)
+    return {"hub_url": cfg.get("hub_url")}
+
+
 def stop_compute() -> dict:
     """The compute worker stops (its job goes back to the hub's queue) and stays disabled."""
     domain, label = f"gui/{os.getuid()}", _label(COMPUTE)
@@ -223,6 +267,11 @@ def checks() -> list[dict]:
             tr("installato, non attivo (si attiva al passaggio all'hub)", "installed, not active (enabled at the move to the hub)")
             if not a["loaded"] else "ok")
 
+    if _plist_path(VAULT_MIRROR).exists():
+        a = agent_info(VAULT_MIRROR)
+        add(VAULT_MIRROR, tr("Copia del vault per Obsidian (solo lettura)", "Vault copy for Obsidian (read-only)"), a["loaded"],
+            "ok" if a["loaded"] else tr("installata, non attiva", "installed, not active"))
+
     ts = tailscale_info()
     add("tailscale", "tailscale serve → 127.0.0.1:8787", ts["serving"],
         ts["url"] or (tr("Tailscale non installato (tailscale.com/download)", "Tailscale not installed (tailscale.com/download)")
@@ -279,6 +328,14 @@ def fix(id_: str) -> dict:
     elif id_ == "compute-off":
         stop_compute()
         id_ = "compute"
+    elif id_ == "vault-mirror":
+        install_vault_mirror(load=False)
+    elif id_ == "vault-mirror-on":
+        install_vault_mirror(load=True)
+        id_ = "vault-mirror"
+    elif id_ == "vault-mirror-off":
+        stop_vault_mirror()
+        id_ = "vault-mirror"
     elif id_ == "tailscale":
         ts = _tailscale()
         if ts is None:

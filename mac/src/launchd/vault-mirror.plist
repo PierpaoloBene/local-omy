@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template filled in by `omy setup fix vault-mirror`. Every 10 minutes: the vault of the hub (the master) is
+     copied into ~/OmiBrain, READ-ONLY, for Obsidian. What you change in ~/OmiBrain is overwritten.
+     Installed disabled; `omy setup fix vault-mirror-on` at the cutover. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>__LABEL__</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>__MAC_DIR__/tools/vault_mirror.sh</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>600</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__PATH__</string>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/local-omy-vault-mirror.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/local-omy-vault-mirror.log</string>
+</dict>
+</plist>

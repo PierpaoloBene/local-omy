@@ -850,6 +850,26 @@ def create_app(config: Config) -> FastAPI:
     async def brain_index(request: Request):
         return await run(request, "index", "--all")
 
+    # "Riprova" of the dashboard: failed jobs go back in the queue. The widget token may do this (and read the
+    # widget), nothing else.
+    @app.post("/v1/jobs/retry")
+    async def jobs_retry(request: Request):
+        if not (_authorized(request, config.token)
+                or (config.widget_token is not None and _authorized(request, config.widget_token))):
+            return _error(401, "unauthorized")
+        try:
+            b = await json_body(request)
+            job_id = b.get("id")
+            if job_id is not None and (not isinstance(job_id, int) or isinstance(job_id, bool)):
+                raise ValueError
+        except (ValueError, TypeError):
+            return _error(400, "invalid body")
+        from omy import jobs
+        n = await asyncio.to_thread(jobs.retry_failed, job_id)
+        if n:
+            jobs.wake()
+        return {"retried": n}
+
     @app.get("/v1/battery")
     async def battery_status(request: Request):
         return await run(request, "battery")

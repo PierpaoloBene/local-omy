@@ -38,6 +38,20 @@ def test_the_widget_token_reads_only_the_widget(client, archive):
                        json={}).status_code == 401
 
 
+def test_the_widget_token_can_retry_failed_jobs_and_nothing_else(client, archive):
+    from omy import jobs
+    j = jobs.enqueue("transcribe", "x")
+    jobs.fail(j, "boom", permanent=True)
+    assert jobs.state_of(j) == "failed"
+    w = {"Authorization": f"Bearer {WIDGET}"}
+    assert client.post("/v1/jobs/retry", json={}).status_code == 401
+    assert client.post("/v1/jobs/retry", json={"id": "x"}, headers=w).status_code == 400
+    assert client.post("/v1/jobs/retry", json={"id": j + 5}, headers=w).json() == {"retried": 0}
+    assert client.post("/v1/jobs/retry", json={"id": j}, headers=w).json() == {"retried": 1}
+    assert jobs.state_of(j) == "queued"
+    assert client.post("/v1/jobs/retry", json={}, headers=w).json() == {"retried": 0}
+
+
 def test_widget_empty_is_honest(client):
     d = client.get("/v1/widget", headers=PHONE).json()
     assert d["today"]["segments"] == 0 and d["queue"]["queued"] == 0 and d["queue"]["by_kind"] == {}

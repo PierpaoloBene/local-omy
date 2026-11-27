@@ -88,8 +88,12 @@ def main() -> int:
     setup.add_parser("check", help="checklist of what this Mac needs")
     fix = setup.add_parser("fix", help="fix one checklist item")
     fix.add_argument("item", choices=["brew", "token", *macsetup.AGENTS, "tailscale", "models", "iphone", "diarize",
-                                        "compute", "compute-on", "compute-off"])
+                                        "compute", "compute-on", "compute-off", "vault-mirror", "vault-mirror-on",
+                                        "vault-mirror-off"])
     setup.add_parser("token", help="print the receiver token (to paste into the iPhone app)")
+    sh = setup.add_parser("hub", help="use the hub: omy reads and changes the archive there (hub_url in config.toml)")
+    sh.add_argument("url", nargs="?", help="https://hub.<tailnet>.ts.net:10000")
+    sh.add_argument("--off", action="store_true", help="back to ~/OmiArchive")
     setup.add_parser("models", help="download the whisper and VAD models (same as fix models)")
 
     tr = sub.add_parser("transcribe", help="transcribe closed sessions")
@@ -243,6 +247,8 @@ def _run(args: argparse.Namespace) -> dict:
             result = macsetup.fix(args.item)
         elif args.action == "token":
             result = {"token": macsetup.read_token()}
+        elif args.action == "hub":
+            result = macsetup.set_hub_url(None if args.off else args.url)
         else:
             result = transcribe.download_models()
     elif args.cmd == "transcribe":
