@@ -734,6 +734,28 @@ l'indirizzo ([sopra](#dove-luoghi)).
 | `OMY_ARCHIVE` | `~/OmiArchive` | |
 | `OMY_PORT` | `8787` | l'host è sempre 127.0.0.1 e non si può cambiare |
 | `OMY_MAX_BODY` | 32 MiB | un segmento da 5 minuti pesa ~1,3 MB |
+| `OMY_ROLE` | — | `hub`: nel container dell'hub (niente modelli, `db/jobs.sqlite`, il Mac calcola); vedi [Sull'hub](#sullhub-in-migrazione) |
+| `OMY_COMPUTE_TOKEN` | — | hub: il token del compute worker del Mac (`/compute/v1/*`); senza, quell'API non c'è. Deve essere diverso da `OMY_TOKEN` |
+| `OMY_WIDGET_TOKEN` | — | hub: legge solo `GET /v1/widget` e fa "Riprova" dei job falliti (dashboard) |
+| `OMY_HUB_URL`, `OMY_COMPUTE_TOKEN_FILE`, `OMY_CONTEXT_DIR` | `hub_url` di `config.toml`, `~/.config/local-omy/compute_token`, `~/OmiArchive/context` | Mac: dove il compute worker trova l'hub, il suo token e il contesto audio dell'app |
+
+## Sull'hub (in migrazione)
+
+local-omy si sta spostando sull'hub di casa: l'archivio, il ricevitore, la coda, l'API per l'iPhone, il vault e l'indice testuale stanno sul Surface, e il Mac
+diventa un **compute worker** che tira i lavori (whisper, pyannote, llama-server) e può dormire. Piano e scelte: [`docs/hub-migration.md`](../docs/hub-migration.md);
+sequenza e rollback: [`docs/cutover.md`](../docs/cutover.md) (`scripts/cutover.sh`). Finché il cutover non è fatto il ricevitore e il worker di sopra restano quelli in uso.
+
+```bash
+uv run omy setup fix compute        # installa il LaunchAgent del compute worker e ~/OmiCompute, DISABILITATO
+uv run omy setup fix compute-on     # lo abilita e lo carica (al cutover; il worker originale va fermato prima)
+uv run omy setup fix compute-off    # lo ferma e lo disabilita
+uv run omy setup fix vault-mirror[-on|-off]   # copia in sola lettura del vault dell'hub in ~/OmiBrain, ogni 10 minuti (Obsidian)
+uv run omy setup hub https://hub.<tailnet>.ts.net:10000   # omy e l'app leggono/scrivono sull'hub (--off: di nuovo ~/OmiArchive)
+uv run omy compute-worker --once --dry-run --kind transcribe   # prova: prende un job, lo descrive e lo restituisce (OMY_HUB_URL, OMY_ARCHIVE=~/OmiCompute)
+```
+
+Il token del compute worker sta in `~/.config/local-omy/compute_token` (600). Di notte il Mac si sveglia con `sudo pmset repeat wakeorpoweron MTWRFSU 00:55:00` per
+organizzare le note (01-07, con l'alimentatore). Il worker non esegue mai lavori in `~/OmiArchive`: usa `~/OmiCompute`, svuotato tra un job e l'altro.
 
 ## Sicurezza
 

@@ -13,7 +13,7 @@ import signal
 import threading
 import time
 
-from omy import hubjobs, hubstate, jobs
+from omy import asks, hubjobs, hubstate, jobs
 from omy.worker import SCAN_EVERY, Worker, log
 
 REAP_EVERY = 30.0
@@ -49,6 +49,8 @@ class HubWorker(Worker):
             lost = jobs.reap()
             if lost:
                 log(f"leases expired: {len(lost)} jobs back in the queue ({lost})")
+            if asks.expire():
+                log("questions nobody answered for a day were dropped")
         if self.scan_due or now - self.last_scan >= SCAN_EVERY:
             try:
                 self.scan()

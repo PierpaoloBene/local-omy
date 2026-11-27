@@ -7,6 +7,7 @@ from contextlib import closing
 import pytest
 
 from helpers import record, write_day, write_segments
+from omy import jobs
 
 
 @pytest.fixture
@@ -69,6 +70,17 @@ def test_step_reaps_and_never_runs_the_macs_jobs(hub, archive):
     assert hub.step() is False
     assert jobs.state_of(j) == "queued"                # the lease was long expired
     assert hub.step() is False and jobs.state_of(j) == "queued"   # and the hub does not run it itself
+
+
+def test_step_drops_questions_nobody_answered(hub, archive):
+    import time
+    from omy import asks
+    old = asks.create("una domanda vecchia", [], None)
+    from contextlib import closing
+    with closing(jobs._connect()) as db:
+        db.execute("UPDATE asks SET created=? WHERE id=?", (time.time() - asks.EXPIRE_S - 10, old))
+    hub.step()
+    assert asks.get(old)["state"] == "expired"
 
 
 def test_vault_batch_waits_for_organize_only_while_the_mac_is_there(hub, archive, monkeypatch):

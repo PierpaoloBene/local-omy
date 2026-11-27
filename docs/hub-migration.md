@@ -1,9 +1,9 @@
 # Migrazione di local-omy sull'hub di casa
 
-Stato: **piano**, nessun codice applicativo scritto. Branch `hub-migration`, base `main` (1c369d5).
-Analisi fatta in sola lettura sul codice del repo, su `~/OmiArchive` e sull'hub (`/srv/hub/repo`: `CLAUDE.md`,
-`docs/architecture.md`, `compose.yaml`, `DESIGN.md`, `bootstrap/`). I servizi in esecuzione non sono stati toccati.
-Dove non sono sicuro lo scrivo ("da verificare").
+Stato: **implementato e distribuito in parallelo**, cutover da fare (vedi [cutover.md](cutover.md)). Branch `hub-migration`, base `main` (1c369d5).
+Il piano è stato scritto in sola lettura sul codice del repo, su `~/OmiArchive` e sull'hub (`/srv/hub/repo`: `CLAUDE.md`,
+`docs/architecture.md`, `compose.yaml`, `DESIGN.md`, `bootstrap/`); le sezioni 1-6 sono il piano com'era, **"Decisioni e stato" (sezione 7)
+dice cosa è stato deciso e dove l'implementazione si discosta**. Dove non ero sicuro l'ho scritto ("da verificare").
 
 ## 0. Sintesi
 
@@ -22,9 +22,9 @@ Decisioni chiave (motivate nelle sezioni):
 | D3 | I modelli non vanno mai sull'hub. L'unica parte "calcolo" di ogni job è eseguita sul Mac; commit, naming, rendering e coda sono sull'hub. |
 | D4 | `diarize_session` si spezza in due (audio+pyannote sul Mac, `name_clusters`+scrittura sull'hub). È l'unico refactor di pipeline, e non cambia il modello. |
 | D5 | Indice: chunk + FTS5 + ricerca sull'hub; i vettori (Qwen3-Embedding-0.6B) li calcola il Mac con un job `embed`. Senza Mac la ricerca ibrida degrada a solo BM25 (comportamento già previsto in `brain/index.py: search`, `EmbedError`). |
-| D6 | "Chiedi": recupero sull'hub, generazione col 4B sul Mac tramite un canale interattivo che il Mac apre in uscita (long-poll). Mac spento: risposta con le sole fonti trovate. |
+| D6 | "Chiedi": recupero sull'hub, generazione col 4B sul Mac. **Deciso (sezione 7): con il Mac spento la domanda è messa in CODA persistente** e la risposta arriva quando il Mac torna (non la risposta degradata prevista qui). |
 | D7 | `~/OmiArchive` non è 18 GB di dati: **17 GB sono `models/`** (restano sul Mac). I dati veri sono ~1,2 GB (raw 1,1 GB, 1114 segmenti in 15 giorni). Cresce ~75 MB/giorno (~27 GB/anno): sui ~99 GB liberi dell'hub bastano ~3 anni, con avviso al 75% (regola di `CLAUDE.md` dell'hub). |
-| D8 | Obsidian: non c'è `Obsidian.app` sul Mac né `brain/.obsidian`, quindi probabilmente non lo usi. Vault sull'hub, copia in sola lettura sul Mac solo se la vuoi (domanda 1). |
+| D8 | Obsidian: **deciso**: vault master sull'hub e **copia in sola lettura sul Mac** (`~/OmiBrain`, rsync hub→Mac ogni 10 minuti, le modifiche fatte sul Mac sono sovrascritte). |
 | D9 | iPhone: **nessuna reinstallazione**. L'URL si cambia dalle Impostazioni dell'app (`AppModel.saveMac`). Il token si può tenere invariato. |
 
 Trappole trovate (vedi §3.4 e §5) che, non gestite, rovinano la migrazione:
@@ -112,8 +112,8 @@ compute token, aperti **dal Mac in uscita** (nessuna porta aperta sul Mac):
 - L'hub inoltra i chunk come SSE all'iPhone (stesso formato `status/citations/delta/done/error` di `AskEvent`: l'app non cambia).
 - Latenza attesa: oggi primo testo 2,5-3 s via Tailscale (README); si aggiunge un salto hub↔Mac sulla tailnet (decine di ms) e
   l'attesa del long-poll già in corso (il Mac tiene sempre una richiesta pendente). Da misurare.
-- Mac spento/lento (nessun long-poll pendente entro ~3 s): l'hub risponde con `citations` + `delta` "Mac non raggiungibile: ecco i
-  passaggi trovati" e `done`. La ricerca testuale e i risultati restano usabili senza Mac.
+- Mac spento/lento: **sostituito dalla coda persistente** (decisione 2, sezione 7): l'hub risponde `status queued:<id>` + `done` e tiene la domanda
+  (`omy/asks.py`); l'iPhone la mostra "in attesa del Mac" e la risposta arriva quando il Mac torna acceso.
 - Alternativa scartata: l'hub che chiama direttamente un llama-server esposto dal Mac sulla tailnet (come descrive oggi
   `docs/architecture.md` dell'hub, "modelli via API"). Funzionerebbe ma contraddice la scelta "pull" e richiede di esporre
   llama-server/auth sul Mac. Resta come ripiego se il canale interattivo si rivela troppo complesso (PR 9 è isolabile).
@@ -505,17 +505,50 @@ iPhone ancora sul Mac) → 10, 9, 13 → cutover. Totale ~25-30 giorni-uomo di a
 
 ---
 
-## 7. Domande aperte (essenziali)
+## 7. Decisioni e stato dell'implementazione
 
-1. **Obsidian/vault**: lo apri mai sul Mac (o sull'iPhone)? Sul Mac non risulta installato e non esiste `brain/.obsidian`. Se no, il vault
-   sta solo sull'hub (leggibile via file o futuro widget). Se sì: copia in sola lettura sul Mac (rsync a ogni ciclo del worker) oppure
-   modifica bidirezionale (Syncthing), più complessa; ricordo che le spunte in `impegni.md` sono lette indietro da `vault.py`, quindi dove le
-   spunti conta.
-2. **"Chiedi" con Mac spento**: va bene la risposta degradata (solo fonti trovate, ricerca BM25) oppure vuoi un 4B anche sull'hub? Il 4B Q4
-   (~3,7 GB) su i5-7300U sarebbe lentissimo (decine di secondi per frase, ipotesi non misurata) e confligge con i 7,8 GB di RAM: lo sconsiglio.
-3. **Chi legge `transcripts/*.jsonl`** (second brain o altre app)? Dove girano (Mac o hub)? Decide tra mount sull'hub, endpoint `/v1/export`
-   e specchio sul Mac (§1.2).
-4. **Mac che dorme**: accetti che i job restino fermi quando il Mac è in stop (come oggi) o vuoi che il Mac sia svegliato di notte per
-   l'organizzazione 01-07 (`pmset repeat wake` / alimentatore sempre collegato)? Cambia solo l'abitudine, non il codice.
-5. Conferma della **tenuta della copia fredda** `~/OmiArchive` (2-4 settimane, poi archivio): e se vuoi tenere anche un clone dei `voices/enroll`
-   sul Mac (propongo sì, sono gli unici dati annotati a mano).
+### Decisioni (dell'utente, sulle domande aperte del piano)
+
+1. **Vault**: master sull'hub **e** copia sul Mac per Obsidian, **in sola lettura** hub→Mac. LaunchAgent `vault-mirror` ogni 10 minuti:
+   `rsync -a --delete hub@hub.local:/srv/hub/data/omy/brain/ ~/OmiBrain/` (`mac/src/tools/vault_mirror.sh`; rsync c'è sull'hub). **Le modifiche fatte sul Mac
+   vengono sovrascritte** (i file della copia sono resi non scrivibili; `.obsidian/` e `.trash/` non si toccano; un vault vuoto sull'hub non svuota la copia).
+2. **"Chiedi" con il Mac spento**: la domanda è **in coda** (persistente, tabella `asks` nel database dei lavori), l'iPhone la vede "in attesa del Mac" e
+   la risposta arriva quando il Mac torna (il compute worker la prende). Modifica minima all'app iPhone: stage `queued:<id>` nello stream, testo "In attesa del Mac",
+   poll di `GET /v1/ask/{id}` ogni 15 s (`MacAPI.askResult`, `AskView.swift`, un test); le app vecchie mostrano il messaggio di cortesia come risposta.
+3. **Notte**: il Mac può dormire e **deve svegliarsi di notte per organizzare**. Wake-on-LAN sul Wi-Fi non è affidabile: sveglia programmata sul Mac,
+   `sudo pmset repeat wakeorpoweron MTWRFSU 00:55:00` (**da eseguire a mano**, richiede sudo), e il compute worker tra le 01 e le 07 prende i job `organize`
+   (solo con l'alimentatore); finito, il Mac torna a dormire da solo. Se alle 07:00 l'hub vede ancora job `organize` in coda da prima delle 07:00,
+   il widget Omi li segnala ("Organizzazione notturna non fatta: N in attesa").
+4. **`transcripts/*.jsonl`**: nessuno li legge oggi, restano sull'hub (pronti `GET /v1/export/days` e `/v1/export/GIORNO.jsonl`).
+5. **Copia fredda `~/OmiArchive`**: da tenere **4 settimane dopo il cutover** (non va cancellata). `voices/enroll/` resta sul Mac e viene copiato anche sull'hub.
+
+### Stato per PR (commit su `hub-migration`)
+
+| PR | Commit | Note e differenze dal piano |
+|---|---|---|
+| 1 | `e242472` | `pyannote-audio` nel gruppo `compute` (`default-groups = ["dev", "compute"]`: sul Mac `uv sync`/`uv run` non cambiano), `numpy` esplicito, `Dockerfile.hub`. L'immagine non ha torch né pyannote (462 MB). |
+| 2 | `8d83fd5` | Lease in `jobs.py`. Il database dell'hub è `db/jobs.sqlite` (non `.db`): il backup è stato esteso ai `*.sqlite` (come chiesto), non il file rinominato. `organize` non si assegna finché ci sono `transcribe`/`diarize` in coda o in lease (la regola di `organize_ok` ora vive nell'hub). |
+| 3, 5 | `5545f27` | `omy_receiver/compute.py` + `omy/hubjobs.py` (input/commit di ogni tipo). Gli input sono percorsi relativi all'archivio (stesso layout nel workspace del Mac): `transcribe` con `prior` manda i sidecar di tutti i segmenti ma l'audio solo dei nuovi (gli altri sono file vuoti: non vengono mai decodificati). Una sessione cresciuta mentre il Mac lavorava si committa come prior (prefisso), una rigruppata è `stale`. `diarize_session` = `decode_and_diarize` (Mac) + `commit` (hub): test "golden", i byte scritti sono identici. |
+| 4, 6 | `f5739ff` | `omy/hubworker.py`: **sottoclasse di `Worker`** (non è stato estratto `scan.py`: `test_worker.py` resta verde senza cambi). Job `embed` (il Mac calcola i vettori, l'hub li inserisce) e `search(qvec=…)`. |
+| 7 | `321b563` | `omy/compute.py`. Il worker gira sul Mac con `OMY_ARCHIVE=~/OmiCompute`; rifiuta di svuotare una cartella che non sia un workspace (marker). `omy compute-worker [--once --dry-run --kind K]`; LaunchAgent `compute` installato **disabilitato** (`launchctl disable`). |
+| 8, 9 | `15b45cd` | `GET /v1/widget`, `/v1/status`, `/v1/battery`, `/v1/export/*`, `/v1/transcribe` con `mac_online`; **"Chiedi" non usa il relay SSE interattivo del piano ma la coda persistente** (`GET /compute/v1/ask/next`, `…/retrieve`, `…/events`): il Mac embedda la query, l'hub cerca, il Mac genera e rimanda a pezzi; se l'app è ancora connessa lo stream viene inoltrato in diretta. |
+| 13 | `4974894` | App iPhone: "in attesa del Mac" + poll; testo "Server non raggiungibile (Mac o hub)"; `PARITY.md`. L'app compila (xcodebuild simulatore) e `swift test` passa (75). |
+| 10 | `65b982d` | `hub_url` in `config.toml` → `omy` è un client dell'hub (stesso JSON): transcripts, speakers, people, places, features, battery, brain, jobs, status, organize, index, transcribe `--pending`. `omy voice enroll` carica `me.npy` sull'hub. Resta locale: iphone, setup. L'app Swift non è cambiata. |
+| 11, 12 | `80e1dbd` + repo dell'hub | Hub: `compose.yaml`, `serve.sh` (:10000), backup (`*.sqlite`, esclusioni, restore-test che conta i `.bin`), widget Omi, `bootstrap/omy/setup.sh`, `architecture.md`, README (commit nel repo dell'hub). Qui: `tools/verify_archive.py`, `tools/vault_mirror.sh`, `docs/cutover.md`, `scripts/cutover.sh`. |
+
+### Distribuzione in parallelo (fatta, senza cutover)
+
+Hub: servizio `omy` su (scheduler spento), `serve` :10000, snapshot di `~/OmiArchive` in `/srv/hub/data/omy` (1114 segmenti, hash identici),
+`omy transcripts list/day`, `people`, `places`, `brain` identici a quelli del Mac. Prova di upload su :10000: segmento nuovo `stored`, ripetuto `duplicate`,
+stesso id con contenuto diverso 409, token sbagliato 401. Compute worker: **dry-run** e **un job vero** (trascrizione whisper di un segmento di prova con id finto, poi diarizzazione
+pyannote dello stesso) contro l'hub; i dati di prova sono stati rimossi. Il worker originale del Mac non è stato toccato.
+
+### Non fatto / da sapere
+
+- **Il cutover** (`scripts/cutover.sh`), la sveglia notturna (`pmset`, sudo) e il rinnovo dell'app iPhone con la nuova versione (`omy iphone install`).
+- La sveglia del Mac da `pmset` e il comportamento con il coperchio chiuso non sono stati verificati.
+- L'organizzatore (27B) non è stato provato attraverso l'hub (richiede il modello e la notte): è coperto dai test del contratto (input, hash, commit, vault), non da una nota vera.
+- Rinnovo dell'app iPhone (`worker.renew_iphone`): resta nel compute worker (Xcode), `needs_reopen`, nello stato che mostra l'app, si calcola con i segmenti dell'hub (`GET /v1/status`, `last_segment_start`).
+- Le impostazioni delle funzioni (`settings.json`) sono sull'hub; il compute worker le copia in `~/OmiArchive/settings.json` (dove l'app del Mac le legge).
+- L'app a barra dei menu non è stata modificata né provata con il Mac in modalità hub (solo l'output di `omy` è verificato identico).
+- Da valutare (piano §2.1): ACL Tailscale che limitano la porta 10000 ai soli nodi iPhone e Mac.
