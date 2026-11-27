@@ -1764,12 +1764,15 @@ source = { editable = "." }
 dependencies = [
     { name = "dateparser" },
     { name = "fastapi" },
+    { name = "numpy" },
     { name = "opuslib" },
-    { name = "pyannote-audio" },
     { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
+compute = [
+    { name = "pyannote-audio" },
+]
 dev = [
     { name = "pytest" },
 ]
@@ -1778,12 +1781,13 @@ dev = [
 requires-dist = [
     { name = "dateparser", specifier = ">=1.5.1" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "numpy", specifier = ">=2" },
     { name = "opuslib", specifier = ">=3.0.1" },
-    { name = "pyannote-audio", specifier = ">=4" },
     { name = "uvicorn", specifier = ">=0.32" },
 ]
 
 [package.metadata.requires-dev]
+compute = [{ name = "pyannote-audio", specifier = ">=4" }]
 dev = [{ name = "pytest", specifier = ">=9.2.0" }]
 
 [[package]]

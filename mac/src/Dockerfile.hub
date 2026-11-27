@@ -1,0 +1,17 @@
+# The hub image (the Surface): receiver + hub-worker (scheduler). No models, no pyannote/torch:
+# the Mac does the heavy work (docs/hub-migration.md). Build context: this folder.
+#   docker compose build omy        (from /srv/hub/repo)
+FROM python:3.13-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/opt/venv UV_LINK_MODE=copy
+RUN apt-get update && apt-get install -y --no-install-recommends libopus0 sqlite3 tini \
+    && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir uv
+# omy.config.REPO is parents[3] of omy/config.py: keep the repo layout.
+WORKDIR /opt/local-omy/mac/src
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-group compute --no-install-project
+COPY omy ./omy
+COPY omy_receiver ./omy_receiver
+COPY hub-entrypoint.sh ./
+RUN uv sync --frozen --no-dev --no-group compute && chmod +x hub-entrypoint.sh
+ENV PATH=/opt/venv/bin:$PATH OMY_ROLE=hub
+ENTRYPOINT ["tini", "--", "/opt/local-omy/mac/src/hub-entrypoint.sh"]

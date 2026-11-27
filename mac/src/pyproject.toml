@@ -8,9 +8,9 @@ dependencies = [
     "uvicorn>=0.32",
     # tools/inspect_segment.py; needs libopus (brew install opus)
     "opuslib>=3.0.1",
-    # speaker diarization (omy diarize); the model needs a Hugging Face token
-    "pyannote-audio>=4",
     "dateparser>=1.5.1",
+    # was a transitive dependency of pyannote: the hub image has no pyannote
+    "numpy>=2",
 ]
 
 [project.scripts]
@@ -25,9 +25,18 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
+# The Mac only: speaker diarization (omy diarize, the compute worker); the model needs a
+# Hugging Face token. Not in the hub image (docker: `uv sync --no-group compute`).
+compute = [
+    "pyannote-audio>=4",
+]
 dev = [
     "pytest>=9.2.0",
 ]
+
+[tool.uv]
+# `uv sync` and `uv run` on the Mac keep installing pyannote, as before.
+default-groups = ["dev", "compute"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
