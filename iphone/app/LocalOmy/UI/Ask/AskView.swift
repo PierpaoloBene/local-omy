@@ -16,6 +16,8 @@ struct AskMessage: Identifiable {
     var firstMs: Double?
     /// For the retry of a failed answer.
     var question: String?
+    /// The hub kept the question because the Mac was off ("in attesa del Mac"): its id, to fetch the answer.
+    var queuedID: String?
 
     static func user(_ t: String) -> AskMessage { AskMessage(mine: true, text: t, done: true) }
     static func answer(_ q: String) -> AskMessage { AskMessage(mine: false, text: "", done: false, question: q) }
@@ -28,6 +30,8 @@ final class AskChat {
     var messages: [AskMessage] = []
     var busy = false
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// The questions waiting for the Mac: one task each, asking the hub every few seconds.
+    @ObservationIgnored private var waiters: [UUID: Task<Void, Never>] = [:]
 
     func cancel() {
         task?.cancel()
@@ -42,6 +46,8 @@ final class AskChat {
     func reset() {
         task?.cancel()
         task = nil
+        waiters.values.forEach { $0.cancel() }
+        waiters = [:]
         messages = []
         busy = false
     }
@@ -86,17 +92,26 @@ final class AskChat {
                 for try await e in api.ask(question: q, history: hist, now: Date()) {
                     guard let self else { return }
                     switch e {
-                    case .status(let s): update(id) { $0.stage = s }
+                    case .status(let s):
+                        // "queued:<id>": the Mac is off, the hub keeps the question (the answer comes later)
+                        if s.hasPrefix("queued:") { update(id) { $0.queuedID = String(s.dropFirst(7)); $0.stage = "queued" } }
+                        else { update(id) { $0.stage = s } }
                     case .citations(let c): update(id) { $0.citations = c }
                     case .delta(let t):
                         if !t.isEmpty {
                             update(id) {
+                                if $0.queuedID != nil { return }  // the hub's note for older apps
                                 if $0.firstMs == nil { $0.firstMs = ms(clock.now - start) }
                                 $0.stage = nil
                                 $0.text += t
                             }
                         }
                     case .done(let notFound, _, _):
+                        if let queued = messages.first(where: { $0.id == id })?.queuedID {
+                            busy = false
+                            waitForMac(id, askID: queued, api: api)  // not done: the answer arrives when the Mac does
+                            return
+                        }
                         update(id) { $0.done = true; $0.notFound = notFound; $0.totalMs = ms(clock.now - start); $0.stage = nil }
                         busy = false
                         return
@@ -115,6 +130,35 @@ final class AskChat {
                 guard let self else { return }
                 update(id) { $0.error = (error as? MacError)?.message ?? "\(error)"; $0.stage = nil }
                 busy = false
+            }
+        }
+    }
+
+    /// The question is in the hub's queue: ask every 15 s whether the Mac has answered.
+    private func waitForMac(_ id: UUID, askID: String, api: MacAPI) {
+        waiters[id]?.cancel()
+        waiters[id] = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard let self, !Task.isCancelled else { return }
+                guard let r = try? await api.askResult(askID) else { continue }
+                switch r.state {
+                case "done":
+                    update(id) {
+                        $0.text = r.answer; $0.citations = r.citations; $0.notFound = r.notFound
+                        $0.done = true; $0.stage = nil; $0.queuedID = nil
+                    }
+                    waiters[id] = nil
+                    return
+                case "failed", "expired", "cancelled":
+                    update(id) {
+                        $0.error = r.error ?? tr("Il Mac non ha risposto", "The Mac did not answer")
+                        $0.stage = nil; $0.queuedID = nil
+                    }
+                    waiters[id] = nil
+                    return
+                default: continue
+                }
             }
         }
     }
@@ -279,6 +323,7 @@ private struct AnswerView: View {
 
     private var status: String? {
         switch msg.stage {
+        case "queued": return tr("In attesa del Mac: ti rispondo appena è acceso…", "Waiting for the Mac: the answer comes when it is on…")
         case "waking": return tr("Sveglio il modello…", "Waking the model…")
         case "searching": return tr("Cerco nell'archivio…", "Searching the archive…")
         case "answering": return tr("Scrivo la risposta…", "Writing the answer…")

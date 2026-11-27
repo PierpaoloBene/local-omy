@@ -81,6 +81,10 @@ Fonte di verità in caso di dubbio: il codice Dart in `iphone/src/lib` e `iphone
 - GET /v1/places → {places[{name, lat, lon, radius, minutes, last_seen}], unnamed[{lat, lon, minutes, days, last_seen, from, to, sample, nearest{name, meters}}]};
   POST /v1/places {name, lat, lon, radius}; PUT /v1/places/{name} {name}; DELETE /v1/places/{name}.
 - PUT /v1/settings {features: {key: {on, at}}} → features unite.
+- Hub (docs/hub-migration.md): stessi path e JSON; l'URL in Impostazioni è quello dell'hub (`https://hub.<tailnet>.ts.net:10000`).
+  Chiedi con il Mac spento: POST /v1/ask emette `status` con `stage = "queued:<id>"` e `done` (l'app mostra "In attesa del Mac" e,
+  ogni 15 s, GET /v1/ask/{id} → {state: pending|leased|done|failed|expired|cancelled, answer, citations, not_found, error}).
+  Le app vecchie vedono il `delta` di cortesia come risposta. `GET /v1/asks` elenca le ultime domande (3 giorni).
 - Errori: 401 token; 502-504 ricevitore fermo; 404 Mac da aggiornare; altri → campo "error" tradotto; JSON non valido → "risposta non valida".
 
 ## 7. Nativo

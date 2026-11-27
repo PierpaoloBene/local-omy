@@ -8,7 +8,7 @@ public struct MacError: Error, Sendable, Equatable, LocalizedError, CustomString
     public var description: String { message }
 
     static var notConfigured: MacError { MacError(tr("Mac non configurato: URL e token in Impostazioni", "Mac not set up: URL and token in Settings")) }
-    static var unreachable: MacError { MacError(tr("Mac non raggiungibile: è acceso e su Tailscale?", "Mac not reachable: is it on, and on Tailscale?")) }
+    static var unreachable: MacError { MacError(tr("Server non raggiungibile (Mac o hub): Tailscale è attivo?", "Server not reachable (Mac or hub): is Tailscale on?")) }
     static var timedOut: MacError { MacError(tr("Il Mac non ha risposto in tempo", "The Mac did not answer in time")) }
     static var stoppedAnswering: MacError { MacError(tr("Il Mac ha smesso di rispondere", "The Mac stopped answering")) }
     static var invalidResponse: MacError {
@@ -277,6 +277,21 @@ public struct MacAPI: Sendable {
             throw MacError.transport(error)
         }
     }
+
+    // MARK: a question the hub kept for the Mac
+
+    /// GET /v1/ask/{id}: a question that was queued because the Mac was off. `state` is "pending" (waiting for the
+    /// Mac), "leased" (the Mac is writing it), "done", "failed", "expired" or "cancelled".
+    public struct AskResult: Decodable, Sendable {
+        public var state: String
+        public var answer: String
+        public var citations: [Citation]
+        public var notFound: Bool
+        public var error: String?
+        enum CodingKeys: String, CodingKey { case state, answer, citations, notFound = "not_found", error }
+    }
+
+    public func askResult(_ id: String) async throws -> AskResult { try await get("/v1/ask/\(Self.component(id))") }
 
     // MARK: plumbing
 

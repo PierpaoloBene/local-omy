@@ -54,6 +54,19 @@ private let noteJSON = #"""
 """#
 
 @Suite struct MacAPIDecodingTests {
+    /// A question the hub kept while the Mac was off: waiting, then answered.
+    @Test func queuedAsk() async throws {
+        let waiting = #"{"id":"0123456789abcdef","question":"q","state":"pending","created":1,"finished":null,"answer":"","citations":[],"used":[],"not_found":false,"error":null}"#
+        let answered = #"{"id":"0123456789abcdef","question":"q","state":"done","created":1,"finished":2,"answer":"Il giardino [1].","citations":[{"n":1,"kind":"testo","session":"s1","day":"2026-11-21","time":"09:00","t":0,"row_id":"s1/0","title":"T","snippet":"x"}],"used":[1],"not_found":false,"error":null}"#
+        let (apiWaiting, _) = FakeNet.make { _ in .json(waiting) }
+        let a = try await apiWaiting.askResult("0123456789abcdef")
+        #expect(a.state == "pending" && a.answer.isEmpty && a.citations.isEmpty)
+        let (api, reqs) = FakeNet.make { _ in .json(answered) }
+        let b = try await api.askResult("0123456789abcdef")
+        #expect(b.state == "done" && b.answer == "Il giardino [1]." && b.citations.first?.session == "s1" && !b.notFound)
+        #expect(reqs().first?.url.path == "/v1/ask/0123456789abcdef" && reqs().first?.method == "GET")
+    }
+
     @Test func days() async throws {
         let (api, reqs) = FakeNet.make { _ in .json(dayList) }
         let d = try await api.days()
