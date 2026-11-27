@@ -105,8 +105,10 @@ step0() {
   else bad "the Mac is at $mine, the hub's clone at $hubs: git push, then on the hub 'git -C /srv/hub/apps/local-omy pull && docker compose up -d --build omy'"; fail=1; fi
   hub_compose ps omy 2>/dev/null | grep -q "Up" && good "hub: omy container up" || { bad "hub: omy container not up"; fail=1; }
   hub 'tailscale serve status 2>&1' | grep -q ':10000' && good "hub: tailscale serve on :10000" || { bad "hub: no serve on :10000 (sudo bash bootstrap/serve.sh)"; fail=1; }
-  local code
-  code="$(api /v1/transcripts -o /dev/null -w '%{http_code}' 2>/dev/null)"
+  local code i
+  for i in 1 2 3 4 5; do  # the container may have just been restarted
+    code="$(api /v1/transcripts -o /dev/null -w '%{http_code}' 2>/dev/null)"; [ "$code" = 200 ] && break; sleep 3
+  done
   [ "$code" = 200 ] && good "hub API answers with the iPhone token" || { bad "hub API answered '$code' on $HUB_URL"; fail=1; }
   hub "grep -q '^OMY_HUB_SCHEDULER=off' /srv/hub/secrets/omy.env" 2>/dev/null && good "hub scheduler is still OFF (parallel phase)" || info "hub scheduler is not 'off' (already on?)"
   hub "df -h /srv/hub | tail -1" | awk '{print "   hub disk: " $4 " free, " $5 " used"}'
@@ -156,7 +158,7 @@ step2() {
   run hub_compose stop omy
   info "Preview (rsync -n): files that would change."
   (cd "$ARCH" && rsync -ain --checksum --delete -e "ssh -o BatchMode=yes" "${RSYNC_DIRS[@]}" "${RSYNC_FILES[@]}" "$HUB:$HUB_DATA/" \
-     | grep -E '^(>f|\*deleting)' | head -40)
+     | grep -E '^([<>]f|\*deleting)' | head -40)
   info "(an empty list means the hub already has everything)"
   confirm "Copy for real?"
   run bash -c "cd '$ARCH' && rsync -a --checksum --delete --stats -e 'ssh -o BatchMode=yes' ${RSYNC_DIRS[*]} ${RSYNC_FILES[*]} '$HUB:$HUB_DATA/' | grep -E 'Number of regular files transferred|Number of files transferred|Total transferred file size'"
@@ -191,7 +193,7 @@ for side, d in (("mac", a), ("hub", b)):
 sys.exit(0 if ok else 1)
 PY
   local diffs
-  diffs="$(cd "$ARCH" && rsync -ain --checksum --delete -e 'ssh -o BatchMode=yes' "${RSYNC_DIRS[@]}" "$HUB:$HUB_DATA/" | grep -E '^(>f|\*deleting)' | wc -l | tr -d ' ')"
+  diffs="$(cd "$ARCH" && rsync -ain --checksum --delete -e 'ssh -o BatchMode=yes' "${RSYNC_DIRS[@]}" "$HUB:$HUB_DATA/" | grep -E '^([<>]f|\*deleting)' | wc -l | tr -d ' ')"
   [ "$diffs" = 0 ] && good "rsync -n --checksum lists no difference" || die "rsync still sees $diffs differences"
   local loose
   loose="$(hub "find $HUB_DATA -type f ! -perm 600 -not -path '*/cache/*' | wc -l; find $HUB_DATA ! -user hub | wc -l" | tr '\n' ' ')"

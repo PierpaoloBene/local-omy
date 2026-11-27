@@ -46,7 +46,7 @@ Da qui gli upload dell'iPhone falliscono e **restano sul telefono** (`Documents/
 ssh hub@hub.local 'cd /srv/hub/repo && docker compose stop omy'                  # niente scrive mentre si copia
 cd ~/OmiArchive
 rsync -ain --checksum --delete -e ssh raw transcripts brain voices context places.json settings.json receiver.json \
-      hub@hub.local:/srv/hub/data/omy/ | grep -E '^(>f|\*deleting)'               # anteprima
+      hub@hub.local:/srv/hub/data/omy/ | grep -E '^([<>]f|\*deleting)'               # anteprima
 rsync -a --checksum --delete --stats -e ssh raw transcripts brain voices context places.json settings.json receiver.json \
       hub@hub.local:/srv/hub/data/omy/
 # l'indice di ricerca: copia consistente, non il file vivo
@@ -64,7 +64,7 @@ python3 mac/src/tools/verify_archive.py ~/OmiArchive > /tmp/mac.json
 ssh hub@hub.local 'python3 - /srv/hub/data/omy' < mac/src/tools/verify_archive.py > /tmp/hub.json
 diff <(python3 -c "import json;d=json.load(open('/tmp/mac.json'));d.pop('root');print(json.dumps(d,indent=1))") \
      <(python3 -c "import json;d=json.load(open('/tmp/hub.json'));d.pop('root');print(json.dumps(d,indent=1))") && echo IDENTICI
-rsync -ain --checksum --delete -e ssh ~/OmiArchive/{raw,transcripts,brain,voices,context} hub@hub.local:/srv/hub/data/omy/   # nessuna riga >f
+rsync -ain --checksum --delete -e ssh ~/OmiArchive/{raw,transcripts,brain,voices,context} hub@hub.local:/srv/hub/data/omy/   # nessuna riga <f né *deleting
 ssh hub@hub.local 'find /srv/hub/data/omy -type f ! -perm 600 -not -path "*/cache/*" | wc -l; find /srv/hub/data/omy ! -user hub | wc -l'   # 0 e 0
 ```
 Devono coincidere: segmenti `.bin` e `.json` (oggi 1114 + 1114, 15 giorni), `transcripts/*.jsonl`, sessioni, `speakers`, note (60), file di `voices`,
