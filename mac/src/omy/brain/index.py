@@ -451,9 +451,11 @@ def _person_names(persons: list[str]) -> list[str]:
 
 
 def search(query: str, *, day_from: str | None = None, day_to: str | None = None,
-           persons: list[str] | None = None, k: int = 8) -> list[dict]:
+           persons: list[str] | None = None, k: int = 8, qvec=None) -> list[dict]:
     """Hybrid search (BM25 + cosine, RRF k=60). Hit = the chunk's fields plus `score`, `lexical`
-    (matched by the full-text query) and `cos` (cosine similarity, None when not in the vector top)."""
+    (matched by the full-text query) and `cos` (cosine similarity, None when not in the vector top).
+    qvec: the embedding of the query, when somebody else made it (the hub gets it from the Mac); None on the
+    hub means BM25 only."""
     if not INDEX_PATH.is_file():
         return []
     with closing(_connect(create=False)) as db:
@@ -491,7 +493,9 @@ def search(query: str, *, day_from: str | None = None, day_to: str | None = None
 
         if len(view["ids"]):
             try:
-                qv = embed.embed([query], query=True)[0]
+                qv = np.asarray(qvec, dtype=np.float32) if qvec is not None else embed.embed([query], query=True)[0]
+                if qv.shape != (embed.EMBED_DIM,):
+                    raise embed.EmbedError(f"query vector of shape {qv.shape}")
             except embed.EmbedError as e:
                 _warn_once(f"embedding server unavailable, BM25 only: {e}")
             else:

@@ -169,6 +169,11 @@ def main() -> int:
     fes.add_argument("state", choices=["on", "off"])
 
     sub.add_parser("worker", help="run the worker: job queue, models, scans (LaunchAgent)")
+    sub.add_parser("hub-worker", help="run the hub's scheduler (OMY_ROLE=hub, in the hub container)")
+    cw = sub.add_parser("compute-worker", help="run the Mac's compute worker: pulls jobs from the hub (LaunchAgent)")
+    cw.add_argument("--once", action="store_true", help="take one job, run it and exit")
+    cw.add_argument("--dry-run", action="store_true", help="with --once: report the job and give it back, run nothing")
+    cw.add_argument("--kind", action="append", help="with --once: only these kinds")
     job = sub.add_parser("job", help="run one queued job in this process (what the worker spawns)") \
         .add_subparsers(dest="action", required=True)
     for name in ("transcribe", "diarize"):
@@ -279,6 +284,13 @@ def _run(args: argparse.Namespace) -> dict:
         from omy import worker
         worker.main()
         result = {}
+    elif args.cmd == "hub-worker":
+        from omy import hubworker
+        hubworker.main()
+        result = {}
+    elif args.cmd == "compute-worker":
+        from omy import compute
+        result = compute.main(once=args.once, dry_run=args.dry_run, kinds=args.kind)
     elif args.cmd == "job":
         result = transcribe.transcribe_job(args.session) if args.action == "transcribe" \
             else transcribe.diarize_job(args.session)

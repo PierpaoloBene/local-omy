@@ -302,3 +302,15 @@ def test_unchanged_update_keeps_the_version(env):
     index.update()
     assert index.update()["version"] == 1
     assert index.update()["version"] == 1
+
+
+def test_search_with_a_query_vector_from_elsewhere(env, monkeypatch):
+    """On the hub the Mac embeds the question: the vector is passed in and the embedding server is never asked."""
+    index.update()
+    qv = embed.embed(["il trasloco a Milano"], query=True)[0]
+    monkeypatch.setattr(embed, "embed", lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked the model")))
+    with_vec = index.search("il trasloco a Milano", qvec=qv.tolist())
+    assert with_vec and any(h["cos"] is not None for h in with_vec)
+    # a bad vector degrades to BM25 only
+    bad = index.search("trasloco", qvec=[0.0, 1.0])
+    assert bad and all(h["cos"] is None for h in bad)
